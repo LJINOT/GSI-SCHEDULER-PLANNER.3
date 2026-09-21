@@ -1,0 +1,16 @@
+project_id = "bsincbccztljuqtaimlx"
+
+[functions.analyze-task]
+verify_jwt = false
+
+[functions.generate-schedule]
+verify_jwt = false
+
+[functions.rank-priorities]
+verify_jwt = false
+
+[functions.smart-picks]
+verify_jwt = false
+
+[functions.behavior-insights]
+verify_jwt = false

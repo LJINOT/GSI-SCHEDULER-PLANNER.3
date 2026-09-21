@@ -1,0 +1,24 @@
+# GSI Scheduler Planner — update roadmap
+
+- [x] DB: archive columns, task_history, profile timezone
+- [x] 1 Notifications: flat list, green/yellow/red severity
+- [x] 2 Task notes / edit history
+- [x] 3 Fixed breaks 9AM/12PM/3PM only
+- [x] 4 Readable dates everywhere
+- [x] 5 Human-readable data export
+- [x] 6 No overlapping task times + scheduled range + deadline countdown
+- [ ] 7 UI: priority labels, scrolling, responsive, dark-mode icons, status dropdowns
+- [x] 8 Completed tasks hidden from Tasks, not editable
+- [x] 9 Add Task: no past dates, 255-char title
+- [x] 10 Selectable timezone + world clock
+- [x] 11 Archive replaces delete
+- [x] 12 Dev mode 30-min auto lock, locked for new accounts
+- [x] 13 Dashboard: pie chart, AI picks list, today's schedule
+- [x] 14 Task page status dropdown
+- [x] 15 Calendar: remove 4-day view, click date to add task
+- [x] 16 Projects kanban
+- [x] 17 Priorities table with reasons
+- [x] 18 Focus mode countdown
+- [x] 19 This Week data list
+- [x] 20 Profile: numeric phone, remove birthday
+- [x] 21 Shared password validation

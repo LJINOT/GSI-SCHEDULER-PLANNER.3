@@ -1,19 +1,27 @@
 import { useCallback, useEffect, useState } from "react";
 
-const KEY = "gsi-dev-mode";
 const EVENT = "gsi-dev-mode-changed";
-const UNLOCK_KEY = "gsi-dev-unlocked";
-const UNLOCK_AT_KEY = "gsi-dev-unlocked-at";
 const UNLOCK_EVENT = "gsi-dev-unlock-changed";
+
+function uidSuffix(): string {
+  try {
+    return localStorage.getItem("gsi-auth-uid") || "anon";
+  } catch {
+    return "anon";
+  }
+}
+function KEY() { return `gsi-dev-mode:${uidSuffix()}`; }
+function UNLOCK_KEY() { return `gsi-dev-unlocked:${uidSuffix()}`; }
+function UNLOCK_AT_KEY() { return `gsi-dev-unlocked-at:${uidSuffix()}`; }
 
 /** Developer Mode auto-locks after 30 minutes and starts locked for every new account. */
 export const DEV_UNLOCK_TTL_MS = 30 * 60 * 1000;
 
 function lockNow() {
   try {
-    localStorage.setItem(UNLOCK_KEY, "0");
-    localStorage.removeItem(UNLOCK_AT_KEY);
-    localStorage.setItem(KEY, "0");
+    localStorage.setItem(UNLOCK_KEY(), "0");
+    localStorage.removeItem(UNLOCK_AT_KEY());
+    localStorage.setItem(KEY(), "0");
   } catch {
     /* ignore */
   }
@@ -21,8 +29,8 @@ function lockNow() {
 
 export function isDevUnlocked(): boolean {
   try {
-    if (localStorage.getItem(UNLOCK_KEY) !== "1") return false;
-    const at = Number(localStorage.getItem(UNLOCK_AT_KEY) || 0);
+    if (localStorage.getItem(UNLOCK_KEY()) !== "1") return false;
+    const at = Number(localStorage.getItem(UNLOCK_AT_KEY()) || 0);
     if (!at || Date.now() - at > DEV_UNLOCK_TTL_MS) {
       lockNow();
       return false;
@@ -36,7 +44,7 @@ export function isDevUnlocked(): boolean {
 /** Milliseconds left before Developer Mode locks itself again (0 when locked). */
 export function devUnlockRemaining(): number {
   try {
-    const at = Number(localStorage.getItem(UNLOCK_AT_KEY) || 0);
+    const at = Number(localStorage.getItem(UNLOCK_AT_KEY()) || 0);
     if (!at) return 0;
     return Math.max(0, DEV_UNLOCK_TTL_MS - (Date.now() - at));
   } catch {
@@ -76,8 +84,8 @@ export function useDevUnlock() {
   const setUnlocked = useCallback((on: boolean) => {
     try {
       if (on) {
-        localStorage.setItem(UNLOCK_KEY, "1");
-        localStorage.setItem(UNLOCK_AT_KEY, String(Date.now()));
+        localStorage.setItem(UNLOCK_KEY(), "1");
+        localStorage.setItem(UNLOCK_AT_KEY(), String(Date.now()));
       } else {
         lockNow();
       }
@@ -94,7 +102,7 @@ export function useDevUnlock() {
 export function isDevModeOn(): boolean {
   try {
     if (!isDevUnlocked()) return false;
-    return localStorage.getItem(KEY) === "1";
+    return localStorage.getItem(KEY()) === "1";
   } catch {
     return false;
   }
@@ -117,7 +125,7 @@ export function useDevMode() {
 
   const setDevMode = useCallback((on: boolean) => {
     try {
-      localStorage.setItem(KEY, on ? "1" : "0");
+      localStorage.setItem(KEY(), on ? "1" : "0");
     } catch {
       /* ignore */
     }

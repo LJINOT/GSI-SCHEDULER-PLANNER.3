@@ -223,54 +223,24 @@ serve(async (req) => {
     const ordered = order.map(i => fitting[i]);
     const blocks = csp(ordered, startMin, endMin, breakStyle) || csp(fitting, startMin, endMin, breakStyle) || [];
 
-    // Persist generated start times onto tasks (recommendation blocks with kind break are skipped)
-    // so the UI and other pages can read the real schedule from tasks.start_time.
-    const { data: profTz } = await supabase.from("profiles").select("timezone").eq("id", user.id).single();
-    const tz = (profTz as any)?.timezone || "UTC";
+    // Chronological order by start time (minutes from midnight) — not string/AM-PM order
+    blocks.sort((a, b) => {
+      const toMin = (s: string) => {
+        const [h, m] = (s || "99:99").split(":").map(Number);
+        return (h || 0) * 60 + (m || 0);
+      };
+      const d = toMin(a.start) - toMin(b.start);
+      if (d !== 0) return d;
+      return toMin(a.end) - toMin(b.end);
+    });
+    // blocks sorted by start
 
-    const toIsoOnToday = (hhmm: string): string => {
-      const [hh, mm] = hhmm.split(":").map(Number);
-      // Build "today" calendar date in the user's timezone, then attach the clock time as UTC wall-clock fallback
-      try {
-        const parts = new Intl.DateTimeFormat("en-CA", {
-          timeZone: tz,
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-        }).formatToParts(new Date());
-        const y = parts.find((p) => p.type === "year")?.value;
-        const mo = parts.find((p) => p.type === "month")?.value;
-        const da = parts.find((p) => p.type === "day")?.value;
-        // Interpret local wall time in tz via a temporary Date from components (approximation: ISO with offset 0 then store)
-        const isoLocal = `${y}-${mo}-${da}T${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00`;
-        // Prefer storing as timestamptz: convert using Date parsing as local is unreliable on Deno — use UTC noon adjust
-        const d = new Date(isoLocal + "Z");
-        return d.toISOString();
-      } catch {
-        const d = new Date();
-        d.setUTCHours(hh, mm, 0, 0);
-        return d.toISOString();
-      }
-    };
-
-    let persisted = 0;
-    for (const b of blocks) {
-      if (b.kind === "break") continue;
-      if (!b.task_id || String(b.task_id).startsWith("break-")) continue;
-      const iso = toIsoOnToday(b.start);
-      const { error: upErr } = await supabase
-        .from("tasks")
-        .update({ start_time: iso })
-        .eq("id", b.task_id)
-        .eq("user_id", user.id);
-      if (!upErr) persisted += 1;
-    }
 
     return new Response(JSON.stringify({
       blocks,
-      persisted,
       deferred: deferred.map(t => ({ task_id: t.id, title: t.title })),
       pso: { fitness: best, iterations: 60, swarm_size: 25 },
+
       window: { start: workStart, end: workEnd, peak_start: peakStart, peak_end: peakEnd, break_style: breakStyle },
       algorithm: "csp-backtracking + pso-random-key + peak-aware",
       timestamp: new Date().toISOString(),

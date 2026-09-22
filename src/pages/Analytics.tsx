@@ -11,19 +11,38 @@ export default function Analytics() {
 
   useEffect(() => {
     const fetchStats = async () => {
-      const { data: allTasks } = await supabase.from("tasks").select("status, category");
-      if (allTasks) {
-        const total = allTasks.length;
-        const completed = allTasks.filter((t) => t.status === "done").length;
-        setStats({ total, completed, totalTime: 0 });
-
-        const cats: Record<string, number> = {};
-        allTasks.forEach((t) => { const c = t.category || "Other"; cats[c] = (cats[c] || 0) + 1; });
-        setCategoryData(Object.entries(cats).map(([name, count]) => ({ name, count })));
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const [{ data: allTasks }, { data: entries }] = await Promise.all([
+        supabase.from("tasks").select("status, category").eq("user_id", user.id).eq("archived", false),
+        supabase.from("time_entries").select("duration, start_time, end_time").eq("user_id", user.id),
+      ]);
+      const tasks = allTasks || [];
+      const total = tasks.length;
+      const completed = tasks.filter((t) => t.status === "done").length;
+      // Actual recorded minutes from time_entries
+      let totalMinutes = 0;
+      for (const e of entries || []) {
+        if (e.duration && e.duration > 0) totalMinutes += Number(e.duration);
+        else if (e.start_time && e.end_time) {
+          totalMinutes += Math.max(0, Math.round((new Date(e.end_time).getTime() - new Date(e.start_time).getTime()) / 60000));
+        }
       }
+      setStats({ total, completed, totalTime: totalMinutes });
+
+      const cats: Record<string, number> = {};
+      tasks.forEach((t) => { const c = t.category || "Other"; cats[c] = (cats[c] || 0) + 1; });
+      setCategoryData(Object.entries(cats).map(([name, count]) => ({ name, count })));
     };
     fetchStats();
   }, []);
+
+  const formatTotalTime = (mins: number) => {
+    if (!mins) return "0m";
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  };
 
   const completionRate = stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0;
 
@@ -49,8 +68,9 @@ export default function Analytics() {
         <Card>
           <CardContent className="pt-6 text-center">
             <Clock className="mx-auto h-8 w-8 text-info mb-2" />
-            <p className="text-3xl font-display font-bold">{stats.completed}</p>
-            <p className="text-sm text-muted-foreground">Completed</p>
+            <p className="text-3xl font-display font-bold">{formatTotalTime(stats.totalTime)}</p>
+            <p className="text-sm text-muted-foreground">Recorded work time</p>
+            <p className="text-xs text-muted-foreground mt-1">{stats.completed} tasks completed</p>
           </CardContent>
         </Card>
       </div>

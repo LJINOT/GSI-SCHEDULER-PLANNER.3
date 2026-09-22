@@ -34,7 +34,6 @@ export default function FocusMode() {
 
   const [totalSeconds, setTotalSeconds] = useState(25 * 60);
   const [remaining, setRemaining] = useState(25 * 60);
-  const [focusEntryId, setFocusEntryId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [deadlineTick, setDeadlineTick] = useState(0);
   const finishedRef = useRef(false);
@@ -46,7 +45,7 @@ export default function FocusMode() {
         if (error) throw error;
         const topPick = data?.picks?.[0];
         if (topPick) {
-          const { data: task } = await supabase.from("tasks").select("*").eq("id", topPick.id).single();
+          const { data: task } = await supabase.from("tasks").select("*").eq("archived", false).eq("id", topPick.id).single();
           setFocusTask(task as FocusTask);
         }
       } catch {
@@ -147,26 +146,7 @@ export default function FocusMode() {
                   {remaining === 0 ? " · finished" : running ? " · running" : " · paused"}
                 </p>
                 <div className="flex justify-center gap-2">
-                  <Button variant={running ? "secondary" : "default"} onClick={async () => {
-                    const next = !running;
-                    if (next && focusTask && !focusEntryId) {
-                      const { data: { user } } = await supabase.auth.getUser();
-                      if (user) {
-                        const { data } = await supabase.from("time_entries").insert({
-                          user_id: user.id,
-                          task_id: focusTask.id,
-                          start_time: new Date().toISOString(),
-                        }).select("id").single();
-                        if (data?.id) setFocusEntryId(data.id);
-                      }
-                    }
-                    if (!next && focusEntryId) {
-                      const now = new Date().toISOString();
-                      await supabase.from("time_entries").update({ end_time: now }).eq("id", focusEntryId);
-                      setFocusEntryId(null);
-                    }
-                    setRunning(next);
-                  }} disabled={remaining === 0}>
+                  <Button variant={running ? "secondary" : "default"} onClick={() => setRunning((r) => !r)} disabled={remaining === 0}>
                     {running ? <><Pause className="mr-2 h-4 w-4" /> Pause</> : <><Play className="mr-2 h-4 w-4" /> Start</>}
                   </Button>
                   <Button variant="outline" onClick={reset}>

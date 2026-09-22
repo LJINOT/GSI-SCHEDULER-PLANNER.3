@@ -69,9 +69,16 @@ export default function Schedule() {
     setLoadingTasks(true);
     // Match what generate-schedule considers: not done, not archived.
     // Prefer tasks with no start_time; if none, show all active tasks so the button stays usable.
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setUnscheduled([]);
+      setLoadingTasks(false);
+      return;
+    }
     const { data } = await supabase
       .from("tasks")
       .select("id, title, status, due_date, start_time, estimated_duration, priority_score, category")
+      .eq("user_id", user.id)
       .eq("archived", false)
       .neq("status", "done")
       .order("priority_score", { ascending: false });
@@ -86,6 +93,43 @@ export default function Schedule() {
     fetchUnscheduled();
   }, []);
 
+  /** Load today's scheduled tasks from DB into Generated Schedule (source of truth after persist). */
+  const loadGeneratedFromDb = async (): Promise<ScheduleBlock[]> => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+    const { data } = await supabase
+      .from("tasks")
+      .select("id, title, start_time, estimated_duration, category, status")
+      .eq("user_id", user.id)
+      .eq("archived", false)
+      .neq("status", "done")
+      .not("start_time", "is", null)
+      .order("start_time", { ascending: true });
+
+    const rows = data || [];
+    const todayStr = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD local
+    const blocks: ScheduleBlock[] = [];
+    for (const t of rows as any[]) {
+      if (!t.start_time) continue;
+      const localDay = new Date(t.start_time).toLocaleDateString("en-CA");
+      if (localDay !== todayStr) continue;
+      const startDate = new Date(t.start_time);
+      const dur = Math.max(5, Number(t.estimated_duration) || 30);
+      const endDate = new Date(startDate.getTime() + dur * 60_000);
+      const fmt = (d: Date) =>
+        `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      blocks.push({
+        task_id: t.id,
+        title: t.title,
+        start: fmt(startDate),
+        end: fmt(endDate),
+        category: t.category || "General",
+        kind: "task",
+      });
+    }
+    return blocks;
+  };
+
   const generateSchedule = async () => {
     if (unscheduled.length === 0) {
       toast.error("No unscheduled tasks available.");
@@ -96,17 +140,69 @@ export default function Schedule() {
     try {
       const { data, error } = await supabase.functions.invoke("generate-schedule", { body: {} });
       if (error) throw error;
-      const next: Payload = { ...(data || {}), blocks: data?.blocks || [] };
+
+      // Normalize response (some gateways wrap body)
+      const body = typeof data === "string" ? JSON.parse(data) : (data || {});
+      if (body.error) throw new Error(body.error);
+
+      let blocks: ScheduleBlock[] = Array.isArray(body.blocks) ? body.blocks : [];
+
+      // If function returned blocks, use them; also merge DB after persist
+      if (blocks.length === 0) {
+        // Backend may have persisted without returning blocks — reload from DB
+        blocks = await loadGeneratedFromDb();
+      }
+
+      const next: Payload = {
+        ...body,
+        blocks,
+        algorithm: body.algorithm || "csp-pso",
+        timestamp: body.timestamp || new Date().toISOString(),
+      };
+
       setPayload(next);
       saveCache(CACHE_KEY, next);
-      setJustCreated(true);
-      toast.success("Schedule created successfully.");
-      fetchUnscheduled();
+
+      if (blocks.length === 0) {
+        toast.error(body.note || "No schedule slots could be generated. Check work hours or task durations.");
+      } else {
+        setJustCreated(true);
+        toast.success("Schedule created successfully.");
+      }
+
+      // Refresh unscheduled list from DB (tasks that now have start_time drop out)
+      await fetchUnscheduled();
+
+      // Second pass: prefer DB as source of truth after persistence settles
+      const fromDb = await loadGeneratedFromDb();
+      if (fromDb.length > 0) {
+        const merged: Payload = { ...next, blocks: fromDb };
+        setPayload(merged);
+        saveCache(CACHE_KEY, merged);
+      }
     } catch (err: any) {
-      toast.error(err.message || "Failed to generate schedule");
+      toast.error(err?.message || "Failed to generate schedule");
     }
     setGenerating(false);
   };
+
+  // On mount, also hydrate Generated Schedule from DB if cache empty
+  useEffect(() => {
+    (async () => {
+      if ((payload?.blocks?.length || 0) > 0) return;
+      const fromDb = await loadGeneratedFromDb();
+      if (fromDb.length > 0) {
+        const next: Payload = {
+          blocks: fromDb,
+          algorithm: "loaded-from-tasks",
+          timestamp: new Date().toISOString(),
+        };
+        setPayload(next);
+        saveCache(CACHE_KEY, next);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const groupedBlocks = useMemo(() => {
     if (blocks.length === 0) return [];

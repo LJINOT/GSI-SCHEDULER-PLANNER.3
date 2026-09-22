@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { supabase } from "@/integrations/supabase/client";
 
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -46,6 +45,8 @@ function InPlainEnglish({ children }: { children: React.ReactNode }) {
   );
 }
 
+const DEV_PIN = "1111";
+
 export default function AlgorithmInsights() {
   const { unlocked, setUnlocked } = useDevUnlock();
   const navigate = useNavigate();
@@ -63,49 +64,16 @@ export default function AlgorithmInsights() {
     setPinOpen(true);
   };
 
-  const submitPin = async () => {
-    setPinError("");
-    try {
-      // Prefer secure DB RPC (no Edge Function required). Falls back to Edge Function if available.
-      let result: { ok?: boolean; error?: string } | null = null;
-
-      const { data: rpcData, error: rpcError } = await supabase.rpc("verify_dev_pin", {
-        p_pin: pin,
-      });
-
-      if (!rpcError && rpcData) {
-        result = rpcData as { ok?: boolean; error?: string };
-      } else {
-        // Optional fallback: Edge Function (only if deployed)
-        const { data: fnData, error: fnError } = await supabase.functions.invoke("verify-dev-pin", {
-          body: { pin },
-        });
-        if (fnError) {
-          const msg = fnError.message || "";
-          if (msg.includes("Failed to send") || msg.includes("not found") || msg.includes("404")) {
-            throw new Error(
-              rpcError?.message ||
-                "PIN verification is not set up yet. Run the verify_dev_pin migration and set_dev_mode_pin in Supabase SQL."
-            );
-          }
-          throw fnError;
-        }
-        result = fnData as { ok?: boolean; error?: string };
-      }
-
-      if (!result?.ok) {
-        setPinError(result?.error || "Incorrect PIN. Please try again.");
-        setPin("");
-        return;
-      }
-      setPinOpen(false);
-      setUnlocked(true);
-      toast.success("Developer Mode unlocked — available in Settings.");
-      navigate("/settings/developer");
-    } catch (e: any) {
-      setPinError(e?.message || "Unable to verify PIN.");
+  const submitPin = () => {
+    if (pin !== DEV_PIN) {
+      setPinError("Incorrect PIN. Please try again.");
       setPin("");
+      return;
     }
+    setPinOpen(false);
+    setUnlocked(true);
+    toast.success("Developer Mode unlocked — available in Settings.");
+    navigate("/settings/developer");
   };
 
 

@@ -13,7 +13,7 @@ import { motion } from "framer-motion";
 import { formatPH } from "@/lib/date-utils";
 import { statusLabel, priorityFromScore, PRIORITY_STYLES } from "@/lib/status";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Sector } from "recharts";
-import { loadCache, clearCache } from "@/lib/persist-cache";
+import { loadCache } from "@/lib/persist-cache";
 import { format, isToday, isTomorrow, isPast } from "date-fns";
 
 const fadeIn = { hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0 } };
@@ -215,7 +215,6 @@ export default function Dashboard() {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      await supabase.rpc("transition_due_task_statuses").catch(() => null);
       await Promise.all([fetchTasks(), fetchModuleSummaries(), loadTodayRecommendations()]);
       loadAdaptiveStatus();
       setLoading(false);
@@ -228,10 +227,8 @@ export default function Dashboard() {
     const channel = supabase
       .channel("dashboard-tasks")
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => {
-        clearCache(TODAY_CACHE_KEY);
         fetchTasks();
         fetchModuleSummaries();
-        loadTodayRecommendations();
       })
       .subscribe();
 

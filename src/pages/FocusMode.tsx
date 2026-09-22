@@ -45,13 +45,14 @@ export default function FocusMode() {
         if (error) throw error;
         const topPick = data?.picks?.[0];
         if (topPick) {
-          const { data: task } = await supabase.from("tasks").select("*").eq("archived", false).eq("id", topPick.id).single();
+          const { data: task } = await supabase.from("tasks").select("*").eq("id", topPick.id).single();
           setFocusTask(task as FocusTask);
         }
       } catch {
         const { data } = await supabase
           .from("tasks")
           .select("*")
+          .eq("archived", false)
           .neq("status", "done")
           .order("priority_score", { ascending: false, nullsFirst: false })
           .limit(1);
@@ -62,14 +63,19 @@ export default function FocusMode() {
     fetchFocusTask();
   }, []);
 
-  // Session length follows the task's estimated duration (capped at a 50-minute block).
+  // Session length: estimated duration (or derived from start_time window if present). No fixed 50-min replacement.
   useEffect(() => {
-    const mins = Math.min(focusTask?.estimated_duration || 25, 50);
+    let mins = focusTask?.estimated_duration || 25;
+    // If scheduled start exists, keep estimated as the focus block length (scheduled duration basis)
+    if (focusTask?.start_time && focusTask?.estimated_duration) {
+      mins = focusTask.estimated_duration;
+    }
+    mins = Math.max(5, mins);
     setTotalSeconds(mins * 60);
     setRemaining(mins * 60);
     setRunning(false);
     finishedRef.current = false;
-  }, [focusTask?.id, focusTask?.estimated_duration]);
+  }, [focusTask?.id, focusTask?.estimated_duration, focusTask?.start_time]);
 
   useEffect(() => {
     if (!running) return;

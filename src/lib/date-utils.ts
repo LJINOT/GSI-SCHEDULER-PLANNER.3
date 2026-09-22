@@ -1,6 +1,7 @@
 import { formatInTimeZone } from "date-fns-tz";
 
-export const DEFAULT_TZ = "Asia/Manila";
+/** Fallback only when profile timezone is not yet loaded. Prefer profile.timezone. */
+export const DEFAULT_TZ = "UTC";
 const TZ_KEY = "gsi-timezone";
 export const TZ_EVENT = "gsi-timezone-changed";
 
@@ -42,7 +43,7 @@ export function tzOffset(date: Date = new Date(), tz: string = getTimezone()): s
   return formatInTimeZone(date, tz, "xxx");
 }
 
-/** Format a date in the user's selected timezone (defaults to Manila). */
+/** Format a date in the user's timezone (from profile, cached in localStorage). */
 export function formatPH(date: Date | string, fmt: string, tz: string = getTimezone()): string {
   const d = typeof date === "string" ? new Date(date) : date;
   if (!d || isNaN(d.getTime())) return "—";
@@ -103,4 +104,19 @@ export function countdown(target: string | Date | null | undefined, now: Date = 
   const s = diff % 60;
   const parts = d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`;
   return overdue ? `Overdue by ${parts}` : `${parts} left`;
+}
+
+
+/** Cache profile timezone for display helpers. Profile remains the source of truth. */
+export function syncTimezoneFromProfile(tz: string | null | undefined) {
+  if (!tz || typeof tz !== "string") return;
+  try {
+    const prev = localStorage.getItem(TZ_KEY);
+    if (prev !== tz) {
+      localStorage.setItem(TZ_KEY, tz);
+      window.dispatchEvent(new CustomEvent(TZ_EVENT));
+    }
+  } catch {
+    /* ignore */
+  }
 }

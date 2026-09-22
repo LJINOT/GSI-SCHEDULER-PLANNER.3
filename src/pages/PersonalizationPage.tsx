@@ -92,11 +92,15 @@ export default function PersonalizationPage() {
           <Select value={breakStyle} onValueChange={setBreakStyle}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="pomodoro">Pomodoro (25 min work / 5 min break)</SelectItem>
-              <SelectItem value="long-focus">Long Focus (50 min work / 10 min break)</SelectItem>
-              <SelectItem value="flexible">Flexible (AI decides)</SelectItem>
+              <SelectItem value="pomodoro">Preference: Pomodoro rhythm (preference only)</SelectItem>
+              <SelectItem value="long-focus">Preference: Long Focus rhythm (preference only)</SelectItem>
+              <SelectItem value="flexible">Preference: Flexible (preference only)</SelectItem>
             </SelectContent>
           </Select>
+          <p className="text-xs text-muted-foreground mt-2">
+            Scheduling always keeps fixed breaks: <strong>9:00 AM Snack</strong>, <strong>12:00 PM Lunch</strong>, and <strong>3:00 PM Snack</strong>.
+            Break style is a personal preference label and does not move those fixed breaks.
+          </p>
         </CardContent>
       </Card>
 

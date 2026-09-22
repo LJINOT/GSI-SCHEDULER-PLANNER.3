@@ -135,10 +135,96 @@ export default function Schedule() {
 
       {devMode && payload && <ScheduleDevPanel payload={payload} />}
 
+      {/* PRIMARY: Generated Schedule first */}
       <section className="space-y-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Unscheduled Tasks
-        </h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-base font-semibold tracking-tight text-foreground">
+            Generated Schedule
+          </h2>
+          {blocks.length > 0 && (
+            <span className="text-xs text-muted-foreground">{blocks.length} block{blocks.length !== 1 ? "s" : ""}</span>
+          )}
+        </div>
+
+        {justCreated && blocks.length > 0 && (
+          <div className="flex items-center gap-2 text-sm text-success">
+            <CheckCircle2 className="h-4 w-4" />
+            Schedule created successfully.
+          </div>
+        )}
+
+        {blocks.length === 0 ? (
+          <Card>
+            <CardContent className="py-10 text-center text-muted-foreground text-sm space-y-1">
+              <p className="font-medium text-foreground/80">No schedule generated yet.</p>
+              <p>Click &quot;Auto Schedule&quot; to generate a schedule from your unscheduled tasks.</p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="rounded-lg border overflow-hidden">
+            <div className="max-h-[480px] overflow-y-auto overflow-x-auto">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur supports-[backdrop-filter]:bg-muted/80">
+                  <TableRow className="bg-muted/40">
+                    <TableHead className="text-xs w-28">Date</TableHead>
+                    <TableHead className="text-xs w-36">Time</TableHead>
+                    <TableHead className="text-xs">Task</TableHead>
+                    <TableHead className="text-xs w-24">Priority</TableHead>
+                    <TableHead className="text-xs w-24">Duration</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {groupedBlocks.flatMap((group) =>
+                    group.items.map((b, i) => {
+                      const isBreak = b.kind === "break";
+                      const startM =
+                        parseInt(b.start.split(":")[0] || "0", 10) * 60 +
+                        parseInt(b.start.split(":")[1] || "0", 10);
+                      const endM =
+                        parseInt(b.end.split(":")[0] || "0", 10) * 60 +
+                        parseInt(b.end.split(":")[1] || "0", 10);
+                      const dur = Math.max(0, endM - startM);
+                      return (
+                        <TableRow key={`${b.task_id}-${i}`} className="text-sm">
+                          <TableCell className="py-2 text-xs text-muted-foreground">
+                            {group.dateLabel}
+                          </TableCell>
+                          <TableCell className="py-2 font-mono text-xs">
+                            {to12h(b.start)} – {to12h(b.end)}
+                          </TableCell>
+                          <TableCell className="py-2 font-medium max-w-[220px] truncate">
+                            {b.title}
+                            {isBreak && (
+                              <span className="ml-2 text-[10px] text-muted-foreground">(break)</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-2 text-xs text-muted-foreground">—</TableCell>
+                          <TableCell className="py-2 text-xs text-muted-foreground">
+                            {dur > 0 ? `${dur}m` : "—"}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* SECONDARY: Unscheduled Tasks below — all rows kept, internal scroll */}
+      <section className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Unscheduled Tasks
+          </h2>
+          {!loadingTasks && unscheduled.length > 0 && (
+            <span className="text-xs text-muted-foreground">
+              {unscheduled.length} task{unscheduled.length !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
 
         {loadingTasks ? (
           <div className="flex justify-center py-8">
@@ -152,109 +238,49 @@ export default function Schedule() {
           </Card>
         ) : (
           <div className="rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/40">
-                  <TableHead className="text-xs">Task</TableHead>
-                  <TableHead className="text-xs w-24">Priority</TableHead>
-                  <TableHead className="text-xs w-32">Deadline</TableHead>
-                  <TableHead className="text-xs w-24">Duration</TableHead>
-                  <TableHead className="text-xs w-28">Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {unscheduled.map((t) => {
-                  const pr = priorityFromScore(t.priority_score);
-                  const style = PRIORITY_STYLES[pr];
-                  return (
-                    <TableRow key={t.id} className="text-sm">
-                      <TableCell className="font-medium py-2 max-w-[220px] truncate">
-                        {t.title}
-                      </TableCell>
-                      <TableCell className="py-2">
-                        <Badge variant="outline" className={`text-[10px] ${style.className}`}>
-                          {style.label}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="py-2 text-muted-foreground text-xs">
-                        {t.due_date ? format(new Date(t.due_date), "MMM d, yyyy") : "—"}
-                      </TableCell>
-                      <TableCell className="py-2 text-muted-foreground text-xs">
-                        {t.estimated_duration ? `${t.estimated_duration}m` : "—"}
-                      </TableCell>
-                      <TableCell className="py-2">
-                        <span className="text-xs capitalize">{statusLabel(t.status)}</span>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </section>
-
-      {justCreated && blocks.length > 0 && (
-        <div className="flex items-center gap-2 text-sm text-success">
-          <CheckCircle2 className="h-4 w-4" />
-          Schedule created successfully.
-        </div>
-      )}
-
-      {blocks.length > 0 && (
-        <section className="space-y-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Generated Schedule
-          </h2>
-          <div className="rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/40">
-                  <TableHead className="text-xs w-28">Date</TableHead>
-                  <TableHead className="text-xs w-36">Time</TableHead>
-                  <TableHead className="text-xs">Task</TableHead>
-                  <TableHead className="text-xs w-24">Priority</TableHead>
-                  <TableHead className="text-xs w-24">Duration</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {groupedBlocks.flatMap((group) =>
-                  group.items.map((b, i) => {
-                    const isBreak = b.kind === "break";
-                    const startM =
-                      parseInt(b.start.split(":")[0] || "0", 10) * 60 +
-                      parseInt(b.start.split(":")[1] || "0", 10);
-                    const endM =
-                      parseInt(b.end.split(":")[0] || "0", 10) * 60 +
-                      parseInt(b.end.split(":")[1] || "0", 10);
-                    const dur = Math.max(0, endM - startM);
+            <div className="max-h-[360px] overflow-y-auto overflow-x-auto">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur supports-[backdrop-filter]:bg-muted/80">
+                  <TableRow className="bg-muted/40">
+                    <TableHead className="text-xs">Task</TableHead>
+                    <TableHead className="text-xs w-24">Priority</TableHead>
+                    <TableHead className="text-xs w-32">Deadline</TableHead>
+                    <TableHead className="text-xs w-24">Duration</TableHead>
+                    <TableHead className="text-xs w-28">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {unscheduled.map((t) => {
+                    const pr = priorityFromScore(t.priority_score);
+                    const style = PRIORITY_STYLES[pr];
                     return (
-                      <TableRow key={`${b.task_id}-${i}`} className="text-sm">
-                        <TableCell className="py-2 text-xs text-muted-foreground">
-                          {group.dateLabel}
+                      <TableRow key={t.id} className="text-sm">
+                        <TableCell className="font-medium py-2 max-w-[220px] truncate">
+                          {t.title}
                         </TableCell>
-                        <TableCell className="py-2 font-mono text-xs">
-                          {to12h(b.start)} – {to12h(b.end)}
+                        <TableCell className="py-2">
+                          <Badge variant="outline" className={`text-[10px] ${style.className}`}>
+                            {style.label}
+                          </Badge>
                         </TableCell>
-                        <TableCell className="py-2 font-medium max-w-[220px] truncate">
-                          {b.title}
-                          {isBreak && (
-                            <span className="ml-2 text-[10px] text-muted-foreground">(break)</span>
-                          )}
+                        <TableCell className="py-2 text-muted-foreground text-xs">
+                          {t.due_date ? format(new Date(t.due_date), "MMM d, yyyy") : "—"}
                         </TableCell>
-                        <TableCell className="py-2 text-xs text-muted-foreground">—</TableCell>
-                        <TableCell className="py-2 text-xs text-muted-foreground">
-                          {dur > 0 ? `${dur}m` : "—"}
+                        <TableCell className="py-2 text-muted-foreground text-xs">
+                          {t.estimated_duration ? `${t.estimated_duration}m` : "—"}
+                        </TableCell>
+                        <TableCell className="py-2">
+                          <span className="text-xs capitalize">{statusLabel(t.status)}</span>
                         </TableCell>
                       </TableRow>
                     );
-                  })
-                )}
-              </TableBody>
-            </Table>
+                  })}
+                </TableBody>
+              </Table>
+            </div>
           </div>
-        </section>
-      )}
+        )}
+      </section>
     </motion.div>
   );
 }

@@ -196,6 +196,15 @@ export default function Projects() {
   };
 
   const saveTask = async () => {
+    if (taskStart && taskDue && new Date(taskStart) >= new Date(taskDue)) {
+      toast.error("Start time must be earlier than due date/time");
+      return;
+    }
+    if (taskDuration && !(Number(taskDuration) > 0)) {
+      toast.error("Duration must be greater than 0");
+      return;
+    }
+
     if (!taskTitle.trim()) { setTaskTitleError("Task title is required"); return; }
     setTaskTitleError("");
     if (!editingTask) return;
@@ -205,7 +214,11 @@ export default function Projects() {
       description: taskDescription.trim() || null,
       due_date: taskDueDate ? new Date(taskDueDate).toISOString() : null,
       start_time: taskStartTime ? new Date(taskStartTime).toISOString() : null,
-      estimated_duration: taskDuration ? Number(taskDuration) : null,
+      estimated_duration: (() => {
+        const n = taskDuration ? Number(taskDuration) : null;
+        if (n !== null && (!(n > 0))) { toast.error("Duration must be greater than 0"); throw new Error("invalid duration"); }
+        return n;
+      })(),
       status: taskStatus,
     }).eq("id", editingTask.id);
 
@@ -264,7 +277,7 @@ export default function Projects() {
               <div className="space-y-2">
                 <Label>Name</Label>
                 <Input
-                  value={name}
+                  value={name} maxLength={255}
                   onChange={(e) => { setName(e.target.value); if (e.target.value.trim()) setNameError(""); }}
                   placeholder="e.g. Thesis Research"
                 />

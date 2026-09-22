@@ -47,6 +47,27 @@ type ScheduleBlock = {
   kind?: string;
 };
 
+
+/** Sort schedule blocks by real clock minutes (not AM/PM string sort). */
+function startMinutes(hhmm: string | undefined | null): number {
+  if (!hhmm || !String(hhmm).includes(":")) return Number.MAX_SAFE_INTEGER;
+  const [h, m] = String(hhmm).split(":").map(Number);
+  if (!Number.isFinite(h)) return Number.MAX_SAFE_INTEGER;
+  return h * 60 + (Number.isFinite(m) ? m : 0);
+}
+
+function sortBlocksChronologically(blocks: ScheduleBlock[]): ScheduleBlock[] {
+  return [...blocks].sort((a, b) => {
+    const sa = startMinutes(a.start);
+    const sb = startMinutes(b.start);
+    if (sa !== sb) return sa - sb;
+    const ea = startMinutes(a.end);
+    const eb = startMinutes(b.end);
+    if (ea !== eb) return ea - eb;
+    return String(a.task_id).localeCompare(String(b.task_id));
+  });
+}
+
 type Payload = {
   blocks: ScheduleBlock[];
   deferred?: { task_id: string; title: string }[];
@@ -73,7 +94,7 @@ export default function AdaptiveScheduling() {
   const [justAdapted, setJustAdapted] = useState(false);
   const { devMode } = useDevMode();
 
-  const blocks = payload?.blocks || [];
+  const blocks = useMemo(() => sortBlocksChronologically(payload?.blocks || []), [payload?.blocks]);
 
   const fetchTasks = async () => {
     setLoadingTasks(true);
@@ -158,11 +179,20 @@ export default function AdaptiveScheduling() {
         body: { adaptive: true },
       });
       if (error) throw error;
-      const next: Payload = { ...(data || {}), blocks: data?.blocks || [] };
+      const body = typeof data === "string" ? JSON.parse(data) : (data || {});
+      const rawBlocks = Array.isArray(body.blocks) ? body.blocks : [];
+      const next: Payload = {
+        ...body,
+        blocks: sortBlocksChronologically(rawBlocks),
+      };
       setPayload(next);
       saveCache(CACHE_KEY, next);
       setJustAdapted(true);
-      toast.success("Schedule adapted successfully.");
+      if (next.blocks.length === 0) {
+        toast.message(body.note || "No schedule blocks returned.");
+      } else {
+        toast.success("Schedule adapted successfully.");
+      }
       fetchTasks();
     } catch (err: any) {
       toast.error(err.message || "Failed to adapt schedule");

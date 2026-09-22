@@ -6,10 +6,9 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Existing AHP weights for "what to do RIGHT NOW" — do not change
+/** Existing AHP weights — do not change */
 const W = { urgency: 0.50, quickWin: 0.20, flow: 0.15, cognitive: 0.15 };
 
-/** Fixed GSI breaks (minutes from midnight) */
 const FIXED_BREAKS: { start: number; end: number }[] = [
   { start: 9 * 60, end: 9 * 60 + 15 },
   { start: 12 * 60, end: 13 * 60 },
@@ -26,7 +25,6 @@ function urgencyScore(due?: string | null): number {
   if (hoursLeft < 168) return 0.35;
   return 0.15;
 }
-
 function quickWinScore(min?: number): number {
   const m = min || 30;
   if (m <= 15) return 1.0;
@@ -35,13 +33,11 @@ function quickWinScore(min?: number): number {
   if (m <= 120) return 0.3;
   return 0.1;
 }
-
 function flowScore(status?: string): number {
   if (status === "in_progress") return 1.0;
   if (status === "todo") return 0.6;
   return 0.3;
 }
-
 function parseHHMM(s: string): number {
   const [h, m] = s.split(":").map(Number);
   return h * 60 + (m || 0);
@@ -57,13 +53,7 @@ function to12h(hhmm: string): string {
   const hr = ((h + 11) % 12) + 1;
   return `${hr}:${String(m).padStart(2, "0")} ${period}`;
 }
-
-function cognitiveFitScore(
-  difficulty: string | undefined,
-  localHour: number,
-  peakStart: number,
-  peakEnd: number,
-): number {
+function cognitiveFitScore(difficulty: string | undefined, localHour: number, peakStart: number, peakEnd: number): number {
   const d = (difficulty || "medium").toLowerCase();
   const inPeak = localHour >= Math.floor(peakStart / 60) && localHour < Math.ceil(peakEnd / 60);
   if (inPeak) return d === "hard" ? 1.0 : d === "medium" ? 0.8 : 0.55;
@@ -71,50 +61,45 @@ function cognitiveFitScore(
   return d === "easy" ? 0.95 : d === "medium" ? 0.55 : 0.3;
 }
 
-function overlaps(a0: number, a1: number, b0: number, b1: number): boolean {
+/** True if [a0,a1) overlaps [b0,b1) — adjacent endpoints do NOT overlap */
+function intervalsOverlap(a0: number, a1: number, b0: number, b1: number): boolean {
   return a0 < b1 && a1 > b0;
 }
 
 /**
- * Earliest free interval of length `dur` starting at/after `preferred`,
- * within [workStart, workEnd], avoiding all busy blocks (existing schedule + breaks + prior recommendations).
+ * Single allocation function used for all recommendations.
+ * Finds earliest free [start, end) of length `duration` at/after preferredStart.
  */
-function findAvailableSlot(
-  preferred: number,
-  dur: number,
+function findNextAvailableSlot(
+  preferredStart: number,
+  duration: number,
+  occupiedIntervals: { start: number; end: number }[],
   workStart: number,
   workEnd: number,
-  busy: { start: number; end: number }[],
 ): { start: number; end: number } | null {
-  if (dur <= 0 || preferred + dur > workEnd && preferred < workStart) {
-    /* still try from workStart */
-  }
-  let cursor = Math.max(preferred, workStart);
-  if (cursor + dur > workEnd) return null;
+  if (duration <= 0) return null;
+  let cursor = Math.max(preferredStart, workStart);
+  if (cursor + duration > workEnd) return null;
 
-  const blocked = [...busy].sort((a, b) => a.start - b.start);
+  const blocked = [...occupiedIntervals].sort((a, b) => a.start - b.start);
 
-  // Cap iterations to avoid infinite loop
-  for (let guard = 0; guard < 500 && cursor + dur <= workEnd; guard++) {
-    let collision: { start: number; end: number } | null = null;
+  for (let i = 0; i < 1000 && cursor + duration <= workEnd; i++) {
+    let hit: { start: number; end: number } | null = null;
     for (const b of blocked) {
-      if (overlaps(cursor, cursor + dur, b.start, b.end)) {
-        collision = b;
+      if (intervalsOverlap(cursor, cursor + duration, b.start, b.end)) {
+        hit = b;
         break;
       }
     }
-    if (!collision) {
-      return { start: cursor, end: cursor + dur };
-    }
-    // Jump to end of blocking interval
-    cursor = Math.max(cursor + 1, collision.end);
+    if (!hit) return { start: cursor, end: cursor + duration };
+    // Jump past the conflicting interval (not a fixed +30)
+    cursor = Math.max(cursor + 1, hit.end);
   }
   return null;
 }
 
-function localMinutesInTz(tz: string): { hour: number; minOfDay: number; todayStr: string } {
+function localNow(tz: string): { hour: number; minOfDay: number; todayStr: string } {
   try {
-    const now = new Date();
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: tz,
       year: "numeric",
@@ -123,12 +108,11 @@ function localMinutesInTz(tz: string): { hour: number; minOfDay: number; todaySt
       hour: "numeric",
       minute: "numeric",
       hourCycle: "h23",
-    }).formatToParts(now);
-    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "0";
-    const hour = Number(get("hour"));
-    const minute = Number(get("minute"));
-    const todayStr = `${get("year")}-${get("month")}-${get("day")}`;
-    return { hour, minOfDay: hour * 60 + minute, todayStr };
+    }).formatToParts(new Date());
+    const g = (t: string) => parts.find((p) => p.type === t)?.value ?? "0";
+    const hour = Number(g("hour"));
+    const minute = Number(g("minute"));
+    return { hour, minOfDay: hour * 60 + minute, todayStr: `${g("year")}-${g("month")}-${g("day")}` };
   } catch {
     const n = new Date();
     return {
@@ -139,7 +123,7 @@ function localMinutesInTz(tz: string): { hour: number; minOfDay: number; todaySt
   }
 }
 
-function startMinutesOnDate(iso: string, tz: string, todayStr: string): number | null {
+function taskStartOnToday(iso: string, tz: string, todayStr: string): number | null {
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: tz,
@@ -150,10 +134,9 @@ function startMinutesOnDate(iso: string, tz: string, todayStr: string): number |
       minute: "numeric",
       hourCycle: "h23",
     }).formatToParts(new Date(iso));
-    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "0";
-    const ds = `${get("year")}-${get("month")}-${get("day")}`;
-    if (ds !== todayStr) return null;
-    return Number(get("hour")) * 60 + Number(get("minute"));
+    const g = (t: string) => parts.find((p) => p.type === t)?.value ?? "0";
+    if (`${g("year")}-${g("month")}-${g("day")}` !== todayStr) return null;
+    return Number(g("hour")) * 60 + Number(g("minute"));
   } catch {
     return null;
   }
@@ -179,63 +162,48 @@ serve(async (req) => {
     }
 
     const [{ data: tasks }, { data: profile }, { data: behaviorLogs }] = await Promise.all([
-      supabase
-        .from("tasks")
-        .select("*")
-        .neq("status", "done")
-        .eq("user_id", user.id)
-        .eq("archived", false),
-      supabase
-        .from("profiles")
-        .select("work_start, work_end, peak_start, peak_end, break_style, timezone")
-        .eq("id", user.id)
-        .single(),
-      supabase
-        .from("behavior_logs")
-        .select("*")
-        .eq("user_id", user.id)
-        .eq("metric_type", "peak_hour")
-        .order("recorded_at", { ascending: false })
-        .limit(1),
+      supabase.from("tasks").select("*").neq("status", "done").eq("user_id", user.id).eq("archived", false),
+      supabase.from("profiles").select("work_start, work_end, peak_start, peak_end, break_style, timezone").eq("id", user.id).single(),
+      supabase.from("behavior_logs").select("*").eq("user_id", user.id).eq("metric_type", "peak_hour").order("recorded_at", { ascending: false }).limit(1),
     ]);
 
     if (!tasks || tasks.length === 0) {
-      return new Response(
-        JSON.stringify({ picks: [], algorithm: "ahp-smart-picks", timestamp: new Date().toISOString() }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ picks: [], algorithm: "ahp-smart-picks", timestamp: new Date().toISOString() }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     let peakStartMin = parseHHMM(profile?.peak_start || profile?.work_start || "09:00");
-    let peakEndMin = parseHHMM(profile?.peak_end || profile?.work_end || "12:00");
+    let peakEndMin = parseHHMM(profile?.peak_end || "12:00");
     const workStartMin = parseHHMM(profile?.work_start || "09:00");
-    const workEndMin = parseHHMM(profile?.work_end || "17:00");
+    // Recommendation search window: respect work_end but allow evening if work_end is early
+    // so sequential long tasks can still get non-overlapping slots (recommendation-only).
+    const configuredEnd = parseHHMM(profile?.work_end || "17:00");
+    const workEndMin = Math.max(configuredEnd, 22 * 60); // up to 10 PM for suggestion packing
     let source: "behavior" | "personalization" | "general" = profile?.peak_start ? "personalization" : "general";
-    if (behaviorLogs && behaviorLogs[0]?.value) {
-      const v: any = behaviorLogs[0].value;
-      if (typeof v.hour === "number") {
-        peakStartMin = v.hour * 60;
-        peakEndMin = (v.hour + 2) * 60;
-        source = "behavior";
-      }
+    if (behaviorLogs?.[0]?.value && typeof (behaviorLogs[0].value as any).hour === "number") {
+      peakStartMin = (behaviorLogs[0].value as any).hour * 60;
+      peakEndMin = peakStartMin + 120;
+      source = "behavior";
     }
 
     const userTz = profile?.timezone || "UTC";
-    const { hour: localHour, minOfDay: localMin, todayStr } = localMinutesInTz(userTz);
+    const { hour: localHour, minOfDay: localMin, todayStr } = localNow(userTz);
 
-    // ---- Existing scheduled intervals for TODAY (busy) ----
-    const busy: { start: number; end: number; taskId?: string }[] = [
-      ...FIXED_BREAKS.map((b) => ({ start: b.start, end: b.end })),
-    ];
+    // Occupied: fixed breaks + existing scheduled tasks today
+    const occupied: { start: number; end: number; taskId?: string }[] = FIXED_BREAKS.map((b) => ({
+      start: b.start,
+      end: b.end,
+    }));
     for (const t of tasks as any[]) {
       if (!t.start_time) continue;
-      const sm = startMinutesOnDate(t.start_time, userTz, todayStr);
+      const sm = taskStartOnToday(t.start_time, userTz, todayStr);
       if (sm == null) continue;
       const dur = Math.max(5, Math.min(480, Number(t.estimated_duration) || 30));
-      busy.push({ start: sm, end: sm + dur, taskId: t.id });
+      occupied.push({ start: sm, end: sm + dur, taskId: t.id });
     }
 
-    // ---- STEP 1: existing AHP scoring (unchanged weights / reasons) ----
+    // --- Existing behavioral scoring (unchanged weights) ---
     type Scored = {
       id: string;
       title: string;
@@ -243,7 +211,6 @@ serve(async (req) => {
       priority: string;
       score: number;
       duration: number;
-      difficulty: string | null;
       preferredStart: number;
       breakdown: Record<string, number>;
     };
@@ -256,12 +223,11 @@ serve(async (req) => {
         const c = cognitiveFitScore(t.difficulty, localHour, peakStartMin, peakEndMin);
         const score = (u * W.urgency + q * W.quickWin + f * W.flow + c * W.cognitive) * 100;
         const priority = score >= 70 ? "high" : score >= 45 ? "medium" : "low";
-        const dur = Math.max(15, Math.min(180, Number(t.estimated_duration) || 30));
+        const duration = Math.max(15, Math.min(180, Number(t.estimated_duration) || 30));
 
-        // Preferred start from existing behavior logic
-        let preferred = Math.max(localMin, workStartMin);
-        if ((t.difficulty || "medium") === "hard") preferred = Math.max(preferred, peakStartMin);
-        else if ((t.difficulty || "medium") === "easy") preferred = Math.max(preferred, peakEndMin);
+        let preferredStart = Math.max(localMin, workStartMin);
+        if ((t.difficulty || "medium") === "hard") preferredStart = Math.max(preferredStart, peakStartMin);
+        else if ((t.difficulty || "medium") === "easy") preferredStart = Math.max(preferredStart, peakEndMin);
 
         const reasons: string[] = [];
         if (u >= 0.9) reasons.push("deadline is critical");
@@ -277,31 +243,29 @@ serve(async (req) => {
           reason: reasons.join("; "),
           priority,
           score: Math.round(score * 10) / 10,
-          duration: dur,
-          difficulty: t.difficulty ?? null,
-          preferredStart: preferred,
+          duration,
+          preferredStart,
           breakdown: { urgency: u, quick_win: q, flow: f, cognitive_fit: c },
         };
       })
       .sort((a, b) => b.score - a.score);
 
-    // ---- STEP 2–5: sequential slot allocation (no shared preferred-only start) ----
-    const occupied = busy.map((b) => ({ start: b.start, end: b.end }));
+    // --- Sequential non-overlapping allocation ---
+    // occupied grows with each assigned recommendation so the next task cannot reuse the same start.
     const picks: any[] = [];
 
     for (const item of scored) {
-      // Already scheduled today → report existing window (do not re-allocate or write DB)
-      const existing = busy.find((b) => b.taskId === item.id);
-      if (existing) {
+      const already = occupied.find((o) => o.taskId === item.id);
+      if (already) {
         picks.push({
           id: item.id,
           title: item.title,
           reason: item.reason + "; already scheduled today",
           priority: item.priority,
           score: item.score,
-          suggested_time: `${to12h(toHHMM(existing.start))} – ${to12h(toHHMM(existing.end))}`,
-          recommended_start: toHHMM(existing.start),
-          recommended_end: toHHMM(existing.end),
+          suggested_time: `${to12h(toHHMM(already.start))} – ${to12h(toHHMM(already.end))}`,
+          recommended_start: toHHMM(already.start),
+          recommended_end: toHHMM(already.end),
           duration: item.duration,
           breakdown: item.breakdown,
           available: true,
@@ -309,12 +273,12 @@ serve(async (req) => {
         continue;
       }
 
-      const slot = findAvailableSlot(
+      const slot = findNextAvailableSlot(
         item.preferredStart,
         item.duration,
+        occupied,
         workStartMin,
         workEndMin,
-        occupied,
       );
 
       if (!slot) {
@@ -334,7 +298,7 @@ serve(async (req) => {
         continue;
       }
 
-      // Immediately reserve so the next recommendation cannot reuse this interval
+      // CRITICAL: reserve immediately so next recommendation cannot start at the same time
       occupied.push({ start: slot.start, end: slot.end });
 
       picks.push({
@@ -352,12 +316,25 @@ serve(async (req) => {
       });
     }
 
-    // Prefer available picks; sort by recommended start time for display
+    // Display order: by allocated start time (collision-free timeline)
     const available = picks
       .filter((p) => p.available && p.recommended_start)
       .sort((a, b) => parseHHMM(a.recommended_start) - parseHHMM(b.recommended_start));
     const unavailable = picks.filter((p) => !p.available);
     const finalPicks = [...available, ...unavailable].slice(0, 5);
+
+    // Sanity: no two available picks may overlap
+    for (let i = 0; i < available.length; i++) {
+      for (let j = i + 1; j < available.length; j++) {
+        const a0 = parseHHMM(available[i].recommended_start);
+        const a1 = parseHHMM(available[i].recommended_end);
+        const b0 = parseHHMM(available[j].recommended_start);
+        const b1 = parseHHMM(available[j].recommended_end);
+        if (intervalsOverlap(a0, a1, b0, b1)) {
+          console.error("OVERLAP BUG", available[i].title, available[j].title);
+        }
+      }
+    }
 
     return new Response(
       JSON.stringify({

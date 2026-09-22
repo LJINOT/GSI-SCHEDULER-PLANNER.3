@@ -4,11 +4,7 @@ const EVENT = "gsi-dev-mode-changed";
 const UNLOCK_EVENT = "gsi-dev-unlock-changed";
 
 function uidSuffix(): string {
-  try {
-    return localStorage.getItem("gsi-auth-uid") || "anon";
-  } catch {
-    return "anon";
-  }
+  try { return localStorage.getItem("gsi-auth-uid") || "anon"; } catch { return "anon"; }
 }
 function KEY() { return `gsi-dev-mode:${uidSuffix()}`; }
 function UNLOCK_KEY() { return `gsi-dev-unlocked:${uidSuffix()}`; }

@@ -185,6 +185,8 @@ export default function Tasks() {
 
   const q = search.trim().toLowerCase();
 
+  // Single filter pipeline: non-archived tasks (from fetch) → search → status
+  // "All Status" means all non-archived statuses including completed (done).
   const filtered = tasks.filter((t) => {
     const projName = projects.find((p) => p.id === t.project_id)?.name?.toLowerCase() || "";
     const matchSearch =
@@ -192,8 +194,6 @@ export default function Tasks() {
       t.title.toLowerCase().includes(q) ||
       projName.includes(q);
     const matchStatus = statusFilter === "all" || t.status === statusFilter;
-    // Completed tasks live on the Completed page — only show them when explicitly filtered
-    if (t.status === "done" && statusFilter !== "done") return false;
     return matchSearch && matchStatus;
   });
 

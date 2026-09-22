@@ -9,13 +9,17 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-        if (session?.user?.id) localStorage.setItem("gsi-auth-uid", session.user.id);
-        else localStorage.removeItem("gsi-auth-uid");;
+        try {
+          if (session?.user?.id) localStorage.setItem("gsi-auth-uid", session.user.id);
+          else localStorage.removeItem("gsi-auth-uid");
+        } catch { /* ignore */ };
     });
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-        if (session?.user?.id) localStorage.setItem("gsi-auth-uid", session.user.id);
-        else localStorage.removeItem("gsi-auth-uid");;
+        try {
+          if (session?.user?.id) localStorage.setItem("gsi-auth-uid", session.user.id);
+          else localStorage.removeItem("gsi-auth-uid");
+        } catch { /* ignore */ };
     });
     return () => subscription.unsubscribe();
   }, []);

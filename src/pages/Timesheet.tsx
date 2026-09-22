@@ -15,7 +15,15 @@ export default function Timesheet() {
 
   useEffect(() => {
     supabase.from("tasks").select("*").neq("status", "done").then(({ data }) => setTasks(data || []));
-    supabase.from("time_entries").select("*, tasks(title)").order("start_time", { ascending: false }).limit(20).then(({ data }) => setEntries(data || []));
+    supabase.from("time_entries").select("*, tasks(title)").order("start_time", { ascending: false }).limit(20).then(({ data }) => {
+      const rows = data || [];
+      setEntries(rows);
+      const open = rows.find((e: any) => !e.end_time);
+      if (open) {
+        setActiveEntryId(open.id);
+        setActiveTimer(open.task_id);
+      }
+    });
   }, []);
 
   const startTimer = async (taskId: string) => {
@@ -33,7 +41,12 @@ export default function Timesheet() {
   const stopTimer = async () => {
     if (!activeEntryId) return;
     const now = new Date().toISOString();
-    const { error } = await supabase.from("time_entries").update({ end_time: now }).eq("id", activeEntryId);
+    const start = entries.find((e) => e.id === activeEntryId)?.start_time;
+    let duration: number | null = null;
+    if (start) {
+      duration = Math.max(1, Math.round((Date.now() - new Date(start).getTime()) / 60000));
+    }
+    const { error } = await supabase.from("time_entries").update({ end_time: now, duration }).eq("id", activeEntryId);
     if (error) toast.error(error.message);
     else { setActiveTimer(null); setActiveEntryId(null); toast.success("Timer stopped"); }
   };
@@ -76,6 +89,7 @@ export default function Timesheet() {
                 <p className="text-xs text-muted-foreground">
                   {formatPH(e.start_time, "MMM d, h:mm a")}
                   {e.end_time && ` — ${formatPH(e.end_time, "h:mm a")}`}
+                  {e.duration != null && ` · ${e.duration} min`}
                 </p>
               </div>
               <Clock className="h-4 w-4 text-muted-foreground" />

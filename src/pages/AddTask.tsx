@@ -15,7 +15,7 @@ import { TITLE_MAX } from "@/lib/validation";
 
 type Project = { id: string; name: string; color: string };
 
-const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
+const todayStr = new Date().toLocaleDateString("en-CA"); // uses browser local; prefer profile TZ when loaded
 const MAX_DATE = "9999-12-31"; // year must stay ≤ 9999
 
 const categories = [
@@ -128,6 +128,11 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
     if (title.trim().length > TITLE_MAX) { setErrors(p => ({ ...p, title: `Keep the title under ${TITLE_MAX} characters.` })); return; }
     if (dueDate && dueDate < todayStr) { toast.error("Due date cannot be in the past"); return; }
     if (startDate && startDate < todayStr) { toast.error("Start date cannot be in the past"); return; }
+    if (startDate && dueDate && startDate > dueDate) { toast.error("Start date must be earlier than due date"); return; }
+    if (startDate && dueDate && startDate === dueDate && startTime && dueTime && startTime >= dueTime) {
+      toast.error("Start time must be earlier than due time");
+      return;
+    }
     if (!isValidYear(dueDate) || !isValidYear(startDate)) {
       toast.error("Year cannot be greater than 9999");
       return;

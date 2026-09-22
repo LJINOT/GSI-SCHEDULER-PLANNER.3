@@ -4,6 +4,7 @@
 
 @layer base {
   :root {
+    color-scheme: light;
     --background: 225 100% 98%;
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
@@ -57,6 +58,7 @@
   }
 
   .dark {
+    color-scheme: dark;
     --background: 222 47% 7%;
     --foreground: 210 40% 96%;
     --card: 222 40% 10%;
@@ -193,46 +195,62 @@
 }
 
 
-/* THEME-AWARE ICONS — dark mode visibility */
-/* Lucide and other SVG icons inherit currentColor from text color */
+/* NATIVE TIME/DATE CONTROLS + ICON VISIBILITY */
+/* Lets the browser paint calendar/clock icons correctly for light/dark */
+:root {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
+}
+
+/* Ensure typed values stay readable */
+input[type="time"],
+input[type="date"],
+input[type="datetime-local"] {
+  color: hsl(var(--foreground));
+  background-color: hsl(var(--background));
+  color-scheme: inherit;
+}
+
+/* WebKit calendar/clock indicator — force contrast in both themes */
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 1;
+}
+
+/* Dark mode: invert the native black indicator so it becomes light */
+.dark input[type="time"]::-webkit-calendar-picker-indicator,
+.dark input[type="date"]::-webkit-calendar-picker-indicator,
+.dark input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.2);
+  opacity: 1;
+}
+
+/* Light mode: keep indicator dark enough on light backgrounds */
+:root:not(.dark) input[type="time"]::-webkit-calendar-picker-indicator,
+:root:not(.dark) input[type="date"]::-webkit-calendar-picker-indicator,
+:root:not(.dark) input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: none;
+  opacity: 0.85;
+}
+
+/* General SVG icons inherit theme text color */
 svg {
   color: inherit;
 }
-svg[stroke] {
-  stroke: currentColor;
-}
-/* Prefer theme tokens when parent sets text color */
-.text-foreground svg,
-.text-muted-foreground svg,
-.text-primary svg,
-.text-sidebar-foreground svg,
-.text-card-foreground svg {
-  color: inherit;
-}
-/* Icon-only buttons: ensure contrast in both themes */
 button svg,
-[role="button"] svg,
-a svg {
+a svg,
+[role="button"] svg {
   color: inherit;
 }
-/* Avoid pure black icons that disappear on dark backgrounds */
-.dark svg.text-black,
-.dark .text-black svg,
-.dark [class*="text-gray-900"] svg,
-.dark [class*="text-zinc-900"] svg,
-.dark [class*="text-slate-900"] svg {
-  color: hsl(var(--foreground)) !important;
-}
+
+/* Hardcoded black utilities become theme-aware in dark mode */
 .dark .text-black,
 .dark .text-gray-900,
 .dark .text-zinc-900,
 .dark .text-slate-900 {
   color: hsl(var(--foreground)) !important;
-}
-/* Icon boxes stay readable */
-.gsi-icon-box {
-  color: hsl(var(--foreground));
-}
-.gsi-icon-box svg {
-  color: inherit;
 }

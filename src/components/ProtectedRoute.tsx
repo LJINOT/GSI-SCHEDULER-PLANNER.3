@@ -1,3 +1,4 @@
+import { syncTimezoneFromProfile } from "@/lib/date-utils";
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -9,17 +10,23 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-        try {
-          if (session?.user?.id) localStorage.setItem("gsi-auth-uid", session.user.id);
-          else localStorage.removeItem("gsi-auth-uid");
-        } catch { /* ignore */ };
+        if (session?.user?.id) {
+          try { localStorage.setItem("gsi-auth-uid", session.user.id); } catch {}
+          supabase.from("profiles").select("timezone").eq("id", session.user.id).single()
+            .then(({ data }) => { if (data?.timezone) syncTimezoneFromProfile(data.timezone); });
+        } else {
+          try { localStorage.removeItem("gsi-auth-uid"); } catch {}
+        };
     });
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-        try {
-          if (session?.user?.id) localStorage.setItem("gsi-auth-uid", session.user.id);
-          else localStorage.removeItem("gsi-auth-uid");
-        } catch { /* ignore */ };
+        if (session?.user?.id) {
+          try { localStorage.setItem("gsi-auth-uid", session.user.id); } catch {}
+          supabase.from("profiles").select("timezone").eq("id", session.user.id).single()
+            .then(({ data }) => { if (data?.timezone) syncTimezoneFromProfile(data.timezone); });
+        } else {
+          try { localStorage.removeItem("gsi-auth-uid"); } catch {}
+        };
     });
     return () => subscription.unsubscribe();
   }, []);

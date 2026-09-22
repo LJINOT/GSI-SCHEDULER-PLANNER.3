@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Download, Loader2, FileSpreadsheet } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { TIMEZONES, getTimezone, setTimezone } from "@/lib/date-utils";
+import { TIMEZONES, getTimezone, setTimezone, syncTimezoneFromProfile } from "@/lib/date-utils";
 import { exportTasksCSV, exportProjectsCSV } from "@/lib/export-data";
 import { WorldClock } from "@/components/WorldClock";
 

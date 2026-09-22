@@ -13,7 +13,7 @@ import { motion } from "framer-motion";
 import { formatPH } from "@/lib/date-utils";
 import { statusLabel, priorityFromScore, PRIORITY_STYLES } from "@/lib/status";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Sector } from "recharts";
-import { loadCache } from "@/lib/persist-cache";
+import { loadCache, clearCache } from "@/lib/persist-cache";
 import { format, isToday, isTomorrow, isPast } from "date-fns";
 
 const fadeIn = { hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0 } };
@@ -121,8 +121,7 @@ export default function Dashboard() {
       supabase
         .from("tasks")
         .select("id, title, status, due_date, start_time, priority_score, category, project_id, estimated_duration")
-        .eq("user_id", user.id)
-        .eq("archived", false),
+        .eq("user_id", user.id),
       supabase.from("projects").select("id, name, color").eq("user_id", user.id),
       supabase.from("profiles").select("full_name").eq("id", user.id).single(),
     ]);
@@ -150,7 +149,6 @@ export default function Dashboard() {
     const { data: riskData } = await supabase
       .from("tasks")
       .select("id, title, status, due_date, start_time, priority_score, category, project_id, estimated_duration")
-      .eq("archived", false)
       .not("due_date", "is", null)
       .neq("status", "done");
 
@@ -167,7 +165,6 @@ export default function Dashboard() {
     const { data: focusData } = await supabase
       .from("tasks")
       .select("title")
-      .eq("archived", false)
       .neq("status", "done")
       .order("priority_score", { ascending: false, nullsFirst: false })
       .limit(1);
@@ -218,6 +215,7 @@ export default function Dashboard() {
   useEffect(() => {
     (async () => {
       setLoading(true);
+      await supabase.rpc("transition_due_task_statuses").catch(() => null);
       await Promise.all([fetchTasks(), fetchModuleSummaries(), loadTodayRecommendations()]);
       loadAdaptiveStatus();
       setLoading(false);
@@ -230,6 +228,7 @@ export default function Dashboard() {
     const channel = supabase
       .channel("dashboard-tasks")
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => {
+        clearCache(TODAY_CACHE_KEY);
         fetchTasks();
         fetchModuleSummaries();
         loadTodayRecommendations();

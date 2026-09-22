@@ -98,7 +98,7 @@ serve(async (req) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-    const { data: tasks } = await supabase.from("tasks").select("*").neq("status", "done").eq("user_id", user.id);
+    const { data: tasks } = await supabase.from("tasks").select("*").neq("status", "done").eq("user_id", user.id).eq("archived", false);
     if (!tasks || tasks.length === 0) {
       return new Response(JSON.stringify({ tasks: [], algorithm: "ahp-saaty", timestamp: new Date().toISOString() }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }

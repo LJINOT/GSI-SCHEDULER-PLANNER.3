@@ -29,24 +29,22 @@ const RANGES: { value: string; label: string; days: number | null }[] = [
   { value: "all", label: "All time", days: null },
 ];
 
-/** Start of calendar day N days ago in local browser time (ISO for Supabase filter).
- * days=0 → today 00:00:00 local.
- * days=7 → start of the day 6 days before today (7 calendar days including today).
- */
-function rangeStartIso(days: number | null): string | null {
-  if (days === null) return null;
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (days > 0) {
-    // Inclusive window of `days` calendar days ending today
-    start.setDate(start.getDate() - (days - 1));
-  }
-  return start.toISOString();
+/** Prefer completed_at; fall back to updated_at only for older rows. */
+function completionTime(t: { completed_at?: string | null; updated_at?: string | null }): number {
+  const raw = t.completed_at || t.updated_at;
+  if (!raw) return 0;
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : 0;
 }
 
-/** Completion timestamp for filtering/display: prefer completed_at */
-function completionTs(t: { completed_at?: string | null; updated_at?: string | null }): string | null {
-  return t.completed_at || t.updated_at || null;
+/** Inclusive start of local calendar window for N days (0 = today only). */
+function windowStartMs(days: number): number {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  if (days > 0) {
+    start.setDate(start.getDate() - (days - 1));
+  }
+  return start.getTime();
 }
 
 export default function Completed() {
@@ -54,90 +52,69 @@ export default function Completed() {
   const [range, setRange] = useState("30");
   const [search, setSearch] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
-  const [loading, setLoading] = useState(false);
 
-  /** Load completed tasks for the authenticated user, filtered by completed_at range. */
-  const fetchTasks = async (selectedRange: string = range) => {
-    setLoading(true);
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        setAllTasks([]);
-        return;
-      }
-
-      const sel = RANGES.find((r) => r.value === selectedRange);
-      const startIso = rangeStartIso(sel?.days ?? null);
-
-      // Query key conceptually: ["completed-tasks", userId, selectedRange]
-      let q = supabase
-        .from("tasks")
-        .select("*, projects(name)")
-        .eq("status", "done")
-        .eq("user_id", user.id)
-        .eq("archived", false)
-        .order("completed_at", { ascending: false, nullsFirst: false });
-
-      // Prefer completed_at; also accept rows that only have updated_at by not excluding nulls in SQL,
-      // then apply completed_at-or-updated_at boundary client-side for safety.
-      if (startIso) {
-        // Server-side filter: completed_at >= start OR (completed_at is null AND updated_at >= start)
-        // Supabase/PostgREST: use or() for the null-completed_at legacy rows
-        q = q.or(`completed_at.gte.${startIso},and(completed_at.is.null,updated_at.gte.${startIso})`);
-      }
-
-      const { data, error } = await q;
-      if (error) {
-        // Fallback without or() if schema/API rejects — filter client-side on completed_at
-        console.warn("Completed range query:", error.message);
-        const { data: fallback } = await supabase
-          .from("tasks")
-          .select("*, projects(name)")
-          .eq("status", "done")
-          .eq("user_id", user.id)
-          .eq("archived", false)
-          .order("updated_at", { ascending: false });
-        let list = fallback || [];
-        if (startIso) {
-          const cutoff = new Date(startIso).getTime();
-          list = list.filter((t) => {
-            const ts = completionTs(t);
-            return ts ? new Date(ts).getTime() >= cutoff : false;
-          });
-        }
-        setAllTasks(list);
-      } else {
-        // Extra client guard for exact boundary using completed_at
-        let list = data || [];
-        if (startIso) {
-          const cutoff = new Date(startIso).getTime();
-          list = list.filter((t) => {
-            const ts = completionTs(t);
-            return ts ? new Date(ts).getTime() >= cutoff : false;
-          });
-        }
-        setAllTasks(list);
-      }
-    } finally {
-      setLoading(false);
+  const fetchTasks = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setAllTasks([]);
+      return;
     }
+    // Load this user's completed tasks (range filter applied in filteredTasks below)
+    let query = supabase
+      .from("tasks")
+      .select("*, projects(name)")
+      .eq("status", "done")
+      .eq("user_id", user.id)
+      .order("updated_at", { ascending: false });
+
+    // archived=false when column exists — ignore error via fallback
+    const { data, error } = await query;
+    if (error) {
+      console.error("Completed fetch:", error.message);
+      setAllTasks([]);
+      return;
+    }
+    // Prefer non-archived when field present
+    const rows = (data || []).filter((t: any) => t.archived !== true);
+    setAllTasks(rows);
   };
 
-  // Re-fetch whenever the date range changes (must not reuse previous "All" results)
   useEffect(() => {
-    fetchTasks(range);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
+    fetchTasks();
+  }, []);
 
-  // Search is client-side on the already range-filtered set
+  /**
+   * Date range is applied HERE on every range change.
+   * Uses completed_at (not created_at / not primary updated_at).
+   * Changing the dropdown updates `range` → this memo recomputes → list refreshes.
+   */
   const filteredTasks = useMemo(() => {
+    const sel = RANGES.find((r) => r.value === range);
     let list = allTasks;
+
+    // Apply date window for every option except "all"
+    if (sel && sel.value !== "all") {
+      const days = sel.days; // 0 = today, 7 = last 7 calendar days, etc.
+      if (days !== null && days !== undefined) {
+        const cutoff = windowStartMs(days);
+        list = list.filter((t) => {
+          const ts = completionTime(t);
+          // Exclude tasks with no usable completion time from ranged views
+          if (!ts) return false;
+          return ts >= cutoff;
+        });
+      }
+    }
+
     if (search.trim()) {
       const q = search.trim().toLowerCase();
-      list = list.filter((t) => t.title?.toLowerCase().includes(q));
+      list = list.filter((t) => (t.title || "").toLowerCase().includes(q));
     }
+
+    // Newest completions first
+    list = [...list].sort((a, b) => completionTime(b) - completionTime(a));
     return list;
-  }, [allTasks, search]);
+  }, [allTasks, range, search]);
 
   const standAloneTasks = useMemo(() => filteredTasks.filter((t) => !t.project_id), [filteredTasks]);
   const projectTasks = useMemo(() => filteredTasks.filter((t) => t.project_id), [filteredTasks]);
@@ -175,7 +152,7 @@ export default function Completed() {
           <p className="text-xs text-muted-foreground">
             {t.category && `${t.category} · `}
             {t.projects?.name && `${t.projects.name} · `}
-            Completed {formatPH(completionTs(t) || t.updated_at, "MMM d, yyyy")} at {formatPH(completionTs(t) || t.updated_at, "h:mm a")}
+            Completed {formatPH(t.completed_at || t.updated_at, "MMM d, yyyy")} at {formatPH(t.completed_at || t.updated_at, "h:mm a")}
           </p>
         </div>
       </div>
@@ -196,7 +173,11 @@ export default function Completed() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-3xl font-bold">Completed</h1>
-          <p className="text-muted-foreground">{totalTasks} task{totalTasks !== 1 ? "s" : ""} completed</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            Showing <strong className="text-foreground">{filteredTasks.length}</strong> of{" "}
+            <strong className="text-foreground">{allTasks.length}</strong> completed
+            {range !== "all" ? ` · ${RANGES.find((r) => r.value === range)?.label}` : " · All time"}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
@@ -208,7 +189,7 @@ export default function Completed() {
               className="pl-8 w-[220px]"
             />
           </div>
-          <Select value={range} onValueChange={setRange}>
+          <Select value={range} onValueChange={(v) => { setRange(v); }}>
             <SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger>
             <SelectContent>
               {RANGES.map((r) => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
@@ -220,10 +201,7 @@ export default function Completed() {
       {totalTasks === 0 ? (
         <Card><CardContent className="py-16 text-center text-muted-foreground">
           <CheckCircle2 className="mx-auto h-12 w-12 mb-4 opacity-30" />
-          <p>{loading ? "Loading…" : `No completed tasks in this range`}</p>
-          {!loading && range !== "all" && (
-            <p className="text-xs mt-2 opacity-70">Try a wider date range or select All time.</p>
-          )}
+          <p>No completed tasks in the selected date range</p>
         </CardContent></Card>
       ) : (
         <>

@@ -121,7 +121,8 @@ export default function Dashboard() {
       supabase
         .from("tasks")
         .select("id, title, status, due_date, start_time, priority_score, category, project_id, estimated_duration")
-        .eq("user_id", user.id),
+        .eq("user_id", user.id)
+        .eq("archived", false),
       supabase.from("projects").select("id, name, color").eq("user_id", user.id),
       supabase.from("profiles").select("full_name").eq("id", user.id).single(),
     ]);
@@ -149,6 +150,7 @@ export default function Dashboard() {
     const { data: riskData } = await supabase
       .from("tasks")
       .select("id, title, status, due_date, start_time, priority_score, category, project_id, estimated_duration")
+      .eq("archived", false)
       .not("due_date", "is", null)
       .neq("status", "done");
 
@@ -165,6 +167,7 @@ export default function Dashboard() {
     const { data: focusData } = await supabase
       .from("tasks")
       .select("title")
+      .eq("archived", false)
       .neq("status", "done")
       .order("priority_score", { ascending: false, nullsFirst: false })
       .limit(1);
@@ -229,6 +232,7 @@ export default function Dashboard() {
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => {
         fetchTasks();
         fetchModuleSummaries();
+        loadTodayRecommendations();
       })
       .subscribe();
 

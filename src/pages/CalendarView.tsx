@@ -19,12 +19,14 @@ import {
 } from "@/components/ui/dialog";
 import { format, addDays, startOfWeek, addWeeks, subWeeks, addMonths, subMonths, isSameDay, isToday, startOfDay, startOfMonth, endOfMonth, eachDayOfInterval, getDay } from "date-fns";
 import { toast } from "sonner";
+import { priorityFromScore, PRIORITY_STYLES } from "@/lib/status";
 
 type Task = {
   id: string; title: string; description: string | null; due_date: string | null;
   status: string; category: string | null; estimated_duration: number | null;
   difficulty: string | null; priority_score: number | null; start_time: string | null;
 };
+
 type ViewMode = "day" | "week" | "month" | "schedule";
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -37,26 +39,56 @@ const toDateStr = (dt: string | null) => {
 };
 
 const priorityColor = (score: number | null) => {
-  if (!score) return "border-muted-foreground/30 border-dashed";
-  if (score >= 7) return "border-destructive bg-destructive/5";
-  if (score >= 4) return "border-primary bg-primary/5";
+  const p = priorityFromScore(score);
+  if (p === "high") return "border-destructive bg-destructive/5";
+  if (p === "medium") return "border-warning bg-warning/5";
   return "border-muted-foreground/40 border-dashed bg-muted/30";
 };
 
 const priorityLabel = (score: number | null) => {
-  if (!score) return "Low";
-  if (score >= 7) return "High";
-  if (score >= 4) return "Medium";
-  return "Low";
+  const p = priorityFromScore(score);
+  return p === "high" ? "High" : p === "medium" ? "Medium" : "Low";
 };
 
 const categoryColors: Record<string, string> = {
+  Assignment: "hsl(239, 84%, 67%)",
+  "Exam Review": "hsl(0, 84%, 60%)",
+  Project: "hsl(258, 90%, 66%)",
+  Research: "hsl(189, 94%, 43%)",
+  Reading: "hsl(160, 84%, 39%)",
+  "Lab Work": "hsl(38, 92%, 50%)",
+  Presentation: "hsl(330, 81%, 60%)",
+  Personal: "hsl(280, 50%, 50%)",
+  Health: "hsl(340, 60%, 50%)",
+  Errands: "hsl(40, 60%, 50%)",
+  Chores: "hsl(30, 40%, 45%)",
+  Social: "hsl(200, 70%, 50%)",
+  Finance: "hsl(150, 50%, 40%)",
+  Fitness: "hsl(10, 70%, 50%)",
+  "Office Work": "hsl(220, 70%, 50%)",
+  Meeting: "hsl(210, 60%, 45%)",
+  Construction: "hsl(25, 50%, 40%)",
+  "Field Work": "hsl(90, 40%, 40%)",
+  Freelancing: "hsl(258, 70%, 55%)",
+  "Virtual Assistant": "hsl(239, 70%, 55%)",
+  "Client Communication": "hsl(200, 60%, 45%)",
+  "Email Management": "hsl(210, 50%, 50%)",
+  "Calendar Scheduling": "hsl(180, 50%, 45%)",
+  "Project Tracking": "hsl(260, 50%, 50%)",
+  "Social Media Management": "hsl(330, 60%, 55%)",
+  "Content Creation": "hsl(280, 55%, 50%)",
+  "Graphic Design": "hsl(300, 50%, 50%)",
+  "Video Editing": "hsl(320, 50%, 45%)",
+  "Data Entry": "hsl(200, 30%, 45%)",
+  "Research Task": "hsl(189, 70%, 40%)",
+  Bookkeeping: "hsl(150, 40%, 40%)",
   work: "hsl(220, 70%, 50%)",
   study: "hsl(160, 60%, 40%)",
   personal: "hsl(280, 50%, 50%)",
   health: "hsl(340, 60%, 50%)",
   other: "hsl(40, 60%, 50%)",
 };
+const catColor = (cat: string | null) => categoryColors[cat || ""] || categoryColors.other;
 
 export default function CalendarView() {
   const [viewMode, setViewMode] = useState<ViewMode>("week");
@@ -65,7 +97,7 @@ export default function CalendarView() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [filter, setFilter] = useState<"high" | "risk" | null>("high");
+  const [filter, setFilter] = useState<"high" | "medium" | "low" | "risk" | null>(null);
   const [smartSuggestOpen, setSmartSuggestOpen] = useState(false);
   const [smartSuggestTask, setSmartSuggestTask] = useState<Task | null>(null);
   const [smartSuggestLoading, setSmartSuggestLoading] = useState(false);
@@ -75,7 +107,7 @@ export default function CalendarView() {
 
   const fetchTasks = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from("tasks").select("*");
+    const { data } = await supabase.from("tasks").select("*").eq("archived", false);
     setTasks(data || []);
     setLoading(false);
   }, []);
@@ -83,13 +115,11 @@ export default function CalendarView() {
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
   const goToday = () => setCurrentDate(new Date());
-
   const goPrev = () => {
     if (viewMode === "month") setCurrentDate(d => subMonths(d, 1));
     else if (viewMode === "week") setCurrentDate(d => subWeeks(d, 1));
     else setCurrentDate(d => addDays(d, -1));
   };
-
   const goNext = () => {
     if (viewMode === "month") setCurrentDate(d => addMonths(d, 1));
     else if (viewMode === "week") setCurrentDate(d => addWeeks(d, 1));
@@ -190,7 +220,7 @@ export default function CalendarView() {
     return diff <= 2 && diff >= -1;
   }), [tasks]);
 
-  const unscheduledCount = tasks.filter(t => !t.due_date && t.status !== "done").length;
+  const unscheduledCount = tasks.filter(t => !t.start_time && t.status !== "done").length;
   const topSuggestion = tasks.find(t => !t.due_date && t.status !== "done" && (t.priority_score || 0) >= 5);
 
   // Mini calendar modifiers based on active filter
@@ -198,6 +228,7 @@ export default function CalendarView() {
     const hasTask = (d: Date) => datesWithTasks.has(format(d, "yyyy-MM-dd"));
     const isHighPriority = (d: Date) => highPriorityDates.has(format(d, "yyyy-MM-dd"));
     const isRisk = (d: Date) => riskDates.has(format(d, "yyyy-MM-dd"));
+
     if (filter === "high") return { hasTask, isHighPriority };
     if (filter === "risk") return { hasTask, isRisk };
     return { hasTask };
@@ -214,13 +245,12 @@ export default function CalendarView() {
 
   // Drag handlers
   const handleDragStart = (task: Task) => setDraggedTask(task);
-
   const handleDrop = async (day: Date, hour: number) => {
     if (!draggedTask) return;
     const newDate = new Date(day);
     newDate.setHours(hour, 0, 0, 0);
     const isoDate = newDate.toISOString();
-    const { error } = await supabase.from("tasks").update({ due_date: isoDate }).eq("id", draggedTask.id);
+    const { error } = await supabase.from("tasks").update({ start_time: isoDate  }).eq("id", draggedTask.id);
     if (error) toast.error("Failed to move task");
     else {
       setTasks(prev => prev.map(t => t.id === draggedTask.id ? { ...t, due_date: isoDate } : t));
@@ -304,15 +334,11 @@ export default function CalendarView() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-3rem)] -m-6">
-      {/* Top Bar – already has both arrows (kept as-is) */}
+      {/* Top Bar */}
       <div className="flex items-center gap-2 px-4 py-2 border-b bg-card shrink-0">
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" onClick={goPrev} aria-label="Previous">
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="icon" onClick={goNext} aria-label="Next">
-            <ChevronRight className="h-4 w-4" />
-          </Button>
+          <Button variant="ghost" size="icon" onClick={goPrev}><ChevronLeft className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon" onClick={goNext}><ChevronRight className="h-4 w-4" /></Button>
           <Button variant="outline" size="sm" onClick={goToday}>Today</Button>
         </div>
         <h2 className="font-display text-lg font-semibold min-w-[160px]">{headerTitle}</h2>
@@ -351,27 +377,12 @@ export default function CalendarView() {
         {/* Left Sidebar */}
         <div className="w-56 border-r bg-card shrink-0 flex flex-col">
           <ScrollArea className="flex-1 p-3">
-            {/* ─── FIXED Mini Calendar ─── */}
-            {/* The previous className was too aggressive and clipped the right arrow.
-                We now keep both nav buttons visible and properly sized. */}
+            {/* Mini Calendar with task markers */}
             <Calendar
               mode="single"
               selected={currentDate}
               onSelect={d => d && setCurrentDate(d)}
-              className="p-0 w-full"
-              classNames={{
-                // Keep the compact day cells
-                table: "w-full",
-                head_cell: "w-7 text-[11px]",
-                cell: "h-7 w-7 text-center text-[11px] p-0",
-                day: "h-7 w-7 p-0 text-[11px]",
-                // Critical: ensure both arrows stay visible and clickable
-                caption: "flex justify-center pt-1 relative items-center mb-1",
-                nav: "flex items-center gap-1",
-                nav_button: "h-7 w-7 bg-transparent p-0 opacity-70 hover:opacity-100",
-                nav_button_previous: "absolute left-0",
-                nav_button_next: "absolute right-0",
-              }}
+              className="p-0 [&_table]:w-full [&_td]:h-7 [&_td]:w-7 [&_button]:h-7 [&_button]:w-7 [&_button]:text-[11px]"
               modifiers={calendarModifiers}
               modifiersClassNames={calendarModifierStyles}
             />
@@ -553,6 +564,7 @@ function TimeGrid({
             </div>
           ))}
         </div>
+
         {HOURS.map(hour => (
           <div key={hour} className="flex" style={{ height: BLOCK_HEIGHT }}>
             <div className="w-14 shrink-0 text-[11px] text-muted-foreground text-right pr-2 pt-0.5">
@@ -565,6 +577,7 @@ function TimeGrid({
                 const startH = 9 + i;
                 return startH === hour;
               });
+
               return (
                 <div
                   key={day.toISOString()}
@@ -717,11 +730,13 @@ function TaskInspector({ task, onClose, onRefresh }: { task: Task; onClose: () =
         <h3 className="font-display font-semibold text-sm">Task Inspector</h3>
         <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>
       </div>
+
       <div className="space-y-4 flex-1">
         <div>
           <p className="font-semibold">{task.title}</p>
           {task.description && <p className="text-sm text-muted-foreground mt-1">{task.description}</p>}
         </div>
+
         <div className="grid grid-cols-2 gap-2 text-sm">
           <div>
             <p className="text-xs text-muted-foreground">Start</p>
@@ -750,7 +765,9 @@ function TaskInspector({ task, onClose, onRefresh }: { task: Task; onClose: () =
             <Badge variant="outline" className="text-xs capitalize">{task.status.replace("_", " ")}</Badge>
           </div>
         </div>
+
         <Separator />
+
         <div>
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1">
             <Sparkles className="h-3 w-3" /> Smart Actions
@@ -767,13 +784,15 @@ function TaskInspector({ task, onClose, onRefresh }: { task: Task; onClose: () =
             </Button>
           </div>
         </div>
+
         <Separator />
+
         <div>
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1">
             <Brain className="h-3 w-3" /> Behavioral Insights
           </p>
           <div className="p-2 rounded-lg bg-accent/50 text-xs text-muted-foreground">
-            <p>You usually finish <strong className="text-foreground">{task.category || "similar"}</strong> tasks in ~{(task.estimated_duration || 30) + Math.floor(Math.random() * 15)}m</p>
+            <p>Not enough activity data yet.<strong className="text-foreground">{task.category || "similar"}</strong> tasks in ~{(task.estimated_duration || 30) + 0}m</p>
           </div>
         </div>
       </div>

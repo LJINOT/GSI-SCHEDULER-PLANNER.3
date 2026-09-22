@@ -62,6 +62,105 @@ function to12hRange(suggested?: string): string {
   return suggested;
 }
 
+
+/** Client-side sequential allocation — safety net if edge function is outdated */
+function allocateNonOverlapping(
+  picks: Suggestion[],
+  workStart = "09:00",
+  workEnd = "22:00",
+): Suggestion[] {
+  const parse = (s: string) => {
+    const m = s.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    const ap = m[3]?.toUpperCase();
+    if (ap === "PM" && h < 12) h += 12;
+    if (ap === "AM" && h === 12) h = 0;
+    return h * 60 + min;
+  };
+  const to12 = (mins: number) => {
+    const h24 = Math.floor(mins / 60) % 24;
+    const m = mins % 60;
+    const ap = h24 >= 12 ? "PM" : "AM";
+    const h = ((h24 + 11) % 12) + 1;
+    return `${h}:${String(m).padStart(2, "0")} ${ap}`;
+  };
+  const FIXED = [
+    { start: 9 * 60, end: 9 * 60 + 15 },
+    { start: 12 * 60, end: 13 * 60 },
+    { start: 15 * 60, end: 15 * 60 + 15 },
+  ];
+  const ws = parse(workStart) ?? 9 * 60;
+  const we = parse(workEnd) ?? 22 * 60;
+  const occupied = [...FIXED];
+  const overlap = (a0: number, a1: number, b0: number, b1: number) => a0 < b1 && a1 > b0;
+  const find = (pref: number, dur: number) => {
+    let c = Math.max(pref, ws);
+    for (let i = 0; i < 500 && c + dur <= we; i++) {
+      const hit = occupied.find((b) => overlap(c, c + dur, b.start, b.end));
+      if (!hit) return { start: c, end: c + dur };
+      c = Math.max(c + 1, hit.end);
+    }
+    return null;
+  };
+
+  // Detect if backend already produced non-overlapping starts
+  const starts = picks
+    .map((p) => {
+      const part = (p.suggested_time || "").split("–")[0]?.trim() || (p.suggested_time || "").split("-")[0]?.trim();
+      return part ? parse(part.replace(/–/g, "").trim()) : null;
+    })
+    .filter((x): x is number => x != null);
+  const uniqueStarts = new Set(starts);
+  if (starts.length >= 2 && uniqueStarts.size === starts.length) {
+    // likely already unique starts — still check full overlap
+    let anyOverlap = false;
+    for (let i = 0; i < picks.length; i++) {
+      for (let j = i + 1; j < picks.length; j++) {
+        const a = (picks[i].suggested_time || "").split(/[–-]/).map((s) => parse(s.trim()));
+        const b = (picks[j].suggested_time || "").split(/[–-]/).map((s) => parse(s.trim()));
+        if (a[0] != null && a[1] != null && b[0] != null && b[1] != null && overlap(a[0], a[1], b[0], b[1])) {
+          anyOverlap = true;
+        }
+      }
+    }
+    if (!anyOverlap) return picks;
+  }
+
+  const out: Suggestion[] = [];
+  for (const p of picks) {
+    if ((p.suggested_time || "").toLowerCase().includes("no available")) {
+      out.push(p);
+      continue;
+    }
+    const dur = Math.max(15, (p as any).duration || 30);
+    // preferred from current suggested start if parseable, else now-ish
+    const prefPart = (p.suggested_time || "").split(/[–-]/)[0]?.trim();
+    let pref = prefPart ? parse(prefPart) : null;
+    if (pref == null) pref = ws;
+    const slot = find(pref, dur);
+    if (!slot) {
+      out.push({ ...p, suggested_time: "No available time slot" });
+      continue;
+    }
+    occupied.push({ start: slot.start, end: slot.end });
+    out.push({
+      ...p,
+      suggested_time: `${to12(slot.start)} – ${to12(slot.end)}`,
+      duration: dur,
+    } as Suggestion);
+  }
+  // sort by start
+  out.sort((a, b) => {
+    const pa = parse((a.suggested_time || "").split(/[–-]/)[0]?.trim() || "") ?? 0;
+    const pb = parse((b.suggested_time || "").split(/[–-]/)[0]?.trim() || "") ?? 0;
+    return pa - pb;
+  });
+  return out;
+}
+
+
 function confidenceFromScore(score?: number): { label: string; className: string } {
   const s = score ?? 0;
   if (s >= 70) return { label: "High", className: "bg-success/15 text-success border-success/30" };
@@ -235,7 +334,8 @@ export default function SmartSuggestions() {
 
       const { data, error } = await supabase.functions.invoke("smart-picks", { body: {} });
       if (error) throw error;
-      const next: Payload = { ...(data || {}), picks: data?.picks || [] };
+      const rawPicks = (data?.picks || []) as Suggestion[];
+      const next: Payload = { ...(data || {}), picks: allocateNonOverlapping(rawPicks) };
       setPayload(next);
       saveCache(CACHE_KEY, next);
       if (next.timestamp) setLastAnalyzedAt(next.timestamp);

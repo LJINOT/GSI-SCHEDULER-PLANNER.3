@@ -6,7 +6,14 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const W = { urgency: 0.45, quickWin: 0.15, flow: 0.15, cognitive: 0.15, behavior: 0.10 };
+const W = { urgency: 0.50, quickWin: 0.20, flow: 0.15, cognitive: 0.15 };
+
+/** Fixed GSI breaks (minutes from midnight) — must not place recommendations over these */
+const FIXED_BREAKS = [
+  { start: 9 * 60, end: 9 * 60 + 15 },   // 9:00 Snack
+  { start: 12 * 60, end: 13 * 60 },      // 12:00 Lunch
+  { start: 15 * 60, end: 15 * 60 + 15 }, // 3:00 Snack
+];
 
 function urgencyScore(due?: string | null): number {
   if (!due) return 0.15;
@@ -18,6 +25,7 @@ function urgencyScore(due?: string | null): number {
   if (hoursLeft < 168) return 0.35;
   return 0.15;
 }
+
 function quickWinScore(min?: number): number {
   const m = min || 30;
   if (m <= 15) return 1.0;
@@ -26,11 +34,13 @@ function quickWinScore(min?: number): number {
   if (m <= 120) return 0.3;
   return 0.1;
 }
+
 function flowScore(status?: string): number {
   if (status === "in_progress") return 1.0;
   if (status === "todo") return 0.6;
   return 0.3;
 }
+
 function parseHHMM(s: string): number {
   const [h, m] = s.split(":").map(Number);
   return h * 60 + (m || 0);
@@ -45,6 +55,7 @@ function to12h(hhmm: string): string {
   const hr = ((h + 11) % 12) + 1;
   return `${hr}:${String(m).padStart(2, "0")} ${period}`;
 }
+
 function cognitiveFitScore(difficulty: string | undefined, localHour: number, peakStart: number, peakEnd: number): number {
   const d = (difficulty || "medium").toLowerCase();
   const inPeak = localHour >= Math.floor(peakStart / 60) && localHour < Math.ceil(peakEnd / 60);
@@ -52,25 +63,47 @@ function cognitiveFitScore(difficulty: string | undefined, localHour: number, pe
   if (localHour >= 12 && localHour < 17) return d === "medium" ? 0.85 : d === "hard" ? 0.55 : 0.65;
   return d === "easy" ? 0.95 : d === "medium" ? 0.55 : 0.3;
 }
-function peakFromHistogram(hist: number[]): number {
-  let best = 9, bestScore = -1;
-  for (let h = 0; h < 24; h++) {
-    const score = hist[h] * 2 + hist[(h + 23) % 24] + hist[(h + 1) % 24];
-    if (score > bestScore) { bestScore = score; best = h; }
-  }
-  return best;
+
+function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  return aStart < bEnd && aEnd > bStart;
 }
-function localHourInTz(tz: string): number {
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).formatToParts(new Date());
-    return Number(parts.find((p) => p.type === "hour")?.value ?? 0);
-  } catch {
-    return new Date().getUTCHours();
+
+/** Find next free slot of `dur` minutes at/after preferredStart, avoiding busy intervals and fixed breaks */
+function findAvailableSlot(
+  preferredStart: number,
+  dur: number,
+  workStart: number,
+  workEnd: number,
+  busy: { start: number; end: number }[],
+): { start: number; end: number } | null {
+  if (dur <= 0) return null;
+  let cursor = Math.max(preferredStart, workStart);
+
+  const blocked = [
+    ...FIXED_BREAKS.map((b) => ({ start: b.start, end: b.end })),
+    ...busy,
+  ].sort((a, b) => a.start - b.start);
+
+  // Scan up to end of work day (and a bit for next-day wrap not supported — stay same day)
+  while (cursor + dur <= workEnd) {
+    let hit: { start: number; end: number } | null = null;
+    for (const b of blocked) {
+      if (overlaps(cursor, cursor + dur, b.start, b.end)) {
+        hit = b;
+        break;
+      }
+    }
+    if (!hit) {
+      return { start: cursor, end: cursor + dur };
+    }
+    cursor = Math.max(cursor + 1, hit.end);
   }
+  return null;
 }
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+
   try {
     const authHeader = req.headers.get("authorization");
     const supabase = createClient(
@@ -78,106 +111,190 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_ANON_KEY")!,
       { global: { headers: { Authorization: authHeader! } } },
     );
+
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const [{ data: tasks }, { data: profile }, { data: entries }, { data: prevHist }] = await Promise.all([
-      supabase.from("tasks").select("*").eq("user_id", user.id).eq("archived", false).neq("status", "done"),
+    const [{ data: tasks }, { data: profile }, { data: behaviorLogs }] = await Promise.all([
+      supabase.from("tasks").select("*").neq("status", "done").eq("user_id", user.id).eq("archived", false),
       supabase.from("profiles").select("work_start, work_end, peak_start, peak_end, break_style, timezone").eq("id", user.id).single(),
-      supabase.from("time_entries").select("start_time, end_time, duration, task_id").eq("user_id", user.id).not("end_time", "is", null).order("start_time", { ascending: false }).limit(200),
-      supabase.from("recommendation_history").select("id, picks, created_at").eq("user_id", user.id).eq("source", "smart-picks").order("created_at", { ascending: false }).limit(1),
+      supabase.from("behavior_logs").select("*").eq("user_id", user.id).eq("metric_type", "peak_hour").order("recorded_at", { ascending: false }).limit(1),
     ]);
 
     if (!tasks || tasks.length === 0) {
-      return new Response(JSON.stringify({ picks: [], algorithm: "ahp-smart-picks", timestamp: new Date().toISOString(), insufficient_behavior_data: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ picks: [], algorithm: "ahp-smart-picks", timestamp: new Date().toISOString() }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const tz = profile?.timezone || "UTC";
     let peakStartMin = parseHHMM(profile?.peak_start || profile?.work_start || "09:00");
-    let peakEndMin = parseHHMM(profile?.peak_end || "12:00");
+    let peakEndMin = parseHHMM(profile?.peak_end || profile?.work_end || "12:00");
     const workStartMin = parseHHMM(profile?.work_start || "09:00");
     const workEndMin = parseHHMM(profile?.work_end || "17:00");
-    let peakSource: "behavior" | "personalization" | "general" = profile?.peak_start ? "personalization" : "general";
+    let source: "behavior" | "personalization" | "general" = profile?.peak_start ? "personalization" : "general";
+    if (behaviorLogs && behaviorLogs[0]?.value) {
+      const v: any = behaviorLogs[0].value;
+      if (typeof v.hour === "number") {
+        peakStartMin = v.hour * 60;
+        peakEndMin = (v.hour + 2) * 60;
+        source = "behavior";
+      }
+    }
 
-    const hist = Array(24).fill(0) as number[];
-    const entryList = entries || [];
-    for (const e of entryList) {
+    const userTz = profile?.timezone || "UTC";
+    let localHour = 0;
+    let localMin = 0;
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: userTz,
+        hour: "numeric",
+        minute: "numeric",
+        hourCycle: "h23",
+      }).formatToParts(new Date());
+      localHour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+      localMin = localHour * 60 + Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+    } catch {
+      const n = new Date();
+      localHour = n.getUTCHours();
+      localMin = n.getUTCHours() * 60 + n.getUTCMinutes();
+    }
+
+    // Busy intervals from existing scheduled tasks (do not modify schedules)
+    const todayParts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: userTz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const y = todayParts.find((p) => p.type === "year")?.value;
+    const mo = todayParts.find((p) => p.type === "month")?.value;
+    const da = todayParts.find((p) => p.type === "day")?.value;
+    const todayStr = `${y}-${mo}-${da}`;
+
+    const busy: { start: number; end: number; taskId: string }[] = [];
+    for (const t of tasks as any[]) {
+      if (!t.start_time) continue;
       try {
-        const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).formatToParts(new Date(e.start_time));
-        const h = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
-        hist[h] += 1;
-      } catch { /* skip */ }
-    }
-    const behaviorSamples = entryList.length;
-    if (behaviorSamples >= 3) {
-      const peakH = peakFromHistogram(hist);
-      peakStartMin = peakH * 60;
-      peakEndMin = Math.min(24 * 60, peakH * 60 + 120);
-      peakSource = "behavior";
+        const stParts = new Intl.DateTimeFormat("en-CA", {
+          timeZone: userTz,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "numeric",
+          minute: "numeric",
+          hourCycle: "h23",
+        }).formatToParts(new Date(t.start_time));
+        const ds = `${stParts.find((p) => p.type === "year")?.value}-${stParts.find((p) => p.type === "month")?.value}-${stParts.find((p) => p.type === "day")?.value}`;
+        if (ds !== todayStr) continue;
+        const sh = Number(stParts.find((p) => p.type === "hour")?.value ?? 0);
+        const sm = Number(stParts.find((p) => p.type === "minute")?.value ?? 0);
+        const startM = sh * 60 + sm;
+        const dur = Math.max(5, Math.min(480, t.estimated_duration || 30));
+        busy.push({ start: startM, end: startM + dur, taskId: t.id });
+      } catch {
+        /* skip bad timestamp */
+      }
     }
 
-    const localHour = localHourInTz(tz);
-    const localMin = localHour * 60;
-    const factorsUsed = ["urgency", "quick_win", "flow", "cognitive_fit"];
-    if (behaviorSamples >= 3) factorsUsed.push("behavior_peak");
-
-    const scored = tasks.map((t: any) => {
+    // Score all tasks first (existing AHP logic)
+    const scored = (tasks as any[]).map((t) => {
       const u = urgencyScore(t.due_date);
       const q = quickWinScore(t.estimated_duration);
       const f = flowScore(t.status);
       const c = cognitiveFitScore(t.difficulty, localHour, peakStartMin, peakEndMin);
-      const b = behaviorSamples >= 3 ? Math.min(1, hist[Math.floor(peakStartMin / 60)] / Math.max(1, Math.max(...hist))) : 0.5;
-      const score = (u * W.urgency + q * W.quickWin + f * W.flow + c * W.cognitive + b * W.behavior) * 100;
+      const score = (u * W.urgency + q * W.quickWin + f * W.flow + c * W.cognitive) * 100;
       const priority = score >= 70 ? "high" : score >= 45 ? "medium" : "low";
       const dur = Math.max(15, Math.min(180, t.estimated_duration || 30));
-      let slotStart = Math.max(localMin, workStartMin);
-      if ((t.difficulty || "medium") === "hard") slotStart = Math.max(slotStart, peakStartMin);
-      else if ((t.difficulty || "medium") === "easy") slotStart = Math.max(slotStart, peakEndMin);
-      for (const [bs, be] of [[9*60, 9*60+15], [12*60, 13*60], [15*60, 15*60+15]]) {
-        if (slotStart < be && slotStart + dur > bs) slotStart = be;
-      }
-      if (slotStart + dur > workEndMin) slotStart = Math.max(workStartMin, workEndMin - dur);
-      const suggested_time = `${to12h(toHHMM(slotStart))} – ${to12h(toHHMM(slotStart + dur))}`;
+
       const reasons: string[] = [];
-      if (u >= 0.9) reasons.push("deadline is critical or overdue");
+      if (u >= 0.9) reasons.push("deadline is critical");
       else if (u >= 0.6) reasons.push("deadline within 72h");
-      if (f >= 1) reasons.push("already in progress");
-      if (q >= 0.8) reasons.push("short duration — quick win");
-      if (c >= 0.85) reasons.push("fits your current energy window");
-      if (behaviorSamples >= 3 && peakSource === "behavior") reasons.push(`aligns with your observed peak around ${to12h(toHHMM(peakStartMin))}`);
-      if (!reasons.length) reasons.push("balanced score across available factors");
+      if (q >= 0.8) reasons.push("quick win (≤30 min)");
+      if (f >= 1.0) reasons.push("already in progress — preserve flow");
+      if (c >= 0.9) reasons.push("good fit for your peak window");
+      if (!reasons.length) reasons.push("balanced AHP score for current moment");
+
       return {
-        id: t.id, title: t.title, reason: reasons.join("; "), priority,
-        score: Math.round(score * 10) / 10, suggested_time,
-        estimated_duration: t.estimated_duration ?? null,
-        breakdown: { urgency: u, quick_win: q, flow: f, cognitive_fit: c, behavior: behaviorSamples >= 3 ? b : undefined },
-        factors_used: factorsUsed,
+        id: t.id,
+        title: t.title,
+        reason: reasons.join("; "),
+        priority,
+        score: Math.round(score * 10) / 10,
+        duration: dur,
+        difficulty: t.difficulty,
+        breakdown: { urgency: u, quick_win: q, flow: f, cognitive_fit: c },
       };
-    });
-    scored.sort((a, b) => b.score - a.score);
-    const picks = scored.slice(0, 10);
+    }).sort((a, b) => b.score - a.score);
 
-    await supabase.from("recommendation_history").insert({
-      user_id: user.id, source: "smart-picks",
-      picks: picks.map((p) => ({ id: p.id, title: p.title, suggested_time: p.suggested_time, score: p.score, priority: p.priority })),
-      factors: { weights: W, peak_source: peakSource, behavior_samples: behaviorSamples },
-    });
-    await supabase.from("behavior_logs").insert({
-      user_id: user.id, metric_type: "smart_picks_run", value: { count: picks.length, peak_source: peakSource },
-    });
+    // Assign non-overlapping available slots (recommendations only — no DB schedule writes)
+    const occupied = busy.map((b) => ({ start: b.start, end: b.end }));
+    const picks: any[] = [];
 
-    const previous = prevHist?.[0] || null;
+    for (const item of scored.slice(0, 8)) {
+      // Prefer peak for hard tasks, after peak for easy
+      let preferred = Math.max(localMin, workStartMin);
+      if ((item.difficulty || "medium") === "hard") preferred = Math.max(preferred, peakStartMin);
+      else if ((item.difficulty || "medium") === "easy") preferred = Math.max(preferred, peakEndMin);
+
+      // Skip if this task already has a schedule today — recommend that existing slot only as info, don't re-block
+      const already = busy.find((b) => b.taskId === item.id);
+      if (already) {
+        picks.push({
+          ...item,
+          suggested_time: `${to12h(toHHMM(already.start))} – ${to12h(toHHMM(already.end))}`,
+          recommended_start: toHHMM(already.start),
+          recommended_end: toHHMM(already.end),
+          duration: item.duration,
+          reason: item.reason + "; already scheduled today",
+          available: true,
+        });
+        continue;
+      }
+
+      const slot = findAvailableSlot(preferred, item.duration, workStartMin, workEndMin, occupied);
+      if (!slot) {
+        picks.push({
+          ...item,
+          suggested_time: "No available time slot found today",
+          recommended_start: null,
+          recommended_end: null,
+          duration: item.duration,
+          reason: item.reason + "; no free slot in work window",
+          available: false,
+        });
+        continue;
+      }
+
+      occupied.push({ start: slot.start, end: slot.end });
+      picks.push({
+        id: item.id,
+        title: item.title,
+        reason: item.reason,
+        priority: item.priority,
+        score: item.score,
+        suggested_time: `${to12h(toHHMM(slot.start))} – ${to12h(toHHMM(slot.end))}`,
+        recommended_start: toHHMM(slot.start),
+        recommended_end: toHHMM(slot.end),
+        duration: item.duration,
+        breakdown: item.breakdown,
+        available: true,
+      });
+    }
+
+    // Return top 5 with real slots preferred
+    const finalPicks = picks.filter((p) => p.available).slice(0, 5);
+    const unavailable = picks.filter((p) => !p.available).slice(0, 2);
+    const out = [...finalPicks, ...unavailable].slice(0, 5);
+
     return new Response(JSON.stringify({
-      picks,
-      weights: { urgency: W.urgency, quickWin: W.quickWin, flow: W.flow, cognitive: W.cognitive, behavior: W.behavior },
-      factors_used: factorsUsed, peak_source: peakSource,
+      picks: out,
+      weights: W,
+      peak_source: source,
       peak_window: `${to12h(toHHMM(peakStartMin))} – ${to12h(toHHMM(peakEndMin))}`,
       break_style: profile?.break_style || "pomodoro",
-      behavior_samples: behaviorSamples, insufficient_behavior_data: behaviorSamples < 3,
-      previous_recommendation: previous ? { created_at: previous.created_at, picks: previous.picks } : null,
-      algorithm: "ahp-smart-picks", timestamp: new Date().toISOString(), timezone: tz,
+      algorithm: "ahp-immediate-tasks + non-overlapping-available-slots",
+      timestamp: new Date().toISOString(),
+      timezone: userTz,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     console.error("smart-picks error:", e);

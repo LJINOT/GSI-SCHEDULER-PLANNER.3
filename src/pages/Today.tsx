@@ -196,12 +196,12 @@ export default function Today() {
         const d = new Date(t.due_date);
         if (isToday(d) || isPast(d)) {
           reason = movedUp
-            ? "Deadline became closer and the task has higher urgency."
+            ? "Changed relative to previous recommendation and the task has higher urgency."
             : "Another task now has a closer deadline.";
         }
       }
       if (t && priorityFromScore(t.priority_score) === "high" && movedUp) {
-        reason = "Deadline became closer and the task has High priority.";
+        reason = "Changed relative to previous recommendation and the task has High priority.";
       }
       items.push({
         id: p.id,
@@ -235,15 +235,35 @@ export default function Today() {
   };
 
   const decisionFactors = useMemo(() => {
-    return [
-      { key: "Priority", active: rankedRows.some((r) => r.task?.priority_score != null || r.pick.priority) },
-      { key: "Deadline", active: rankedRows.some((r) => !!r.task?.due_date) },
-      { key: "Duration", active: rankedRows.some((r) => r.task?.estimated_duration != null) },
-      { key: "Schedule", active: rankedRows.some((r) => r.task != null) },
-      { key: "Status", active: rankedRows.some((r) => !!r.task?.status) },
-      { key: "Recent Activity", active: rankedRows.some((r) => recentActivityIds.has(r.pick.id)) },
-    ];
-  }, [rankedRows, recentActivityIds]);
+    // Only show factors the backend actually used
+    const used: string[] = (payload as any)?.factors_used || (payload as any)?.weights
+      ? Object.keys((payload as any)?.weights || {}).filter((k) => (payload as any).weights[k] != null)
+      : [];
+    const labelMap: Record<string, string> = {
+      urgency: "Deadline",
+      deadline: "Deadline",
+      quick_win: "Duration",
+      quickWin: "Duration",
+      duration: "Duration",
+      flow: "Status",
+      cognitive: "Cognitive fit",
+      cognitive_fit: "Cognitive fit",
+      behavior: "Behavior pattern",
+      behavior_peak: "Behavior pattern",
+      priority: "Priority",
+    };
+    if (used.length === 0) {
+      return [
+        { key: "Priority", active: rankedRows.some((r) => r.pick.priority) },
+        { key: "Deadline", active: rankedRows.some((r) => !!r.task?.due_date) },
+        { key: "Duration", active: rankedRows.some((r) => r.task?.estimated_duration != null) },
+      ];
+    }
+    return used.map((u) => ({
+      key: labelMap[u] || u,
+      active: true,
+    }));
+  }, [rankedRows, payload]);
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">

@@ -78,11 +78,14 @@ export default function Completed() {
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
-    const { error } = await supabase.from("tasks").delete().eq("id", deleteTarget.id);
+    const { error } = await supabase.from("tasks").update({
+      archived: true,
+      archived_at: new Date().toISOString(),
+    }).eq("id", deleteTarget.id);
     if (error) {
       toast.error(error.message || "Failed to delete task");
     } else {
-      toast.success("Task deleted");
+      toast.success("Task archived");
       fetchTasks();
     }
     setDeleteTarget(null);
@@ -106,7 +109,7 @@ export default function Completed() {
         <Button variant="ghost" size="icon" title="Restore" onClick={() => handleRestore(t)}>
           <RotateCcw className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" title="Delete" onClick={() => setDeleteTarget(t)}>
+        <Button variant="ghost" size="icon" title="Archive" onClick={() => setDeleteTarget(t)}>
           <Trash2 className="h-4 w-4 text-destructive" />
         </Button>
       </div>
@@ -187,12 +190,12 @@ export default function Completed() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this task?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete "{deleteTarget?.title}". This action cannot be undone.
+              This will archive "{deleteTarget?.title}". You can restore it later from archived tasks. It will not be permanently deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete}>Delete</AlertDialogAction>
+            <AlertDialogAction onClick={handleDelete}>Archive</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

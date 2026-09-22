@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
+import { supabase } from "@/integrations/supabase/client";
 
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -45,8 +46,6 @@ function InPlainEnglish({ children }: { children: React.ReactNode }) {
   );
 }
 
-const DEV_PIN = "1111";
-
 export default function AlgorithmInsights() {
   const { unlocked, setUnlocked } = useDevUnlock();
   const navigate = useNavigate();
@@ -64,16 +63,26 @@ export default function AlgorithmInsights() {
     setPinOpen(true);
   };
 
-  const submitPin = () => {
-    if (pin !== DEV_PIN) {
-      setPinError("Incorrect PIN. Please try again.");
+  const submitPin = async () => {
+    setPinError("");
+    try {
+      const { data, error } = await supabase.functions.invoke("verify-dev-pin", {
+        body: { pin },
+      });
+      if (error) throw error;
+      if (!data?.ok) {
+        setPinError(data?.error || "Incorrect PIN. Please try again.");
+        setPin("");
+        return;
+      }
+      setPinOpen(false);
+      setUnlocked(true);
+      toast.success("Developer Mode unlocked — available in Settings.");
+      navigate("/settings/developer");
+    } catch (e: any) {
+      setPinError(e?.message || "Unable to verify PIN.");
       setPin("");
-      return;
     }
-    setPinOpen(false);
-    setUnlocked(true);
-    toast.success("Developer Mode unlocked — available in Settings.");
-    navigate("/settings/developer");
   };
 
 

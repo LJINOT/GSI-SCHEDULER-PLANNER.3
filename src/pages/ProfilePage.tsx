@@ -18,6 +18,7 @@ export default function ProfilePage() {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [birthday, setBirthday] = useState("");
   const [profileKind, setProfileKind] = useState<ProfileKind>("general");
   const [course, setCourse] = useState("");
   const [yearLevel, setYearLevel] = useState("");
@@ -40,6 +41,7 @@ export default function ProfilePage() {
         if (profile) {
           setFullName(profile.full_name || "");
           setPhone((profile as any).phone || "");
+          setBirthday((profile as any).birthday || "");
           setCourse((profile as any).course || "");
           setYearLevel((profile as any).year_level || "");
           setSchool((profile as any).school || "");
@@ -107,6 +109,7 @@ export default function ProfilePage() {
       id: user.id,
       full_name: fullName,
       phone,
+      birthday: birthday || null,
       course: course || null,
       year_level: yearLevel || null,
       school: school || null,
@@ -123,7 +126,7 @@ export default function ProfilePage() {
   const changePassword = async () => {
     const pw = newPassword;
     if (pw.length < 8 || !/[a-z]/.test(pw) || !/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) {
-      toast.error("Password must be 8+ chars with upper, lower, and a number");
+      toast.error("Password must be at least 8 characters with uppercase, lowercase, and a number");
       return;
     }
 
@@ -280,7 +283,7 @@ export default function ProfilePage() {
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="new-pass">New Password</Label>
-            <Input id="new-pass" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Min 8 chars, upper, lower, number" />
+            <Input id="new-pass" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Min 8 chars, upper, lower, and a number" />
           </div>
           <Button variant="outline" onClick={changePassword} disabled={loading} className="w-full">
             Update Password

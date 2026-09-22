@@ -109,7 +109,6 @@ export default function ProfilePage() {
       id: user.id,
       full_name: fullName,
       phone,
-      birthday: birthday || null,
       course: course || null,
       year_level: yearLevel || null,
       school: school || null,
@@ -124,12 +123,6 @@ export default function ProfilePage() {
   };
 
   const changePassword = async () => {
-    const pw = newPassword;
-    if (pw.length < 8 || !/[a-z]/.test(pw) || !/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) {
-      toast.error("Password must be at least 8 characters with uppercase, lowercase, and a number");
-      return;
-    }
-
     if (!newPassword || newPassword.length < 6) {
       toast.error("Password must be at least 6 characters");
       return;
@@ -283,7 +276,7 @@ export default function ProfilePage() {
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="new-pass">New Password</Label>
-            <Input id="new-pass" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Min 8 chars, upper, lower, and a number" />
+            <Input id="new-pass" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Min 6 characters" />
           </div>
           <Button variant="outline" onClick={changePassword} disabled={loading} className="w-full">
             Update Password

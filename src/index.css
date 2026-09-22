@@ -191,3 +191,48 @@
     flex-shrink: 0;
   }
 }
+
+
+/* THEME-AWARE ICONS — dark mode visibility */
+/* Lucide and other SVG icons inherit currentColor from text color */
+svg {
+  color: inherit;
+}
+svg[stroke] {
+  stroke: currentColor;
+}
+/* Prefer theme tokens when parent sets text color */
+.text-foreground svg,
+.text-muted-foreground svg,
+.text-primary svg,
+.text-sidebar-foreground svg,
+.text-card-foreground svg {
+  color: inherit;
+}
+/* Icon-only buttons: ensure contrast in both themes */
+button svg,
+[role="button"] svg,
+a svg {
+  color: inherit;
+}
+/* Avoid pure black icons that disappear on dark backgrounds */
+.dark svg.text-black,
+.dark .text-black svg,
+.dark [class*="text-gray-900"] svg,
+.dark [class*="text-zinc-900"] svg,
+.dark [class*="text-slate-900"] svg {
+  color: hsl(var(--foreground)) !important;
+}
+.dark .text-black,
+.dark .text-gray-900,
+.dark .text-zinc-900,
+.dark .text-slate-900 {
+  color: hsl(var(--foreground)) !important;
+}
+/* Icon boxes stay readable */
+.gsi-icon-box {
+  color: hsl(var(--foreground));
+}
+.gsi-icon-box svg {
+  color: inherit;
+}

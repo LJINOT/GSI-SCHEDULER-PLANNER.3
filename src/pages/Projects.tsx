@@ -200,7 +200,7 @@ export default function Projects() {
       toast.error("Start time must be earlier than due date/time");
       return;
     }
-    if (taskDuration && !(Number(taskDuration) > 0)) {
+    if (taskDuration !== "" && taskDuration != null && !(Number(taskDuration) > 0)) {
       toast.error("Duration must be greater than 0");
       return;
     }
@@ -214,11 +214,7 @@ export default function Projects() {
       description: taskDescription.trim() || null,
       due_date: taskDueDate ? new Date(taskDueDate).toISOString() : null,
       start_time: taskStartTime ? new Date(taskStartTime).toISOString() : null,
-      estimated_duration: (() => {
-        const n = taskDuration ? Number(taskDuration) : null;
-        if (n !== null && (!(n > 0))) { toast.error("Duration must be greater than 0"); throw new Error("invalid duration"); }
-        return n;
-      })(),
+      estimated_duration: taskDuration ? Number(taskDuration) : null,
       status: taskStatus,
     }).eq("id", editingTask.id);
 

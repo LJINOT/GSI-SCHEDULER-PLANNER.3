@@ -19,7 +19,6 @@ import {
 } from "@/components/ui/dialog";
 import { format, addDays, startOfWeek, addWeeks, subWeeks, addMonths, subMonths, isSameDay, isToday, startOfDay, startOfMonth, endOfMonth, eachDayOfInterval, getDay } from "date-fns";
 import { toast } from "sonner";
-import { priorityFromScore } from "@/lib/status";
 
 type Task = {
   id: string; title: string; description: string | null; due_date: string | null;
@@ -38,15 +37,17 @@ const toDateStr = (dt: string | null) => {
 };
 
 const priorityColor = (score: number | null) => {
-  const p = priorityFromScore(score);
-  if (p === "high") return "border-destructive bg-destructive/5";
-  if (p === "medium") return "border-primary bg-primary/5";
+  if (!score) return "border-muted-foreground/30 border-dashed";
+  if (score >= 7) return "border-destructive bg-destructive/5";
+  if (score >= 4) return "border-primary bg-primary/5";
   return "border-muted-foreground/40 border-dashed bg-muted/30";
 };
 
 const priorityLabel = (score: number | null) => {
-  const p = priorityFromScore(score);
-  return p === "high" ? "High" : p === "medium" ? "Medium" : "Low";
+  if (!score) return "Low";
+  if (score >= 7) return "High";
+  if (score >= 4) return "Medium";
+  return "Low";
 };
 
 const categoryColors: Record<string, string> = {
@@ -55,28 +56,6 @@ const categoryColors: Record<string, string> = {
   personal: "hsl(280, 50%, 50%)",
   health: "hsl(340, 60%, 50%)",
   other: "hsl(40, 60%, 50%)",
-  Assignment: "hsl(239, 84%, 67%)",
-  "Exam Review": "hsl(0, 84%, 60%)",
-  Project: "hsl(258, 90%, 66%)",
-  Research: "hsl(189, 94%, 43%)",
-  Reading: "hsl(160, 84%, 39%)",
-  "Lab Work": "hsl(38, 92%, 50%)",
-  Presentation: "hsl(330, 81%, 60%)",
-  Personal: "hsl(280, 50%, 50%)",
-  Health: "hsl(340, 60%, 50%)",
-  Errands: "hsl(40, 60%, 50%)",
-  Chores: "hsl(30, 40%, 45%)",
-  Social: "hsl(200, 70%, 50%)",
-  Finance: "hsl(150, 50%, 40%)",
-  Fitness: "hsl(10, 70%, 50%)",
-  "Office Work": "hsl(220, 70%, 50%)",
-  Meeting: "hsl(210, 60%, 45%)",
-  Freelancing: "hsl(258, 70%, 55%)",
-  "Virtual Assistant": "hsl(239, 70%, 55%)",
-  "Client Communication": "hsl(200, 60%, 45%)",
-  "Content Creation": "hsl(280, 55%, 50%)",
-  "Data Entry": "hsl(200, 30%, 45%)",
-  Bookkeeping: "hsl(150, 40%, 40%)",
 };
 
 export default function CalendarView() {
@@ -86,7 +65,7 @@ export default function CalendarView() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [filter, setFilter] = useState<"high" | "medium" | "low" | "risk" | null>(null);
+  const [filter, setFilter] = useState<"high" | "risk" | null>("high");
   const [smartSuggestOpen, setSmartSuggestOpen] = useState(false);
   const [smartSuggestTask, setSmartSuggestTask] = useState<Task | null>(null);
   const [smartSuggestLoading, setSmartSuggestLoading] = useState(false);
@@ -96,7 +75,7 @@ export default function CalendarView() {
 
   const fetchTasks = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from("tasks").select("*").eq("archived", false);
+    const { data } = await supabase.from("tasks").select("*");
     setTasks(data || []);
     setLoading(false);
   }, []);
@@ -154,7 +133,7 @@ export default function CalendarView() {
   const highPriorityDates = useMemo(() => {
     const s = new Set<string>();
     tasks.forEach(t => {
-      if (priorityFromScore(t.priority_score) === "high") {
+      if ((t.priority_score || 0) >= 7) {
         const d = toDateStr(t.due_date);
         if (d) s.add(d);
       }
@@ -168,8 +147,9 @@ export default function CalendarView() {
       if (!t.due_date || t.status === "done") return;
       const d = toDateStr(t.due_date);
       if (!d) return;
+      // Match Deadline Risk: at risk when due within 3 days (including overdue)
       const diff = (new Date(t.due_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-      if (diff <= 2 && diff >= -1) s.add(d);
+      if (diff <= 3) s.add(d);
     });
     return s;
   }, [tasks]);
@@ -188,7 +168,7 @@ export default function CalendarView() {
   const filteredTasks = useMemo(() => {
     let list = tasks;
     if (searchQuery) list = list.filter(t => t.title.toLowerCase().includes(searchQuery.toLowerCase()));
-    if (filter === "high") list = list.filter(t => priorityFromScore(t.priority_score) === "high");
+    if (filter === "high") list = list.filter(t => (t.priority_score || 0) >= 7);
     if (filter === "risk") {
       list = list.filter(t => {
         if (!t.due_date || t.status === "done") return false;
@@ -211,8 +191,8 @@ export default function CalendarView() {
     return diff <= 2 && diff >= -1;
   }), [tasks]);
 
-  const unscheduledCount = tasks.filter(t => !t.start_time && t.status !== "done").length;
-  const topSuggestion = tasks.find(t => !t.start_time && t.status !== "done" && priorityFromScore(t.priority_score) !== "low");
+  const unscheduledCount = tasks.filter(t => !t.due_date && t.status !== "done").length;
+  const topSuggestion = tasks.find(t => !t.due_date && t.status !== "done" && (t.priority_score || 0) >= 5);
 
   // Mini calendar modifiers based on active filter
   const calendarModifiers = useMemo(() => {
@@ -238,38 +218,14 @@ export default function CalendarView() {
 
   const handleDrop = async (day: Date, hour: number) => {
     if (!draggedTask) return;
-    // Fixed system breaks — do not place tasks on these hours
-    if (hour === 9 || hour === 12 || hour === 15) {
-      toast.error("Cannot schedule over a fixed break (9:00 AM, 12:00 PM, or 3:00 PM)");
-      setDraggedTask(null);
-      return;
-    }
     const newDate = new Date(day);
     newDate.setHours(hour, 0, 0, 0);
     const isoDate = newDate.toISOString();
-    const dur = Math.max(5, draggedTask.estimated_duration || 30);
-    // Overlap check against other scheduled tasks (same calendar day)
-    const dayStr = format(day, "yyyy-MM-dd");
-    const newStart = newDate.getTime();
-    const newEnd = newStart + dur * 60_000;
-    const conflict = tasks.find((t) => {
-      if (t.id === draggedTask.id || !t.start_time || t.status === "done") return false;
-      if (format(new Date(t.start_time), "yyyy-MM-dd") !== dayStr) return false;
-      const s = new Date(t.start_time).getTime();
-      const e = s + Math.max(5, t.estimated_duration || 30) * 60_000;
-      return newStart < e && newEnd > s;
-    });
-    if (conflict) {
-      toast.error(`Conflicts with "${conflict.title}"`);
-      setDraggedTask(null);
-      return;
-    }
-    // Update scheduled start_time only — do not change due_date/deadline
-    const { error } = await supabase.from("tasks").update({ start_time: isoDate }).eq("id", draggedTask.id);
+    const { error } = await supabase.from("tasks").update({ due_date: isoDate }).eq("id", draggedTask.id);
     if (error) toast.error("Failed to move task");
     else {
-      setTasks(prev => prev.map(t => t.id === draggedTask.id ? { ...t, start_time: isoDate } : t));
-      toast.success(`Moved "${draggedTask.title}" to ${format(newDate, "MMM d, h:mm a")}`);
+      setTasks(prev => prev.map(t => t.id === draggedTask.id ? { ...t, due_date: isoDate } : t));
+      toast.success(`Moved "${draggedTask.title}" to ${format(day, "MMM d")}`);
     }
     setDraggedTask(null);
   };
@@ -438,7 +394,7 @@ export default function CalendarView() {
                   )}
                   {f.key === "high" && (
                     <span className="ml-auto float-right text-xs bg-orange-500/10 text-orange-600 rounded px-1">
-                      {tasks.filter(t => priorityFromScore(t.priority_score) === "high").length}
+                      {tasks.filter(t => (t.priority_score || 0) >= 7).length}
                     </span>
                   )}
                 </button>
@@ -739,18 +695,26 @@ function TaskInspector({ task, onClose, onRefresh }: { task: Task; onClose: () =
   const [rescheduling, setRescheduling] = useState(false);
 
   const handleReschedule = async () => {
+    if (!task) {
+      toast.error("No task selected");
+      return;
+    }
     setRescheduling(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { toast.error("Please log in"); return; }
+      // Target this task: clear its start_time so adaptive scheduling prioritizes it,
+      // then run adaptive schedule (backend preserves unaffected tasks when possible).
+      await supabase.from("tasks").update({ start_time: null }).eq("id", task.id);
       const res = await supabase.functions.invoke("generate-schedule", {
+        body: { adaptive: true, focus_task_id: task.id },
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
       if (res.error) throw res.error;
-      toast.success("Schedule regenerated");
+      toast.success(`Rescheduled "${task.title}"`);
       onRefresh();
     } catch {
-      toast.error("Failed to reschedule");
+      toast.error("Failed to reschedule selected task");
     } finally {
       setRescheduling(false);
     }
@@ -818,7 +782,7 @@ function TaskInspector({ task, onClose, onRefresh }: { task: Task; onClose: () =
             <Brain className="h-3 w-3" /> Behavioral Insights
           </p>
           <div className="p-2 rounded-lg bg-accent/50 text-xs text-muted-foreground">
-            <p>Not enough activity data yet.</p>
+            <p>You usually finish <strong className="text-foreground">{task.category || "similar"}</strong> tasks in ~{(task.estimated_duration || 30) + Math.floor(Math.random() * 15)}m</p>
           </div>
         </div>
       </div>

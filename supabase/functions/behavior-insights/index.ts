@@ -6,22 +6,41 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-/** Deterministic peak hour from histogram — no Math.random() */
-function peakHourFromHistogram(hourHistogram: number[]): { hour: number; score: number } {
-  let bestH = 9, bestScore = -1;
-  for (let h = 0; h < 24; h++) {
+// PSO over a single dimension: hour-of-day (0..23) to find peak productivity hour.
+// Fitness: weighted completions count at that hour (uses Manila timezone offset = +8).
+function psoPeakHour(hourHistogram: number[]): { hour: number; score: number } {
+  const swarm = 15, iters = 40, w = 0.7, c1 = 1.4, c2 = 1.4;
+  const eval_ = (x: number) => {
+    const h = Math.max(0, Math.min(23, Math.round(x)));
+    // Smooth with neighbors so optima isn't single-bucket noise
     const left = hourHistogram[(h + 23) % 24];
     const right = hourHistogram[(h + 1) % 24];
-    const score = hourHistogram[h] * 2 + left + right;
-    if (score > bestScore) { bestScore = score; bestH = h; }
+    return hourHistogram[h] * 2 + left + right;
+  };
+  let positions = Array.from({ length: swarm }, () => Math.random() * 23);
+  let velocities = Array.from({ length: swarm }, () => (Math.random() - 0.5) * 4);
+  let pbest = [...positions];
+  let pbestScore = positions.map(eval_);
+  let gIdx = pbestScore.indexOf(Math.max(...pbestScore));
+  let gbest = pbest[gIdx], gbestScore = pbestScore[gIdx];
+
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < swarm; i++) {
+      const r1 = Math.random(), r2 = Math.random();
+      velocities[i] = w * velocities[i] + c1 * r1 * (pbest[i] - positions[i]) + c2 * r2 * (gbest - positions[i]);
+      positions[i] = Math.max(0, Math.min(23, positions[i] + velocities[i]));
+      const s = eval_(positions[i]);
+      if (s > pbestScore[i]) { pbestScore[i] = s; pbest[i] = positions[i]; }
+      if (s > gbestScore) { gbestScore = s; gbest = positions[i]; }
+    }
   }
-  return { hour: bestH, score: Math.max(0, bestScore) };
+  return { hour: Math.round(gbest), score: gbestScore };
 }
 
-function formatHourRange(h: number, tz = "UTC"): string {
+function formatHourRange(h: number): string {
   const start = h, end = (h + 1) % 24;
   const fmt = (x: number) => `${String(x).padStart(2, "0")}:00`;
-  return `${fmt(start)}–${fmt(end)} (${tz})`;
+  return `${fmt(start)}–${fmt(end)} `;
 }
 
 serve(async (req) => {
@@ -42,10 +61,20 @@ serve(async (req) => {
     const rangeDays: number = Number(body?.rangeDays) || 30;
     const sinceISO = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000).toISOString();
 
-    const [{ data: allTasks }, { data: timeEntries }] = await Promise.all([
+    const [{ data: allTasks }, { data: timeEntries }, { data: profile }] = await Promise.all([
       supabase.from("tasks").select("*").eq("user_id", user.id).eq("archived", false).gte("created_at", sinceISO),
       supabase.from("time_entries").select("*").eq("user_id", user.id).gte("start_time", sinceISO),
+      supabase.from("profiles").select("timezone").eq("id", user.id).single(),
     ]);
+    const userTz = profile?.timezone || "UTC";
+    const hourInTz = (iso: string) => {
+      try {
+        const parts = new Intl.DateTimeFormat("en-US", { timeZone: userTz, hour: "numeric", hourCycle: "h23" }).formatToParts(new Date(iso));
+        return Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+      } catch {
+        return new Date(iso).getUTCHours();
+      }
+    };
 
     const tasks = allTasks || [];
     const completedTasks = tasks.filter((t: any) => t.status === "done");
@@ -72,32 +101,32 @@ serve(async (req) => {
 
     let lateCompletions = 0;
     for (const t of completedTasks) {
-      const doneAt = t.completed_at || t.updated_at;
-      if (t.due_date && doneAt && new Date(doneAt).getTime() > new Date(t.due_date).getTime()) lateCompletions++;
+      if (t.due_date && new Date(t.updated_at).getTime() > new Date(t.due_date).getTime()) lateCompletions++;
     }
     const lateRate = completedTasks.length ? lateCompletions / completedTasks.length : 0;
     const avgPendingRisk = riskScores.length ? riskScores.reduce((a, b) => a + b, 0) / riskScores.length : 0;
     const deadlineRiskFactor = Math.round((avgPendingRisk * 0.7 + lateRate * 0.3) * 100);
 
-    // ---- Peak productivity hour via PSO over completion histogram (Asia/Manila) ----
-    const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+    // ---- Peak activity hour from completions + actual time entries (user timezone) ----
     const hourHistogram = new Array(24).fill(0);
     for (const t of completedTasks) {
-      if (!t.updated_at) continue;
-      const localHour = new Date(new Date(t.updated_at).getTime() + MANILA_OFFSET_MS).getUTCHours();
-      hourHistogram[localHour] += 1;
+      const when = t.completed_at || t.updated_at;
+      if (!when) continue;
+      hourHistogram[hourInTz(when)] += 1;
     }
-    // Also count time entries (start_time) as productive activity
     for (const e of (timeEntries || [])) {
       if (!e.start_time) continue;
-      const localHour = new Date(new Date(e.start_time).getTime() + MANILA_OFFSET_MS).getUTCHours();
-      hourHistogram[localHour] += 0.5;
+      const weight = e.duration && e.duration > 0 ? Math.min(2, e.duration / 30) : 0.5;
+      hourHistogram[hourInTz(e.start_time)] += weight;
     }
-    const peak = peakHourFromHistogram(hourHistogram);
+    const peak = psoPeakHour(hourHistogram);
 
-    // ---- Aggregates ----
-    const durations = completedTasks.map((t: any) => Number(t.estimated_duration) || 0).filter(Boolean);
-    const avgDuration = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
+    // ---- Aggregates: prefer actual time_entry durations over estimates ----
+    const actualDurations = (timeEntries || []).map((e: any) => Number(e.duration) || 0).filter((n: number) => n > 0);
+    const estimateDurations = completedTasks.map((t: any) => Number(t.estimated_duration) || 0).filter(Boolean);
+    const durations = actualDurations.length ? actualDurations : estimateDurations;
+    const avgDuration = durations.length ? Math.round(durations.reduce((a: number, b: number) => a + b, 0) / durations.length) : 0;
+    const usedActualTime = actualDurations.length > 0;
 
     const catCounts: Record<string, number> = {};
     for (const t of completedTasks) {
@@ -128,7 +157,9 @@ serve(async (req) => {
         : `Low risk: deadlines are well-managed (${Math.round(lateRate * 100)}% historical late rate).`;
 
     return new Response(JSON.stringify({
-      peak_hours: formatHourRange(peak.hour),
+      peak_hours: formatHourRange(peak.hour) + ` (${userTz})`,
+      peak_label: usedActualTime ? "Most active time (from recorded work)" : "Most active time (limited data)",
+      actual_time_available: usedActualTime,
       avg_task_duration: avgDuration,
       preferred_categories: preferredCategories,
       insights,

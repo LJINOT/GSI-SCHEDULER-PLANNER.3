@@ -15,7 +15,7 @@ import { TITLE_MAX } from "@/lib/validation";
 
 type Project = { id: string; name: string; color: string };
 
-const todayStr = new Date().toLocaleDateString("en-CA"); // uses browser local; prefer profile TZ when loaded
+import { todayInputDate, tzOffset, getTimezone, formatPH } from "@/lib/date-utils";
 const MAX_DATE = "9999-12-31"; // year must stay ≤ 9999
 
 const categories = [
@@ -126,13 +126,8 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
     e.preventDefault();
     if (!title.trim()) { setErrors(p => ({ ...p, title: "Task title is required" })); return; }
     if (title.trim().length > TITLE_MAX) { setErrors(p => ({ ...p, title: `Keep the title under ${TITLE_MAX} characters.` })); return; }
-    if (dueDate && dueDate < todayStr) { toast.error("Due date cannot be in the past"); return; }
-    if (startDate && startDate < todayStr) { toast.error("Start date cannot be in the past"); return; }
-    if (startDate && dueDate && startDate > dueDate) { toast.error("Start date must be earlier than due date"); return; }
-    if (startDate && dueDate && startDate === dueDate && startTime && dueTime && startTime >= dueTime) {
-      toast.error("Start time must be earlier than due time");
-      return;
-    }
+    if (dueDate && dueDate < todayInputDate()) { toast.error("Due date cannot be in the past"); return; }
+    if (startDate && startDate < todayInputDate()) { toast.error("Start date cannot be in the past"); return; }
     if (!isValidYear(dueDate) || !isValidYear(startDate)) {
       toast.error("Year cannot be greater than 9999");
       return;
@@ -174,15 +169,22 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
       }
     }
 
-    const PH_OFFSET = "+08:00";
+    // Build timestamptz using the user's selected timezone offset (not hardcoded PH)
+    const off = tzOffset(new Date(), getTimezone());
     let dueDatetime: string | null = null;
     if (dueDate) {
-      dueDatetime = dueTime ? `${dueDate}T${dueTime}:00${PH_OFFSET}` : `${dueDate}T23:59:00${PH_OFFSET}`;
+      dueDatetime = dueTime ? `${dueDate}T${dueTime}:00${off}` : `${dueDate}T23:59:00${off}`;
     }
     let startDatetime: string | null = null;
     const effectiveStartDate = startDate || dueDate;
     if (effectiveStartDate && startTime) {
-      startDatetime = `${effectiveStartDate}T${startTime}:00${PH_OFFSET}`;
+      startDatetime = `${effectiveStartDate}T${startTime}:00${off}`;
+    }
+    // Block past start time for today (in user timezone)
+    if (startDatetime && new Date(startDatetime).getTime() < Date.now()) {
+      toast.error("Start time cannot be in the past.");
+      setLoading(false);
+      return;
     }
 
     const finalCategory = category || meta?.category || "General";
@@ -341,7 +343,7 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
                 <Input
                   id="due-date"
                   type="date"
-                  min={todayStr}
+                  min={todayInputDate()}
                   max={MAX_DATE}
                   value={dueDate}
                   onChange={(e) => setDueDate(e.target.value)}
@@ -359,7 +361,7 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
                 <Input
                   id="start-date"
                   type="date"
-                  min={todayStr}
+                  min={todayInputDate()}
                   max={MAX_DATE}
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}

@@ -184,6 +184,11 @@ export default function Projects() {
   };
 
   const openEditTaskDialog = (t: Task) => {
+    if (t.status === "done") {
+      toast.error("Completed tasks are read-only in Projects");
+      return;
+    }
+
     setEditingTask(t);
     setTaskTitle(t.title);
     setTaskDescription(t.description || "");
@@ -196,19 +201,47 @@ export default function Projects() {
   };
 
   const saveTask = async () => {
-    if (taskStart && taskDue && new Date(taskStart) >= new Date(taskDue)) {
-      toast.error("Start time must be earlier than due date/time");
+    if (!taskTitle.trim()) { setTaskTitleError("Task title is required"); return; }
+    setTaskTitleError("");
+    if (!editingTask) return;
+    if (editingTask.status === "done") {
+      toast.error("Completed tasks cannot be edited here");
       return;
     }
     if (taskDuration !== "" && taskDuration != null && !(Number(taskDuration) > 0)) {
       toast.error("Duration must be greater than 0");
       return;
     }
+    if (taskStartTime && taskDueDate && new Date(taskStartTime) >= new Date(taskDueDate)) {
+      toast.error("Start time must be earlier than due date/time");
+      return;
+    }
+    // Fixed breaks
+    if (taskStartTime) {
+      const h = new Date(taskStartTime).getHours();
+      if (h === 9 || h === 12 || h === 15) {
+        toast.error("Cannot schedule over fixed breaks (9:00 AM, 12:00 PM, 3:00 PM)");
+        return;
+      }
+    }
+    // Overlap check
+    if (taskStartTime) {
+      const dur = Math.max(5, Number(taskDuration) || editingTask.estimated_duration || 30);
+      const ns = new Date(taskStartTime).getTime();
+      const ne = ns + dur * 60_000;
+      const conflict = tasks.find((t) => {
+        if (t.id === editingTask.id || !t.start_time || t.status === "done") return false;
+        const s = new Date(t.start_time).getTime();
+        const e = s + Math.max(5, t.estimated_duration || 30) * 60_000;
+        return ns < e && ne > s;
+      });
+      if (conflict) {
+        toast.error(`Overlaps with "${conflict.title}"`);
+        return;
+      }
+    }
 
-    if (!taskTitle.trim()) { setTaskTitleError("Task title is required"); return; }
-    setTaskTitleError("");
-    if (!editingTask) return;
-
+    const { data: { user } } = await supabase.auth.getUser();
     const { error } = await supabase.from("tasks").update({
       title: taskTitle.trim(),
       description: taskDescription.trim() || null,
@@ -220,6 +253,21 @@ export default function Projects() {
 
     if (error) toast.error(error.message);
     else {
+      // Record edit in task_history when table exists
+      if (user) {
+        await supabase.from("task_history").insert({
+          user_id: user.id,
+          task_id: editingTask.id,
+          note: "Edited from Projects",
+          changes: {
+            title: taskTitle.trim(),
+            start_time: taskStartTime || null,
+            due_date: taskDueDate || null,
+            estimated_duration: taskDuration || null,
+            status: taskStatus,
+          },
+        });
+      }
       toast.success("Task updated");
       setTaskDialogOpen(false);
       setEditingTask(null);
@@ -273,7 +321,7 @@ export default function Projects() {
               <div className="space-y-2">
                 <Label>Name</Label>
                 <Input
-                  value={name} maxLength={255}
+                  value={name}
                   onChange={(e) => { setName(e.target.value); if (e.target.value.trim()) setNameError(""); }}
                   placeholder="e.g. Thesis Research"
                 />

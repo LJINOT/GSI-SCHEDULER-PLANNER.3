@@ -34,6 +34,7 @@ export default function FocusMode() {
 
   const [totalSeconds, setTotalSeconds] = useState(25 * 60);
   const [remaining, setRemaining] = useState(25 * 60);
+  const [focusEntryId, setFocusEntryId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [deadlineTick, setDeadlineTick] = useState(0);
   const finishedRef = useRef(false);
@@ -52,8 +53,7 @@ export default function FocusMode() {
         const { data } = await supabase
           .from("tasks")
           .select("*")
-          .eq("archived", false)
-          .neq("status", "done")
+          .eq("archived", false).neq("status", "done")
           .order("priority_score", { ascending: false, nullsFirst: false })
           .limit(1);
         if (data?.[0]) setFocusTask(data[0] as FocusTask);
@@ -63,19 +63,14 @@ export default function FocusMode() {
     fetchFocusTask();
   }, []);
 
-  // Session length: estimated duration (or derived from start_time window if present). No fixed 50-min replacement.
+  // Session length follows the task's estimated duration (capped at a 50-minute block).
   useEffect(() => {
-    let mins = focusTask?.estimated_duration || 25;
-    // If scheduled start exists, keep estimated as the focus block length (scheduled duration basis)
-    if (focusTask?.start_time && focusTask?.estimated_duration) {
-      mins = focusTask.estimated_duration;
-    }
-    mins = Math.max(5, mins);
+    const mins = Math.max(5, focusTask?.estimated_duration || 25);
     setTotalSeconds(mins * 60);
     setRemaining(mins * 60);
     setRunning(false);
     finishedRef.current = false;
-  }, [focusTask?.id, focusTask?.estimated_duration, focusTask?.start_time]);
+  }, [focusTask?.id, focusTask?.estimated_duration]);
 
   useEffect(() => {
     if (!running) return;
@@ -152,7 +147,27 @@ export default function FocusMode() {
                   {remaining === 0 ? " · finished" : running ? " · running" : " · paused"}
                 </p>
                 <div className="flex justify-center gap-2">
-                  <Button variant={running ? "secondary" : "default"} onClick={() => setRunning((r) => !r)} disabled={remaining === 0}>
+                  <Button variant={running ? "secondary" : "default"} onClick={async () => {
+                    const next = !running;
+                    if (next && focusTask) {
+                      const { data: { user } } = await supabase.auth.getUser();
+                      if (user) {
+                        // Close any stale open entry for this user first
+                        await supabase.from("time_entries").update({ end_time: new Date().toISOString() })
+                          .eq("user_id", user.id).is("end_time", null);
+                        const { data } = await supabase.from("time_entries").insert({
+                          user_id: user.id,
+                          task_id: focusTask.id,
+                          start_time: new Date().toISOString(),
+                        }).select("id").single();
+                        if (data?.id) setFocusEntryId(data.id);
+                      }
+                    } else if (!next && focusEntryId) {
+                      await supabase.from("time_entries").update({ end_time: new Date().toISOString() }).eq("id", focusEntryId);
+                      setFocusEntryId(null);
+                    }
+                    setRunning(next);
+                  }} disabled={remaining === 0}>
                     {running ? <><Pause className="mr-2 h-4 w-4" /> Pause</> : <><Play className="mr-2 h-4 w-4" /> Start</>}
                   </Button>
                   <Button variant="outline" onClick={reset}>

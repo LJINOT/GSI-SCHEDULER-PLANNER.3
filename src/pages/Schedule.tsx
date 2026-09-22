@@ -258,9 +258,10 @@ export default function Schedule() {
           </Card>
         ) : (
           <div className="rounded-lg border overflow-hidden">
-            <div className="max-h-[480px] overflow-y-auto overflow-x-auto">
+            {/* No max-height / vertical scroll here — Generated Schedule always shows every block in full. */}
+            <div className="overflow-x-auto">
               <Table>
-                <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur supports-[backdrop-filter]:bg-muted/80">
+                <TableHeader className="bg-muted/95">
                   <TableRow className="bg-muted/40">
                     <TableHead className="text-xs w-28">Date</TableHead>
                     <TableHead className="text-xs w-36">Time</TableHead>

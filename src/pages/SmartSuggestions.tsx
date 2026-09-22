@@ -94,15 +94,6 @@ export default function SmartSuggestions() {
   useEffect(() => {
     const load = async () => {
       setLoadingPatterns(true);
-      const { data: analysisLog } = await supabase
-        .from("behavior_logs")
-        .select("recorded_at")
-        .eq("metric_type", "smart_picks_run")
-        .order("recorded_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (analysisLog?.recorded_at) setLastAnalyzedAt(analysisLog.recorded_at);
-
       const since = new Date();
       since.setDate(since.getDate() - 14);
 
@@ -239,16 +230,13 @@ export default function SmartSuggestions() {
     try {
       if (payload) {
         saveCache(PREV_CACHE_KEY, payload);
-        /* prefer server previous_recommendation when present */
-      setPrevPayload(payload);
+        setPrevPayload(payload);
       }
 
       const { data, error } = await supabase.functions.invoke("smart-picks", { body: {} });
       if (error) throw error;
       const next: Payload = { ...(data || {}), picks: data?.picks || [] };
       setPayload(next);
-      if (next?.timestamp) setLastAnalyzedAt(next.timestamp);
-      else setLastAnalyzedAt(new Date().toISOString());
       saveCache(CACHE_KEY, next);
       if (next.timestamp) setLastAnalyzedAt(next.timestamp);
       toast.success("Recommendations updated from your activity patterns.");
@@ -473,7 +461,7 @@ export default function SmartSuggestions() {
             <Table>
               <TableBody>
                 <TableRow className="text-sm">
-                  <TableCell className="py-2 text-muted-foreground w-48">Most active time</TableCell>
+                  <TableCell className="py-2 text-muted-foreground w-48">Most productive time</TableCell>
                   <TableCell className="py-2 font-medium">{workPattern.peakHourLabel || "—"}</TableCell>
                 </TableRow>
                 <TableRow className="text-sm">

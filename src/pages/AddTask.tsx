@@ -15,7 +15,8 @@ import { TITLE_MAX } from "@/lib/validation";
 
 type Project = { id: string; name: string; color: string };
 
-const todayStr = new Date().toLocaleDateString("en-CA");
+const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
+const MAX_DATE = "9999-12-31"; // year must stay ≤ 9999
 
 const categories = [
   // Academic
@@ -115,12 +116,23 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
     setAnalyzing(false);
   };
 
+  const isValidYear = (dateStr: string) => {
+    if (!dateStr) return true;
+    const year = parseInt(dateStr.slice(0, 4), 10);
+    return !Number.isNaN(year) && year <= 9999;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) { setErrors(p => ({ ...p, title: "Task title is required" })); return; }
     if (title.trim().length > TITLE_MAX) { setErrors(p => ({ ...p, title: `Keep the title under ${TITLE_MAX} characters.` })); return; }
     if (dueDate && dueDate < todayStr) { toast.error("Due date cannot be in the past"); return; }
     if (startDate && startDate < todayStr) { toast.error("Start date cannot be in the past"); return; }
+    if (!isValidYear(dueDate) || !isValidYear(startDate)) {
+      toast.error("Year cannot be greater than 9999");
+      return;
+    }
+
     setLoading(true);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { toast.error("Not logged in"); setLoading(false); return; }
@@ -137,7 +149,6 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
       return;
     }
     setErrors(p => ({ ...p, title: undefined }));
-
 
     // Auto-analyze if user didn't press "Analyze with AI" so difficulty/duration are still populated.
     let meta = aiMeta;
@@ -159,12 +170,10 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
     }
 
     const PH_OFFSET = "+08:00";
-
     let dueDatetime: string | null = null;
     if (dueDate) {
       dueDatetime = dueTime ? `${dueDate}T${dueTime}:00${PH_OFFSET}` : `${dueDate}T23:59:00${PH_OFFSET}`;
     }
-
     let startDatetime: string | null = null;
     const effectiveStartDate = startDate || dueDate;
     if (effectiveStartDate && startTime) {
@@ -228,7 +237,6 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className={embedded ? "space-y-4" : "max-w-2xl mx-auto space-y-6"}>
       {!embedded && <h1 className="font-display text-3xl font-bold">Add Task</h1>}
-
       <form onSubmit={handleSubmit}>
         <Card className={embedded ? "border-0 shadow-none" : undefined}>
           {!embedded && (
@@ -251,7 +259,6 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
               <p className="text-xs text-muted-foreground">{title.length}/{TITLE_MAX} characters</p>
               {errors.title && <p className="text-xs text-destructive">{errors.title}</p>}
             </div>
-
 
             <div className="space-y-2">
               <Label htmlFor="desc">Description</Label>
@@ -291,7 +298,13 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
               {showNewProject && (
                 <Card className="bg-accent/30 border-primary/20">
                   <CardContent className="py-3 space-y-2">
-                    <Input value={newProjectName} onChange={(e) => { setNewProjectName(e.target.value); if (errors.newProject) setErrors(p => ({ ...p, newProject: undefined })); }} placeholder="Project name" aria-invalid={!!errors.newProject} className={errors.newProject ? "border-destructive focus-visible:ring-destructive" : undefined} />
+                    <Input
+                      value={newProjectName}
+                      onChange={(e) => { setNewProjectName(e.target.value); if (errors.newProject) setErrors(p => ({ ...p, newProject: undefined })); }}
+                      placeholder="Project name"
+                      aria-invalid={!!errors.newProject}
+                      className={errors.newProject ? "border-destructive focus-visible:ring-destructive" : undefined}
+                    />
                     {errors.newProject && <p className="text-xs text-destructive">{errors.newProject}</p>}
                     <Textarea value={newProjectDesc} onChange={(e) => setNewProjectDesc(e.target.value)} rows={2} placeholder="Description (optional)" />
                     <div className="flex gap-2 justify-end">
@@ -320,7 +333,14 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="due-date">Due Date</Label>
-                <Input id="due-date" type="date" min={todayStr} value={dueDate} onChange={(e) = setDueDate(e.target.value)} />
+                <Input
+                  id="due-date"
+                  type="date"
+                  min={todayStr}
+                  max={MAX_DATE}
+                  value={dueDate}
+                  onChange={(e) => setDueDate(e.target.value)}
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="due-time">Due Time</Label>
@@ -331,14 +351,24 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="start-date">Start Date</Label>
-                <Input id="start-date" type="date" min={todayStr} value={startDate} onChange={(e) = setStartDate(e.target.value)} />
+                <Input
+                  id="start-date"
+                  type="date"
+                  min={todayStr}
+                  max={MAX_DATE}
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="start-time">Start Time</Label>
                 <Input id="start-time" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
               </div>
             </div>
-            <p className="text-xs text-muted-foreground">Task will auto-switch to "In Progress" when this date/time is reached. If no start date is set, the due date will be used.</p>
+
+            <p className="text-xs text-muted-foreground">
+              Task will auto-switch to "In Progress" when this date/time is reached. If no start date is set, the due date will be used.
+            </p>
 
             <Button type="button" variant="outline" onClick={analyzeTask} disabled={analyzing} className="w-full">
               {analyzing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}

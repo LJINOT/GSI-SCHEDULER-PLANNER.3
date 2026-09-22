@@ -42,10 +42,7 @@ export default function Timesheet() {
     if (!activeEntryId) return;
     const now = new Date().toISOString();
     const start = entries.find((e) => e.id === activeEntryId)?.start_time;
-    let duration: number | null = null;
-    if (start) {
-      duration = Math.max(1, Math.round((Date.now() - new Date(start).getTime()) / 60000));
-    }
+    const duration = start ? Math.max(1, Math.round((Date.now() - new Date(start).getTime()) / 60000)) : null;
     const { error } = await supabase.from("time_entries").update({ end_time: now, duration }).eq("id", activeEntryId);
     if (error) toast.error(error.message);
     else { setActiveTimer(null); setActiveEntryId(null); toast.success("Timer stopped"); }
@@ -89,7 +86,6 @@ export default function Timesheet() {
                 <p className="text-xs text-muted-foreground">
                   {formatPH(e.start_time, "MMM d, h:mm a")}
                   {e.end_time && ` — ${formatPH(e.end_time, "h:mm a")}`}
-                  {e.duration != null && ` · ${e.duration} min`}
                 </p>
               </div>
               <Clock className="h-4 w-4 text-muted-foreground" />

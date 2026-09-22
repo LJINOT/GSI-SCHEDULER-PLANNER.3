@@ -17,7 +17,14 @@ type Task = {
 };
 type Project = { id: string; name: string; color: string };
 
-const READ_KEY = "gsi-notif-read";
+function readKey(): string {
+  try {
+    const uid = localStorage.getItem("gsi-auth-uid") || "anon";
+    return `gsi-notif-read:${uid}`;
+  } catch {
+    return "gsi-notif-read:anon";
+  }
+}
 
 type Severity = "red" | "yellow" | "green";
 
@@ -60,13 +67,13 @@ export function NotificationBell() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [open, setOpen] = useState(false);
   const [readIds, setReadIds] = useState<Set<string>>(() => {
-    try { return new Set(JSON.parse(localStorage.getItem(READ_KEY) || "[]")); }
+    try { return new Set(JSON.parse(localStorage.getItem(readKey()) || "[]")); }
     catch { return new Set(); }
   });
 
   const persistRead = (next: Set<string>) => {
     setReadIds(new Set(next));
-    localStorage.setItem(READ_KEY, JSON.stringify(Array.from(next)));
+    localStorage.setItem(readKey(), JSON.stringify(Array.from(next)));
   };
   const markRead = (key: string) => {
     if (readIds.has(key)) return;

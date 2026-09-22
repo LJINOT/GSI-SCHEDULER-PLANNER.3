@@ -30,6 +30,8 @@ import PersonalizationPage from "./pages/PersonalizationPage";
 import HelpAbout from "./pages/HelpAbout";
 import AlgorithmInsights from "./pages/AlgorithmInsights";
 import DeveloperMode from "./pages/DeveloperMode";
+import Analytics from "./pages/Analytics";
+import Timesheet from "./pages/Timesheet";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -61,6 +63,8 @@ const App = () => (
             <Route path="focus-mode" element={<FocusMode />} />
             <Route path="deadline-risk" element={<DeadlineRisk />} />
             <Route path="productivity-insights" element={<ProductivityInsights />} />
+            <Route path="analytics" element={<Analytics />} />
+            <Route path="timesheet" element={<Timesheet />} />
             <Route path="settings/profile" element={<ProfilePage />} />
             <Route path="settings/general" element={<GeneralSettings />} />
             <Route path="settings/personalization" element={<PersonalizationPage />} />

@@ -68,6 +68,7 @@ export default function Login() {
     } else {
       localStorage.removeItem(ATTEMPTS_KEY);
       localStorage.removeItem(LOCK_KEY);
+      try { const u = (await supabase.auth.getUser()).data.user; if (u) localStorage.setItem("gsi-auth-uid", u.id); } catch {}
       navigate("/");
     }
   };

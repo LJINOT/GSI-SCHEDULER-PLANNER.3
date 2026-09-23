@@ -27,11 +27,83 @@ function toHHMM(min: number): string {
 }
 
 // Fixed daily breaks — 9:00 AM, 12:00 PM (lunch) and 3:00 PM only.
-const FIXED_BREAKS = [
-  { start: 9 * 60, dur: 15, title: "Morning Break" },
-  { start: 12 * 60, dur: 60, title: "Lunch Break" },
-  { start: 15 * 60, dur: 15, title: "Afternoon Break" },
-];
+type BreakStyle = "standard" | "pomodoro" | "extended" | "minimal";
+
+type BreakBlock = {
+  start: number;
+  dur: number;
+  title: string;
+};
+
+const BREAK_STYLES: Record<BreakStyle, BreakBlock[]> = {
+  standard: [
+    {
+      start: 9 * 60,
+      dur: 15,
+      title: "Morning Break (Snack)",
+    },
+    {
+      start: 12 * 60,
+      dur: 60,
+      title: "Lunch Break",
+    },
+    {
+      start: 15 * 60,
+      dur: 15,
+      title: "Afternoon Break (Snack)",
+    },
+  ],
+
+  pomodoro: [
+    {
+      start: 9 * 60,
+      dur: 15,
+      title: "Morning Break (Snack)",
+    },
+    {
+      start: 12 * 60,
+      dur: 60,
+      title: "Lunch Break",
+    },
+    {
+      start: 15 * 60,
+      dur: 15,
+      title: "Afternoon Break (Snack)",
+    },
+  ],
+
+  extended: [
+    {
+      start: 9 * 60,
+      dur: 20,
+      title: "Morning Break (Snack)",
+    },
+    {
+      start: 12 * 60,
+      dur: 60,
+      title: "Lunch Break",
+    },
+    {
+      start: 15 * 60,
+      dur: 20,
+      title: "Afternoon Break (Snack)",
+    },
+  ],
+
+  minimal: [
+    {
+      start: 12 * 60,
+      dur: 45,
+      title: "Lunch Break",
+    },
+  ],
+};
+
+function getBreakBlocks(breakStyle?: string): BreakBlock[] {
+  const style = (breakStyle || "standard") as BreakStyle;
+
+  return BREAK_STYLES[style] ?? BREAK_STYLES.standard;
+}
 
 // CSP backtracking: place tasks in order, honouring the three fixed break slots.
 function csp(tasks: Task[], startMin: number, endMin: number, _breakStyle: string): Block[] | null {

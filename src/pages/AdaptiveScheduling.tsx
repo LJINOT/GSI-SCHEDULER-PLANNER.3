@@ -85,9 +85,7 @@ type ChangeItem = {
 };
 
 export default function AdaptiveScheduling() {
-  const [payload, setPayload] = useState<Payload | null>(() => {
-    return loadCache<Payload>(CACHE_KEY) || loadCache<Payload>(AUTO_CACHE_KEY);
-  });
+  const [payload, setPayload] = useState<Payload | null>(null);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -98,7 +96,6 @@ export default function AdaptiveScheduling() {
 
   const fetchTasks = async () => {
     setLoadingTasks(true);
-
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
       setTasks([]);
@@ -106,19 +103,53 @@ export default function AdaptiveScheduling() {
       return;
     }
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("tasks")
       .select("id, title, status, due_date, start_time, estimated_duration, priority_score, category, updated_at")
       .eq("user_id", user.id)
       .eq("archived", false)
       .order("updated_at", { ascending: false });
 
+    if (error) console.error("Failed to load adaptive tasks:", error);
     setTasks((data as TaskRow[]) || []);
     setLoadingTasks(false);
   };
 
+  const loadCurrentSchedule = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setPayload(null);
+      return;
+    }
+
+    const now = new Date();
+    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const { data, error } = await supabase
+      .from("schedules")
+      .select("timeline, created_at")
+      .eq("user_id", user.id)
+      .eq("schedule_date", date)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Failed to load current adaptive schedule:", error);
+      return;
+    }
+
+    const timeline = Array.isArray((data as any)?.timeline) ? (data as any).timeline : [];
+    if (timeline.length) {
+      const next: Payload = { blocks: sortBlocksChronologically(timeline as ScheduleBlock[]), algorithm: "saved-generated-schedule", timestamp: (data as any)?.created_at };
+      setPayload(next);
+      saveCache(AUTO_CACHE_KEY, next);
+    } else {
+      setPayload(null);
+    }
+  };
+
   useEffect(() => {
-    fetchTasks();
+    void Promise.all([fetchTasks(), loadCurrentSchedule()]);
   }, []);
 
   const changes = useMemo<ChangeItem[]>(() => {

@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { motion } from "framer-motion";
-import { Play, Pause, RotateCcw, Focus, Loader2, CheckCircle2 } from "lucide-react";
+import { Play, Pause, RotateCcw, Focus, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { formatPH } from "@/lib/date-utils";
 import { priorityFromScore } from "@/lib/status";
@@ -50,10 +50,9 @@ export default function FocusMode() {
       try {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) {
-          setLoading(false);
+          setFocusTask(null);
           return;
         }
-
         const { data } = await supabase
           .from("tasks")
           .select("id, title, estimated_duration, start_time, due_date, priority_score, status")
@@ -95,6 +94,7 @@ export default function FocusMode() {
           .from("tasks")
           .select("id, title, estimated_duration, start_time, due_date, priority_score, status")
           .eq("id", open.task_id)
+          .eq("user_id", user.id)
           .maybeSingle();
         if (t) {
           task = t as FocusTask;
@@ -168,8 +168,6 @@ export default function FocusMode() {
 
   const completeSession = useCallback(async () => {
     if (!entryId || !sessionStartIso) return;
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
     const end = new Date().toISOString();
     const duration = Math.max(
       1,
@@ -178,49 +176,10 @@ export default function FocusMode() {
     await supabase
       .from("time_entries")
       .update({ end_time: end, duration })
-      .eq("id", entryId)
-      .eq("user_id", user.id);
+      .eq("id", entryId);
     setEntryId(null);
     setSessionStartIso(null);
   }, [entryId, sessionStartIso]);
-
-  const markTaskDone = async () => {
-    if (!focusTask) return;
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      toast.error("Please log in");
-      return;
-    }
-
-    // Close the active focus entry first so actual work time is preserved.
-    if (entryId && sessionStartIso) {
-      await completeSession();
-    }
-
-    const { error } = await supabase
-      .from("tasks")
-      .update({
-        status: "done",
-      })
-      .eq("id", focusTask.id)
-      .eq("user_id", user.id);
-
-    if (error) {
-      toast.error(error.message || "Could not mark task as done");
-      return;
-    }
-
-    setRunning(false);
-    setEntryId(null);
-    setSessionStartIso(null);
-    setFocusTask(null);
-    setTotalSeconds(25 * 60);
-    setRemaining(25 * 60);
-    finishedRef.current = false;
-
-    toast.success("Task marked as done");
-  };
 
   const startOrResume = async () => {
     if (!focusTask) return;
@@ -285,6 +244,37 @@ export default function FocusMode() {
     finishedRef.current = false;
     setEntryId(null);
     setSessionStartIso(null);
+  };
+
+  const markTaskDone = async () => {
+    if (!focusTask) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      toast.error("Please log in again.");
+      return;
+    }
+
+    if (entryId) {
+      await completeSession();
+    }
+
+    const { error } = await supabase
+      .from("tasks")
+      .update({ status: "done", completed_at: new Date().toISOString() })
+      .eq("id", focusTask.id)
+      .eq("user_id", user.id);
+
+    if (error) {
+      toast.error(error.message || "Could not mark task as done");
+      return;
+    }
+
+    setRunning(false);
+    setEntryId(null);
+    setSessionStartIso(null);
+    setFocusTask(null);
+    toast.success("Task marked as done.");
   };
 
   const pct = totalSeconds ? ((totalSeconds - remaining) / totalSeconds) * 100 : 0;
@@ -365,12 +355,8 @@ export default function FocusMode() {
               <Button variant="outline" onClick={reset} disabled={!focusTask}>
                 <RotateCcw className="mr-2 h-4 w-4" /> Reset
               </Button>
-              <Button
-                variant="secondary"
-                onClick={markTaskDone}
-                disabled={!focusTask}
-              >
-                <CheckCircle2 className="mr-2 h-4 w-4" /> Mark as Done
+              <Button variant="secondary" onClick={markTaskDone} disabled={!focusTask}>
+                Done
               </Button>
             </div>
           </div>

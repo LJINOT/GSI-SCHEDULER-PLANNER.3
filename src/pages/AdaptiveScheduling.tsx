@@ -243,8 +243,9 @@ export default function AdaptiveScheduling() {
           </Card>
         ) : (
           <div className="rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
+            <div className="max-h-[500px] overflow-y-auto overflow-x-auto overscroll-contain">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur supports-[backdrop-filter]:bg-muted/80">
                 <TableRow className="bg-muted/40">
                   <TableHead className="text-xs w-28">Date</TableHead>
                   <TableHead className="text-xs w-36">Time</TableHead>
@@ -287,7 +288,8 @@ export default function AdaptiveScheduling() {
                   );
                 })}
               </TableBody>
-            </Table>
+              </Table>
+            </div>
           </div>
         )}
       </section>
@@ -299,8 +301,9 @@ export default function AdaptiveScheduling() {
             Changes Detected
           </h2>
           <div className="rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
+            <div className="max-h-[360px] overflow-y-auto overflow-x-auto overscroll-contain">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur supports-[backdrop-filter]:bg-muted/80">
                 <TableRow className="bg-muted/40">
                   <TableHead className="text-xs">Task</TableHead>
                   <TableHead className="text-xs">Reason</TableHead>
@@ -318,7 +321,8 @@ export default function AdaptiveScheduling() {
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
+              </Table>
+            </div>
           </div>
         </section>
       ) : (
@@ -345,8 +349,9 @@ export default function AdaptiveScheduling() {
             Updated Schedule
           </h2>
           <div className="rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
+            <div className="max-h-[500px] overflow-y-auto overflow-x-auto overscroll-contain">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur supports-[backdrop-filter]:bg-muted/80">
                 <TableRow className="bg-muted/40">
                   <TableHead className="text-xs w-28">Date</TableHead>
                   <TableHead className="text-xs w-36">Time</TableHead>
@@ -386,7 +391,8 @@ export default function AdaptiveScheduling() {
                   );
                 })}
               </TableBody>
-            </Table>
+              </Table>
+            </div>
           </div>
         </section>
       )}

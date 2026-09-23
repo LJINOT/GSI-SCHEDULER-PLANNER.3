@@ -139,7 +139,7 @@ export default function Dashboard() {
       (t) => t.status === "todo" && t.start_time && new Date(t.start_time) <= now
     );
     for (const task of tasksToUpdate) {
-      await supabase.from("tasks").update({ status: "in_progress" }).eq("id", task.id);
+      await supabase.from("tasks").update({ status: "in_progress" }).eq("id", task.id).eq("user_id", user.id);
     }
     if (tasksToUpdate.length > 0) fetchTasks();
   }, [tasks]);
@@ -170,7 +170,9 @@ export default function Dashboard() {
     const { data: focusData } = await supabase
       .from("tasks")
       .select("title")
+      .eq("user_id", riskUser.id)
       .neq("status", "done")
+      .or("archived.eq.false,archived.is.null")
       .order("priority_score", { ascending: false, nullsFirst: false })
       .limit(1);
     setFocusTaskTitle(focusData?.[0]?.title || null);
@@ -178,6 +180,7 @@ export default function Dashboard() {
     const { data: behaviorData } = await supabase
       .from("behavior_logs")
       .select("value")
+      .eq("user_id", riskUser.id)
       .eq("metric_type", "productivity_score")
       .order("recorded_at", { ascending: false })
       .limit(1);

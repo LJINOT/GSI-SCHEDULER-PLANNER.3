@@ -459,18 +459,22 @@ export default function Schedule() {
         [];
 
       /*
-       * Only tasks with no start_time are
-       * genuinely unscheduled.
-       *
-       * Do NOT fall back to all rows when
-       * noStart is empty.
+       * Eligible for Auto Schedule = all active
+       * (non-done, non-archived) tasks for this user.
+       * Previously only null start_time was shown, so users
+       * who set due/start times only saw 1 row while Tasks
+       * page showed all 7.
+       * Prefer null start_time first, then others (can re-place).
        */
-      setUnscheduled(
-        rows.filter(
-          (task) =>
-            !task.start_time
-        )
-      );
+      const eligible = rows
+        .filter((task) => task.status !== "done")
+        .sort((a, b) => {
+          const aU = a.start_time ? 1 : 0;
+          const bU = b.start_time ? 1 : 0;
+          if (aU !== bU) return aU - bU;
+          return (b.priority_score || 0) - (a.priority_score || 0);
+        });
+      setUnscheduled(eligible);
 
       setLoadingTasks(
         false

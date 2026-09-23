@@ -14,6 +14,10 @@ type Task = {
   difficulty?: string;
   estimated_duration?: number;
   due_date?: string | null;
+  start_time?: string | null;
+  priority_score?: number | null;
+  status?: string;
+  archived?: boolean;
 };
 
 type Block = {
@@ -41,7 +45,7 @@ function toHHMM(min: number): string {
    BREAK STYLE
    ========================================================= */
 
-type BreakStyle = "standard" | "pomodoro" | "extended" | "minimal";
+type BreakStyle = "pomodoro" | "long-focus" | "flexible";
 
 type BreakBlock = {
   start: number;
@@ -49,32 +53,7 @@ type BreakBlock = {
   title: string;
 };
 
-/*
- * Break patterns used by the CSP.
- *
- * IMPORTANT:
- * These values must match the values stored in
- * profiles.break_style.
- */
 const BREAK_STYLES: Record<BreakStyle, BreakBlock[]> = {
-  standard: [
-    {
-      start: 9 * 60,
-      dur: 15,
-      title: "Morning Break (Snack)",
-    },
-    {
-      start: 12 * 60,
-      dur: 60,
-      title: "Lunch Break",
-    },
-    {
-      start: 15 * 60,
-      dur: 15,
-      title: "Afternoon Break (Snack)",
-    },
-  ],
-
   pomodoro: [
     {
       start: 9 * 60,
@@ -93,25 +72,15 @@ const BREAK_STYLES: Record<BreakStyle, BreakBlock[]> = {
     },
   ],
 
-  extended: [
-    {
-      start: 9 * 60,
-      dur: 20,
-      title: "Morning Break (Snack)",
-    },
+  "long-focus": [
     {
       start: 12 * 60,
       dur: 60,
       title: "Lunch Break",
     },
-    {
-      start: 15 * 60,
-      dur: 20,
-      title: "Afternoon Break (Snack)",
-    },
   ],
 
-  minimal: [
+  flexible: [
     {
       start: 12 * 60,
       dur: 45,
@@ -121,26 +90,15 @@ const BREAK_STYLES: Record<BreakStyle, BreakBlock[]> = {
 };
 
 function getBreakBlocks(breakStyle?: string): BreakBlock[] {
-  const style = (breakStyle || "standard") as BreakStyle;
+  const style = (breakStyle || "pomodoro") as BreakStyle;
 
-  return BREAK_STYLES[style] ?? BREAK_STYLES.standard;
+  return BREAK_STYLES[style] ?? BREAK_STYLES.pomodoro;
 }
 
 /* =========================================================
-   CSP - CONSTRAINT SATISFACTION PROBLEM
+   CSP
    ========================================================= */
 
-/*
- * Places tasks sequentially while respecting:
- *
- * 1. Configured work window
- * 2. Selected Break Style
- * 3. Break durations
- * 4. Task duration
- * 5. No task overlap
- *
- * The task order is supplied by PSO.
- */
 function csp(
   tasks: Task[],
   startMin: number,
@@ -148,16 +106,10 @@ function csp(
   breakStyle: string
 ): Block[] | null {
   const blocks: Block[] = [];
+
   let cursor = startMin;
 
-  // Get breaks according to the user's selected Break Style.
-  const selectedBreaks = getBreakBlocks(breakStyle);
-
-  /*
-   * Only include breaks that completely fit inside
-   * the configured work window.
-   */
-  const pending = selectedBreaks
+  const pending = getBreakBlocks(breakStyle)
     .filter(
       (b) =>
         b.start >= startMin &&
@@ -168,28 +120,22 @@ function csp(
       used: false,
     }));
 
-  /*
-   * Insert any break that occurs before the end of
-   * the next task.
-   */
   const flushBreaks = (until: number) => {
     for (const b of pending) {
       if (b.used) continue;
 
+      /*
+       * The break must occur before the task if the task
+       * would cross the break's start time.
+       */
       if (until > b.start) {
-        /*
-         * Move the cursor to the break start.
-         * This prevents a task from occupying the
-         * break period.
-         */
         cursor = Math.max(cursor, b.start);
 
         /*
-         * Make sure the break itself still fits
-         * inside the work window.
+         * If the break itself cannot fit, fail the CSP.
          */
         if (cursor + b.dur > endMin) {
-          continue;
+          return false;
         }
 
         blocks.push({
@@ -205,31 +151,28 @@ function csp(
         b.used = true;
       }
     }
+
+    return true;
   };
 
-  /*
-   * Place each task in the PSO-provided order.
-   */
   for (const t of tasks) {
-    /*
-     * Keep the existing duration limits:
-     * minimum = 5 minutes
-     * maximum = 480 minutes
-     */
     const dur = Math.max(
       5,
       Math.min(480, t.estimated_duration || 30)
     );
 
     /*
-     * Check whether a configured break occurs
-     * during this task's possible placement.
+     * Check whether a break needs to be inserted
+     * before this task.
      */
-    flushBreaks(cursor + dur);
+    const breaksOk = flushBreaks(cursor + dur);
+
+    if (!breaksOk) {
+      return null;
+    }
 
     /*
-     * If the task no longer fits in the work window,
-     * CSP fails.
+     * Never allow a task to go beyond work_end.
      */
     if (cursor + dur > endMin) {
       return null;
@@ -248,10 +191,54 @@ function csp(
   }
 
   /*
-   * Insert any remaining break that occurs after
-   * the final task but still belongs to the work window.
+   * Add remaining breaks after the final task
+   * if they occur inside the work window.
    */
-  flushBreaks(endMin);
+  for (const b of pending) {
+    if (b.used) continue;
+
+    if (b.start >= cursor && b.start + b.dur <= endMin) {
+      blocks.push({
+        task_id: `break-${b.start}`,
+        title: b.title,
+        start: toHHMM(b.start),
+        end: toHHMM(b.start + b.dur),
+        category: "Break",
+        kind: "break",
+      });
+
+      b.used = true;
+    }
+  }
+
+  /*
+   * Final chronological ordering.
+   */
+  blocks.sort((a, b) => {
+    const startDiff =
+      parseHHMM(a.start) - parseHHMM(b.start);
+
+    if (startDiff !== 0) {
+      return startDiff;
+    }
+
+    return parseHHMM(a.end) - parseHHMM(b.end);
+  });
+
+  /*
+   * Final overlap validation.
+   */
+  for (let i = 1; i < blocks.length; i++) {
+    const previous = blocks[i - 1];
+    const current = blocks[i];
+
+    if (
+      parseHHMM(current.start) <
+      parseHHMM(previous.end)
+    ) {
+      return null;
+    }
+  }
 
   return blocks;
 }
@@ -290,7 +277,8 @@ function fitness(
     const b = placedTasks[i];
 
     if (!b) {
-      return Number.POSITIVE_INFINITY;
+      score += 1000;
+      continue;
     }
 
     const bStart = parseHHMM(b.start);
@@ -303,15 +291,14 @@ function fitness(
         ? 1
         : 0.3;
 
-    /*
-     * Reward hard tasks being inside the user's
-     * configured peak window by penalizing them
-     * when they are outside it.
-     */
     const insidePeak =
       bStart >= peakStart &&
       bEnd <= peakEnd;
 
+    /*
+     * Hard tasks should preferably be inside
+     * the user's peak working period.
+     */
     if (
       t.difficulty === "hard" &&
       !insidePeak
@@ -320,7 +307,9 @@ function fitness(
     }
 
     /*
-     * Penalize using the peak period for easy tasks.
+     * Easy tasks inside peak time are slightly
+     * discouraged because peak time is more useful
+     * for difficult work.
      */
     if (
       t.difficulty === "easy" &&
@@ -330,14 +319,14 @@ function fitness(
     }
 
     /*
-     * Penalize tasks that are placed later in
-     * the configured work window.
+     * Later placement receives a small penalty.
      */
     const windowSize =
       endMin - startMin || 1;
 
     const startFrac =
-      (bStart - startMin) / windowSize;
+      (bStart - startMin) /
+      windowSize;
 
     score +=
       diffWeight *
@@ -345,8 +334,7 @@ function fitness(
       6;
 
     /*
-     * Deadline penalty if the task finishes after
-     * its due date today.
+     * Deadline penalty.
      */
     if (t.due_date) {
       const due =
@@ -374,11 +362,7 @@ function fitness(
   /*
    * Category switching penalty.
    */
-  for (
-    let i = 1;
-    i < tasks.length;
-    i++
-  ) {
+  for (let i = 1; i < tasks.length; i++) {
     if (
       (tasks[i].category || "") !==
       (tasks[i - 1].category || "")
@@ -428,33 +412,22 @@ function pso(
     };
   }
 
-  /*
-   * Random-key PSO representation.
-   */
   const rng = () => Math.random();
 
   const swarm = Array.from(
-    {
-      length: opts.swarm,
-    },
+    { length: opts.swarm },
     () =>
       Array.from(
-        {
-          length: n,
-        },
+        { length: n },
         rng
       )
   );
 
   const velocity = Array.from(
-    {
-      length: opts.swarm,
-    },
+    { length: opts.swarm },
     () =>
       Array.from(
-        {
-          length: n,
-        },
+        { length: n },
         () => (rng() - 0.5) * 0.2
       )
   );
@@ -489,9 +462,6 @@ function pso(
   let gbestScore =
     pbestScore[gIdx];
 
-  /*
-   * Main PSO iteration loop.
-   */
   for (
     let it = 0;
     it < opts.iters;
@@ -534,7 +504,9 @@ function pso(
       }
 
       const s = fitness(
-        decode(swarm[i]).map(
+        decode(
+          swarm[i]
+        ).map(
           (idx) => tasks[idx]
         ),
         startMin,
@@ -571,7 +543,97 @@ function pso(
 }
 
 /* =========================================================
-   EDGE FUNCTION
+   SAVE GENERATED START TIMES
+   ========================================================= */
+
+async function persistSchedule(
+  supabase: any,
+  blocks: Block[],
+  scheduleDate: string,
+  timezone: string
+) {
+  const taskBlocks = blocks.filter(
+    (b) => b.kind === "task"
+  );
+
+  for (const block of taskBlocks) {
+    /*
+     * Build local date/time.
+     *
+     * Example:
+     * 2026-09-23 + 09:00
+     */
+    const localDateTime =
+      `${scheduleDate}T${block.start}:00`;
+
+    /*
+     * Use the user's timezone when converting
+     * local schedule time to an ISO timestamp.
+     */
+    const date = new Date(
+      `${localDateTime}`
+    );
+
+    /*
+     * If the runtime cannot directly interpret
+     * the IANA timezone, preserve the local
+     * schedule timestamp rather than moving it
+     * to an incorrect date.
+     */
+    let startTime: string;
+
+    try {
+      const formatter =
+        new Intl.DateTimeFormat(
+          "en-US",
+          {
+            timeZone: timezone,
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          }
+        );
+
+      /*
+       * The formatter is intentionally invoked
+       * to validate the supplied timezone.
+       */
+      formatter.format(date);
+
+      /*
+       * Supabase timestamp storage.
+       * The local schedule date/time is kept as
+       * the scheduled wall-clock time.
+       */
+      startTime =
+        `${scheduleDate}T${block.start}:00`;
+    } catch {
+      startTime =
+        `${scheduleDate}T${block.start}:00`;
+    }
+
+    const { error } =
+      await supabase
+        .from("tasks")
+        .update({
+          start_time: startTime,
+        })
+        .eq("id", block.task_id);
+
+    if (error) {
+      throw new Error(
+        `Failed to save schedule for task ${block.task_id}: ${error.message}`
+      );
+    }
+  }
+}
+
+/* =========================================================
+   MAIN EDGE FUNCTION
    ========================================================= */
 
 serve(async (req) => {
@@ -610,7 +672,8 @@ serve(async (req) => {
 
     const {
       data: { user },
-    } = await supabase.auth.getUser();
+    } =
+      await supabase.auth.getUser();
 
     if (!user) {
       return new Response(
@@ -630,89 +693,73 @@ serve(async (req) => {
     }
 
     /* =====================================================
+       REQUEST BODY
+       ===================================================== */
+
+    let body: any = {};
+
+    try {
+      body = await req.json();
+    } catch {
+      body = {};
+    }
+
+    /*
+     * Allow the Auto Schedule page to optionally
+     * provide the date it wants to schedule.
+     *
+     * Defaults to today.
+     */
+    const scheduleDate =
+      body?.schedule_date ||
+      new Date()
+        .toISOString()
+        .slice(0, 10);
+
+    /* =====================================================
        GET ACTIVE TASKS
        ===================================================== */
 
     const {
       data: allTasks,
-    } = await supabase
-      .from("tasks")
-      .select("*")
-      .neq("status", "done")
-      .eq("user_id", user.id)
-      .eq("archived", false);
+      error: tasksError,
+    } =
+      await supabase
+        .from("tasks")
+        .select("*")
+        .eq(
+          "user_id",
+          user.id
+        )
+        .eq(
+          "archived",
+          false
+        )
+        .neq(
+          "status",
+          "done"
+        );
+
+    if (tasksError) {
+      throw tasksError;
+    }
 
     /*
-     * Only consider tasks that belong to today:
-     *
-     * - due today / within the next 24 hours
-     * - starting today / within the next 24 hours
-     * - undated tasks
+     * Auto Schedule works with all active unfinished
+     * tasks instead of only tasks inside the next 24h.
      */
-    const nowMs =
-      Date.now();
-
-    const dayEndMs =
-      nowMs +
-      24 *
-        60 *
-        60 *
-        1000;
-
-    const tasks =
+    const tasks: Task[] =
       (allTasks || []).filter(
-        (t: any) => {
-          const due =
-            t.due_date
-              ? new Date(
-                  t.due_date
-                ).getTime()
-              : null;
-
-          const start =
-            t.start_time
-              ? new Date(
-                  t.start_time
-                ).getTime()
-              : null;
-
-          if (
-            due === null &&
-            start === null
-          ) {
-            return true;
-          }
-
-          if (
-            due !== null &&
-            due <= dayEndMs
-          ) {
-            return true;
-          }
-
-          if (
-            start !== null &&
-            start <= dayEndMs &&
-            start >=
-              nowMs -
-                24 *
-                  60 *
-                  60 *
-                  1000
-          ) {
-            return true;
-          }
-
-          return false;
-        }
+        (t: any) =>
+          t.archived !== true &&
+          t.status !== "done"
       );
 
-    if (
-      tasks.length === 0
-    ) {
+    if (tasks.length === 0) {
       return new Response(
         JSON.stringify({
           blocks: [],
+          deferred: [],
           algorithm:
             "csp-pso",
           timestamp:
@@ -729,21 +776,22 @@ serve(async (req) => {
     }
 
     /* =====================================================
-       USER PROFILE / SETTINGS
+       PROFILE
        ===================================================== */
 
     const {
       data: profile,
-    } = await supabase
-      .from("profiles")
-      .select(
-        "work_start, work_end, peak_start, peak_end, break_style"
-      )
-      .eq(
-        "id",
-        user.id
-      )
-      .single();
+    } =
+      await supabase
+        .from("profiles")
+        .select(
+          "work_start, work_end, peak_start, peak_end, break_style, timezone"
+        )
+        .eq(
+          "id",
+          user.id
+        )
+        .single();
 
     const workStart =
       profile?.work_start ||
@@ -761,13 +809,13 @@ serve(async (req) => {
       profile?.peak_end ||
       "12:00";
 
-    /*
-     * The Break Style now comes directly from
-     * profiles.break_style.
-     */
     const breakStyle =
       profile?.break_style ||
-      "standard";
+      "pomodoro";
+
+    const timezone =
+      profile?.timezone ||
+      "Asia/Manila";
 
     const startMin =
       parseHHMM(
@@ -789,34 +837,21 @@ serve(async (req) => {
         peakEnd
       );
 
-    const windowSize =
-      endMin -
-      startMin;
+    if (
+      endMin <= startMin
+    ) {
+      throw new Error(
+        "Work end time must be later than work start time."
+      );
+    }
 
     /* =====================================================
-       CAPACITY
+       ORDER CANDIDATE TASKS
        ===================================================== */
 
-    /*
-     * Don't fail when backlog exceeds today's
-     * available work window.
-     *
-     * Reserve approximately 15% for breaks.
-     */
-    const capacity =
-      Math.max(
-        0,
-        Math.floor(
-          windowSize *
-            0.85
-        )
-      );
-
     const byUrgency =
-      [
-        ...(tasks as Task[]),
-      ].sort(
-        (a: any, b: any) => {
+      [...tasks].sort(
+        (a, b) => {
           const ad =
             a.due_date
               ? new Date(
@@ -844,74 +879,19 @@ serve(async (req) => {
         }
       );
 
-    const fitting: Task[] =
-      [];
-
-    const deferred: Task[] =
-      [];
-
-    let used = 0;
-
-    for (
-      const t of byUrgency
-    ) {
-      const dur =
-        Math.max(
-          5,
-          Math.min(
-            480,
-            t.estimated_duration ||
-              30
-          )
-        );
-
-      if (
-        used + dur <=
-        capacity
-      ) {
-        fitting.push(t);
-        used += dur;
-      } else {
-        deferred.push(t);
-      }
-    }
-
-    if (
-      fitting.length ===
-      0
-    ) {
-      return new Response(
-        JSON.stringify({
-          blocks: [],
-          deferred:
-            deferred.map(
-              (t) => ({
-                task_id:
-                  t.id,
-                title:
-                  t.title,
-              })
-            ),
-          note:
-            "No task fits within the configured work window. Widen your work hours in Settings.",
-          algorithm:
-            "csp-pso",
-          timestamp:
-            new Date().toISOString(),
-        }),
-        {
-          headers: {
-            ...corsHeaders,
-            "Content-Type":
-              "application/json",
-          },
-        }
-      );
-    }
-
     /* =====================================================
-       PSO
+       CSP / PSO
        ===================================================== */
+
+    /*
+     * Do NOT use the old 85% capacity filter.
+     *
+     * Give all active tasks to PSO/CSP.
+     * CSP determines what can actually fit.
+     */
+    const fitting: Task[] = [
+      ...byUrgency,
+    ];
 
     const {
       order,
@@ -927,97 +907,172 @@ serve(async (req) => {
 
     const ordered =
       order.map(
-        (i) =>
-          fitting[i]
+        (i) => fitting[i]
       );
 
-    /* =====================================================
-       CSP
-       ===================================================== */
-
     /*
-     * CSP receives the SAME Break Style used by PSO.
+     * Try the PSO order first.
      */
-    const blocks =
+    let blocks =
       csp(
         ordered,
         startMin,
         endMin,
         breakStyle
-      ) ||
-      csp(
-        fitting,
-        startMin,
-        endMin,
-        breakStyle
-      ) ||
-      [];
+      );
 
-    /* =====================================================
-       CHRONOLOGICAL ORDER
-       ===================================================== */
+    /*
+     * If the full list cannot fit, build the
+     * largest feasible prefix.
+     */
+    if (!blocks) {
+      const feasibleTasks: Task[] = [];
 
-    blocks.sort(
-      (a, b) => {
-        const toMin = (
-          s: string
-        ) => {
-          const [
-            h,
-            m,
-          ] = (
-            s ||
-            "99:99"
-          )
-            .split(":")
-            .map(Number);
+      for (
+        const task of ordered
+      ) {
+        const candidate = [
+          ...feasibleTasks,
+          task,
+        ];
 
-          return (
-            (h || 0) *
-              60 +
-            (m || 0)
+        const candidateBlocks =
+          csp(
+            candidate,
+            startMin,
+            endMin,
+            breakStyle
           );
-        };
 
-        const d =
-          toMin(a.start) -
-          toMin(b.start);
-
-        if (d !== 0) {
-          return d;
+        if (
+          candidateBlocks
+        ) {
+          feasibleTasks.push(
+            task
+          );
         }
+      }
 
-        return (
-          toMin(a.end) -
-          toMin(b.end)
+      blocks =
+        csp(
+          feasibleTasks,
+          startMin,
+          endMin,
+          breakStyle
+        ) || [];
+
+      /*
+       * Tasks not included in the feasible set
+       * are deferred.
+       */
+      const scheduledIds =
+        new Set(
+          feasibleTasks.map(
+            (t) => t.id
+          )
+        );
+
+      const deferred =
+        fitting.filter(
+          (t) =>
+            !scheduledIds.has(
+              t.id
+            )
+        );
+
+      /* ================================================
+         PERSIST
+         ================================================ */
+
+      if (blocks.length > 0) {
+        await persistSchedule(
+          supabase,
+          blocks,
+          scheduleDate,
+          timezone
         );
       }
-    );
+
+      blocks.sort(
+        (a, b) =>
+          parseHHMM(a.start) -
+          parseHHMM(b.start)
+      );
+
+      return new Response(
+        JSON.stringify({
+          blocks,
+          deferred:
+            deferred.map(
+              (t) => ({
+                task_id: t.id,
+                title: t.title,
+                duration:
+                  t.estimated_duration ||
+                  30,
+              })
+            ),
+          pso: {
+            fitness: best,
+            iterations: 60,
+            swarm_size: 25,
+          },
+          window: {
+            start:
+              workStart,
+            end:
+              workEnd,
+            peak_start:
+              peakStart,
+            peak_end:
+              peakEnd,
+            break_style:
+              breakStyle,
+            timezone,
+            schedule_date:
+              scheduleDate,
+          },
+          algorithm:
+            "csp + pso-random-key + peak-aware",
+          timestamp:
+            new Date().toISOString(),
+        }),
+        {
+          headers: {
+            ...corsHeaders,
+            "Content-Type":
+              "application/json",
+          },
+        }
+      );
+    }
 
     /* =====================================================
-       RESPONSE
+       EVERYTHING FITS
        ===================================================== */
+
+    await persistSchedule(
+      supabase,
+      blocks,
+      scheduleDate,
+      timezone
+    );
+
+    blocks.sort(
+      (a, b) =>
+        parseHHMM(a.start) -
+        parseHHMM(b.start)
+    );
 
     return new Response(
       JSON.stringify({
         blocks,
-
-        deferred:
-          deferred.map(
-            (t) => ({
-              task_id:
-                t.id,
-              title:
-                t.title,
-            })
-          ),
-
+        deferred: [],
         pso: {
           fitness: best,
           iterations: 60,
           swarm_size: 25,
         },
-
         window: {
           start:
             workStart,
@@ -1029,11 +1084,12 @@ serve(async (req) => {
             peakEnd,
           break_style:
             breakStyle,
+          timezone,
+          schedule_date:
+            scheduleDate,
         },
-
         algorithm:
-          "csp-backtracking + pso-random-key + peak-aware",
-
+          "csp + pso-random-key + peak-aware",
         timestamp:
           new Date().toISOString(),
       }),
@@ -1054,8 +1110,7 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         error:
-          (e as Error)
-            .message,
+          (e as Error).message,
       }),
       {
         status: 500,

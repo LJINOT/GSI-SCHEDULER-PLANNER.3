@@ -14,7 +14,12 @@ export default function Timesheet() {
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
 
   useEffect(() => {
-    supabase.from("tasks").select("*").neq("status", "done").then(({ data }) => setTasks(data || []));
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setTasks([]); return; }
+      const { data } = await supabase.from("tasks").select("*").eq("user_id", user.id).neq("status", "done");
+      setTasks(data || []);
+    })();
     supabase.from("time_entries").select("*, tasks(title)").order("start_time", { ascending: false }).limit(20).then(({ data }) => {
       const rows = data || [];
       setEntries(rows);

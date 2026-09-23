@@ -321,7 +321,7 @@ serve(async (req) => {
       .filter((p) => p.available && p.recommended_start)
       .sort((a, b) => parseHHMM(a.recommended_start) - parseHHMM(b.recommended_start));
     const unavailable = picks.filter((p) => !p.available);
-    const finalPicks = [...available, ...unavailable].slice(0, 5);
+    const finalPicks = [...available, ...unavailable];
 
     // Sanity: no two available picks may overlap
     for (let i = 0; i < available.length; i++) {
@@ -336,31 +336,6 @@ serve(async (req) => {
       }
     }
 
-    const recommendationTimestamp = new Date().toISOString();
-
-    // Persist the exact recommendation event for this user.
-    // This keeps "Last analyzed" tied to recommendations rather than
-    // unrelated behavior-log events.
-    const { error: historyError } = await supabase
-      .from("recommendation_history")
-      .insert({
-        user_id: user.id,
-        source: "smart-picks",
-        picks: finalPicks,
-        factors: {
-          weights: W,
-          peak_source: source,
-          peak_window: `${to12h(toHHMM(peakStartMin))} – ${to12h(toHHMM(peakEndMin))}`,
-          break_style: profile?.break_style || "pomodoro",
-          timezone: userTz,
-        },
-        created_at: recommendationTimestamp,
-      });
-
-    if (historyError) {
-      console.warn("Could not save recommendation history:", historyError.message);
-    }
-
     return new Response(
       JSON.stringify({
         picks: finalPicks,
@@ -369,7 +344,7 @@ serve(async (req) => {
         peak_window: `${to12h(toHHMM(peakStartMin))} – ${to12h(toHHMM(peakEndMin))}`,
         break_style: profile?.break_style || "pomodoro",
         algorithm: "ahp-immediate-tasks + sequential-non-overlapping-slots",
-        timestamp: recommendationTimestamp,
+        timestamp: new Date().toISOString(),
         timezone: userTz,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },

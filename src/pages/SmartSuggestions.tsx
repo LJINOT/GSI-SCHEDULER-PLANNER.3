@@ -193,29 +193,43 @@ export default function SmartSuggestions() {
   useEffect(() => {
     const load = async () => {
       setLoadingPatterns(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setTimeEntries([]);
+        setTasks([]);
+        setLastAnalyzedAt(null);
+        setLoadingPatterns(false);
+        return;
+      }
+
       const since = new Date();
       since.setDate(since.getDate() - 14);
 
-      const [{ data: entries }, { data: taskRows }, { data: logs }] = await Promise.all([
+      const [{ data: entries }, { data: taskRows }, { data: history }] = await Promise.all([
         supabase
           .from("time_entries")
           .select("id, start_time, end_time, duration, task_id")
+          .eq("user_id", user.id)
           .gte("start_time", since.toISOString())
           .order("start_time", { ascending: false }),
         supabase
           .from("tasks")
-          .select("id, title, estimated_duration, status, category"),
+          .select("id, title, estimated_duration, status, category")
+          .eq("user_id", user.id)
+          .eq("archived", false),
         supabase
-          .from("behavior_logs")
-          .select("recorded_at, metric_type, value")
-          .order("recorded_at", { ascending: false })
-          .limit(5),
+          .from("recommendation_history")
+          .select("created_at")
+          .eq("user_id", user.id)
+          .eq("source", "smart-picks")
+          .order("created_at", { ascending: false })
+          .limit(1),
       ]);
 
       setTimeEntries((entries as TimeEntry[]) || []);
       setTasks((taskRows as TaskLite[]) || []);
 
-      const latest = logs?.[0]?.recorded_at || payload?.timestamp || null;
+      const latest = history?.[0]?.created_at || payload?.timestamp || null;
       setLastAnalyzedAt(latest);
       setLoadingPatterns(false);
     };

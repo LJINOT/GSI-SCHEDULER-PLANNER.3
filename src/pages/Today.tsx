@@ -333,9 +333,9 @@ export default function Today() {
             </CardContent>
           </Card>
         ) : (
-          <div className="rounded-lg border overflow-hidden">
+          <div className="rounded-lg border overflow-hidden max-h-[min(60vh,520px)] overflow-y-auto">
             <Table>
-              <TableHeader>
+              <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur supports-[backdrop-filter]:bg-muted/80">
                 <TableRow className="bg-muted/40">
                   <TableHead className="text-xs w-12">Rank</TableHead>
                   <TableHead className="text-xs">Task</TableHead>

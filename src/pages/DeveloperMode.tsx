@@ -27,8 +27,7 @@ import {
   useDevUnlock,
 } from "@/hooks/use-dev-mode";
 
-// Raw source imports (Vite `?raw`) — the actual production code
-// for the three from-scratch algorithms.
+// Raw production source
 import scheduleSource from "../../supabase/functions/generate-schedule/index.ts?raw";
 import prioritiesSource from "../../supabase/functions/rank-priorities/index.ts?raw";
 
@@ -41,59 +40,95 @@ function CodeBlock({ code }: { code: string }) {
 }
 
 /* =========================================================
-   AHP — MATCHES CURRENT rank-priorities EDGE FUNCTION
+   AHP
+   Mathematical Model:
+   
+   Weight Normalization:
+   Σ wj = 1
+
+   Weighted Sum:
+   Pi = Σ wj · sij
    ========================================================= */
 
 const HOW_AHP = [
-  "1. A fixed 4×4 Saaty pairwise-comparison matrix is used for four criteria: Deadline Proximity, Difficulty, Duration, and Category Importance.",
+  "1. The Analytic Hierarchy Process (AHP) calculates a priority score for each task using four evaluation criteria: Deadline Proximity, Difficulty, Duration, and Category Importance.",
 
-  "2. The system uses power iteration for 100 rounds to estimate the principal eigenvector. These values become the weights of the four criteria.",
+  "2. A fixed 4×4 Saaty pairwise-comparison matrix is used to determine the relative importance of the four criteria. The resulting criterion weights are normalized so that Σwj = 1.",
 
-  "3. The system calculates λ_max, then uses it to calculate the Consistency Index (CI) and Consistency Ratio (CR). For 4 criteria, the Random Index (RI) is 0.90.",
+  "3. Power iteration is used to estimate the principal eigenvector of the pairwise-comparison matrix. The eigenvector provides the normalized weight wj for each criterion.",
 
-  "4. Each task receives a 0–1 score for every criterion. Deadline scoring considers no due date, overdue tasks, and different time ranges before the deadline. Difficulty uses Easy = 0.3, Medium = 0.6, and Hard = 1.0. Duration gives higher scores to shorter tasks. Category uses the category-importance values defined in the production function.",
+  "4. The consistency of the pairwise comparisons is evaluated using λmax, the Consistency Index (CI), and the Consistency Ratio (CR). For four criteria, the Random Index (RI) is 0.90.",
 
-  "5. The final priority score is calculated as (deadlineScore × deadlineWeight) + (difficultyScore × difficultyWeight) + (durationScore × durationWeight) + (categoryScore × categoryWeight), then multiplied by 100.",
+  "5. Each task receives a normalized score sij from 0 to 1 for every evaluation criterion. These scores represent the task's performance under deadline proximity, difficulty, duration, and category importance.",
 
-  "6. Priority labels are assigned from the final score: High = 65 or higher, Medium = 40 to below 65, and Low = below 40.",
+  "6. The overall priority of task i is computed using the weighted-sum model: Pi = Σ(wj × sij). The weighted criterion scores are combined to produce one overall priority value for the task.",
+
+  "7. The resulting priority score is used by the scheduling framework to determine the relative importance of tasks before schedule optimization.",
 ];
 
 /* =========================================================
-   PSO — MATCHES CURRENT generate-schedule EDGE FUNCTION
+   PSO
+   Mathematical Model:
+
+   Velocity:
+   Vi(t+1) = wVi(t)
+           + c1r1(Pbest - Xi(t))
+           + c2r2(Gbest - Xi(t))
+
+   Position:
+   Xi(t+1) = Xi(t) + Vi(t+1)
    ========================================================= */
 
 const HOW_PSO = [
-  "1. Each task order is represented using continuous random keys between 0 and 1. Sorting the keys converts a particle into a task sequence.",
+  "1. Particle Swarm Optimization (PSO) explores different task-order configurations to find a schedule with better productivity characteristics.",
 
-  "2. The system creates a swarm of 25 particles. Each particle has a position and velocity and is evaluated by placing its decoded task order through the CSP scheduler.",
+  "2. Each particle represents a candidate solution. The particle position Xi represents the current candidate configuration, while Vi represents its velocity or movement toward another configuration.",
 
-  "3. The fitness function gives a lower score to better schedules. If CSP cannot create a valid schedule, the fitness receives a penalty of 1,000,000,000.",
+  "3. The velocity is updated using the PSO equation: Vi(t+1) = wVi(t) + c1r1(Pbest − Xi(t)) + c2r2(Gbest − Xi(t)).",
 
-  "4. The current fitness rules add +25 when a hard task is scheduled outside the peak window, +8 when an easy task is scheduled inside the peak window, +0.01 for each minute a task starts later within the work window, and +15 when a task is due within 24 hours and starts after the peak window.",
+  "4. The inertia weight w controls the influence of the particle's previous movement. The cognitive coefficient c1 controls the influence of the particle's personal best position, while c2 controls the influence of the swarm's global best position.",
 
-  "5. Each particle updates its velocity using inertia (w = 0.7), personal-best influence (c1 = 1.5), and global-best influence (c2 = 1.5). The particle position is kept within the 0–1 range.",
+  "5. The random variables r1 and r2 are values between 0 and 1. They introduce variation into the particle movement and allow the swarm to explore different candidate solutions.",
 
-  "6. The PSO process runs for 60 iterations. The global best particle provides the final task order that is passed to the CSP placement process.",
+  "6. The particle position is updated using Xi(t+1) = Xi(t) + Vi(t+1). This produces a new candidate solution for the next iteration.",
+
+  "7. Candidate schedules are evaluated using the scheduling fitness function. The objective considers task completion, alignment with the user's productivity or energy pattern, and context-switching penalties.",
+
+  "8. The PSO process continues through multiple iterations while tracking each particle's personal best (Pbest) and the overall swarm's global best (Gbest). The best candidate configuration is selected as the optimized task sequence.",
 ];
 
 /* =========================================================
-   CSP — MATCHES CURRENT generate-schedule EDGE FUNCTION
+   CSP
+   Mathematical Model:
+
+   CSP = (X, D, C)
+
+   Task completion:
+   tifinish = tistart + di
+
+   Deadline:
+   tifinish ≤ deadlinei
+
+   Non-overlap:
+   (tistart + di ≤ tjstart)
+   OR
+   (tjstart + dj ≤ tistart)
    ========================================================= */
 
 const HOW_CSP = [
-  "1. CSP receives the task order produced by PSO together with the user's work start and work end times.",
+  "1. The Constraint Satisfaction Problem (CSP) is represented as CSP = (X, D, C), where X is the set of scheduling variables, D is the domain of permissible time slots, and C is the set of constraints that must be satisfied.",
 
-  "2. Tasks are placed sequentially using a time cursor. The current implementation uses fixed breaks at 9:00–9:15 AM for Morning Snack, 12:00–1:00 PM for Lunch, and 3:00–3:15 PM for Afternoon Snack.",
+  "2. Each task is assigned a start time and finish time within the available work window. The finish time is calculated as tifinish = tistart + di, where di is the estimated task duration.",
 
-  "3. Before placing a task, the scheduler checks whether the task would cross a fixed break. If it would, the task is moved to the time after that break.",
+  "3. Each scheduled task must satisfy the completion boundary constraint tifinish ≤ deadlinei so that the task finishes within its specified deadline.",
 
-  "4. Task duration is limited to a minimum of 5 minutes and a maximum of 480 minutes. If a task cannot fit before the work-end time, CSP returns failure (null).",
+  "4. Tasks must not overlap. For any two tasks i and j, either task i finishes before task j starts, or task j finishes before task i starts: (tistart + di ≤ tjstart) OR (tjstart + dj ≤ tistart).",
 
-  "5. Valid tasks are converted into schedule blocks containing their start and end times, task information, category, and block type. The resulting blocks are sorted by start time.",
+  "5. The CSP evaluates the candidate task order and assigns feasible time slots while respecting the work window and scheduling constraints.",
 
-  "6. The CSP placement is deterministic and greedy for the task order it receives. PSO searches different task orders, while CSP checks whether each order can be placed within the work window and fixed-break constraints.",
+  "6. The CSP provides the feasibility layer of the scheduling framework. PSO explores candidate task sequences, while CSP determines whether the selected sequence can be placed while satisfying the required scheduling constraints.",
 
-  "7. The current CSP implementation does not use a running focus counter, and the break_style setting does not change the fixed 9:00 AM, 12:00 PM, and 3:00 PM breaks.",
+  "7. A valid schedule is therefore one in which tasks are assigned permissible time slots, finish within their deadlines, and do not overlap with other scheduled tasks.",
 ];
 
 export default function DeveloperMode() {
@@ -132,9 +167,7 @@ export default function DeveloperMode() {
       animate={{ opacity: 1, y: 0 }}
       className="max-w-6xl mx-auto space-y-6"
     >
-      {/* =====================================================
-          HEADER
-          ===================================================== */}
+      {/* HEADER */}
 
       <div className="flex items-center gap-3">
         <div className="h-10 w-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
@@ -152,9 +185,7 @@ export default function DeveloperMode() {
         </div>
       </div>
 
-      {/* =====================================================
-          CONTROLS
-          ===================================================== */}
+      {/* CONTROLS */}
 
       <Card>
         <CardHeader className="pb-2">
@@ -164,8 +195,6 @@ export default function DeveloperMode() {
         </CardHeader>
 
         <CardContent className="space-y-4">
-
-          {/* Global Developer Mode */}
 
           <div className="flex items-center justify-between">
             <div>
@@ -188,8 +217,6 @@ export default function DeveloperMode() {
             />
           </div>
 
-          {/* Mechanics */}
-
           <div className="flex items-center justify-between">
             <div>
               <Label
@@ -211,8 +238,6 @@ export default function DeveloperMode() {
             />
           </div>
 
-          {/* Source */}
-
           <div className="flex items-center justify-between">
             <div>
               <Label
@@ -233,8 +258,6 @@ export default function DeveloperMode() {
               onCheckedChange={setShowSource}
             />
           </div>
-
-          {/* Lock */}
 
           <div className="flex items-center justify-between border-t pt-4">
             <div>
@@ -260,9 +283,7 @@ export default function DeveloperMode() {
         </CardContent>
       </Card>
 
-      {/* =====================================================
-          ALGORITHM TABS
-          ===================================================== */}
+      {/* ALGORITHM TABS */}
 
       <Tabs defaultValue="ahp" className="w-full">
 
@@ -285,9 +306,7 @@ export default function DeveloperMode() {
 
         </TabsList>
 
-        {/* ===================================================
-            AHP
-            =================================================== */}
+        {/* AHP */}
 
         <TabsContent
           value="ahp"
@@ -330,9 +349,7 @@ export default function DeveloperMode() {
 
         </TabsContent>
 
-        {/* ===================================================
-            PSO
-            =================================================== */}
+        {/* PSO */}
 
         <TabsContent
           value="pso"
@@ -375,9 +392,7 @@ export default function DeveloperMode() {
 
         </TabsContent>
 
-        {/* ===================================================
-            CSP
-            =================================================== */}
+        {/* CSP */}
 
         <TabsContent
           value="csp"

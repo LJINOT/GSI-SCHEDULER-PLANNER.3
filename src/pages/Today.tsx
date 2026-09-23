@@ -90,27 +90,26 @@ export default function Today() {
 
   useEffect(() => {
     const load = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      const since = new Date();
+      since.setDate(since.getDate() - 7);
+
+      const { data: { user: u } } = await supabase.auth.getUser();
+      if (!u) {
         setTaskMap({});
         setRecentActivityIds(new Set());
         return;
       }
-
-      const since = new Date();
-      since.setDate(since.getDate() - 7);
-
       const [{ data: tasks }, { data: entries }] = await Promise.all([
         supabase
           .from("tasks")
           .select("id, title, status, due_date, start_time, estimated_duration, priority_score, category")
-          .eq("user_id", user.id)
+          .eq("user_id", u.id)
           .eq("archived", false)
           .neq("status", "done"),
         supabase
           .from("time_entries")
           .select("task_id")
-          .eq("user_id", user.id)
+          .eq("user_id", u.id)
           .gte("start_time", since.toISOString()),
       ]);
 
@@ -128,29 +127,6 @@ export default function Today() {
     };
     load();
   }, [payload?.timestamp]);
-
-  // Always refresh recommendations from the current account when the page opens.
-  // This prevents a new user from seeing a stale one-task cached result.
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      setLoading(true);
-      try {
-        const { data, error } = await supabase.functions.invoke("smart-picks", { body: {} });
-        if (cancelled) return;
-        if (error) throw error;
-        const next: Payload = { ...(data || {}), picks: Array.isArray(data?.picks) ? data.picks : [] };
-        setPayload(next);
-        saveCache(CACHE_KEY, next);
-      } catch (err) {
-        if (!cancelled) console.error("Failed to refresh Today AI recommendations:", err);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    void refresh();
-    return () => { cancelled = true; };
-  }, []);
 
   const rankedRows = useMemo(() => {
     return picks.map((p, i) => {
@@ -265,6 +241,13 @@ export default function Today() {
     }
     setLoading(false);
   };
+
+  // Load recommendations for this user when page opens empty
+  useEffect(() => {
+    if (!payload?.picks?.length) void getSmartPicks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
 
   const decisionFactors = useMemo(() => {
     // Only show factors the backend actually used

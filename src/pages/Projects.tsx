@@ -153,6 +153,18 @@ export default function Projects() {
     setNameError("");
 
     if (editingProject) {
+      const norm = name.trim().toLowerCase();
+      const { data: existingProjects } = await supabase
+        .from("projects")
+        .select("id, name")
+        .eq("user_id", user.id)
+        .or("archived.eq.false,archived.is.null");
+      if ((existingProjects || []).some((p: { id: string; name?: string }) =>
+        p.id !== editingProject?.id && String(p.name || "").trim().toLowerCase() === norm
+      )) {
+        setNameError("Project name already exists. Please use a different project name.");
+        return;
+      }
       const { error } = await supabase.from("projects").update({
         name: name.trim(), description: description.trim() || null, color,
       }).eq("id", editingProject.id);
@@ -168,6 +180,16 @@ export default function Projects() {
     const { data: { user }, error: authErr } = await supabase.auth.getUser();
     if (authErr || !user) {
       toast.error("Please sign in to create a project.");
+      return;
+    }
+    const norm = name.trim().toLowerCase();
+    const { data: existingProjects } = await supabase
+      .from("projects")
+      .select("id, name")
+      .eq("user_id", user.id)
+      .or("archived.eq.false,archived.is.null");
+    if ((existingProjects || []).some((p: { name?: string }) => String(p.name || "").trim().toLowerCase() === norm)) {
+      setNameError("Project name already exists. Please use a different project name.");
       return;
     }
     const { error } = await supabase.from("projects").insert({
@@ -313,7 +335,7 @@ export default function Projects() {
     if (task.status === status) return;
     setTasks(prev => prev.map(t => (t.id === task.id ? { ...t, status } : t)));
     const { error } = await supabase.from("tasks").update({ status }).eq("id", task.id);
-    if (error) { toast.error(error.message); fetchAll(); }
+    if (error) { toast.error(/duplicate|unique/i.test(error.message) ? "Project name already exists. Please use a different project name." : error.message); fetchAll(); }
   };
 
   return (

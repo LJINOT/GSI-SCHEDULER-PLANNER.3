@@ -74,24 +74,54 @@ export default function Tasks() {
   }, [searchParams, loading]);
 
   const fetchAll = async () => {
+    setLoading(true);
     const { data: { user }, error: authErr } = await supabase.auth.getUser();
     if (authErr || !user) {
       setTasks([]);
       setProjects([]);
       setHistory({});
       setLoading(false);
-      if (!user) toast.error("Please sign in to view your tasks.");
       return;
     }
     const uid = user.id;
-    const [{ data: t, error }, { data: p }, { data: h }] = await Promise.all([
-      supabase.from("tasks").select("*").eq("user_id", uid).eq("archived", false).order("created_at", { ascending: false }),
-      supabase.from("projects").select("id, name, color").eq("user_id", uid).eq("archived", false).order("created_at", { ascending: false }),
-      supabase.from("task_history").select("id, task_id, note, created_at").eq("user_id", uid).order("created_at", { ascending: false }),
+
+    // Same ownership model as Dashboard: user_id = auth user.
+    // Active lists exclude archived; treat null archived as active (legacy rows).
+    const [{ data: t, error: tErr }, { data: p, error: pErr }, { data: h }] = await Promise.all([
+      supabase
+        .from("tasks")
+        .select("*")
+        .eq("user_id", uid)
+        .or("archived.eq.false,archived.is.null")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("projects")
+        .select("id, name, color")
+        .eq("user_id", uid)
+        .or("archived.eq.false,archived.is.null")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("task_history")
+        .select("id, task_id, note, created_at")
+        .eq("user_id", uid)
+        .order("created_at", { ascending: false }),
     ]);
-    if (error) toast.error(error.message);
-    else setTasks(t || []);
-    setProjects(p || []);
+
+    if (tErr) {
+      console.error("[Tasks] fetch tasks failed", tErr.message, "user", uid);
+      toast.error(tErr.message);
+      setTasks([]);
+    } else {
+      setTasks(t || []);
+    }
+    if (pErr) {
+      console.error("[Projects list on Tasks] fetch failed", pErr.message);
+      toast.error(pErr.message);
+      setProjects([]);
+    } else {
+      setProjects(p || []);
+    }
+
     const grouped: Record<string, { id: string; note: string; created_at: string }[]> = {};
     for (const row of h || []) {
       (grouped[row.task_id] ||= []).push({ id: row.id, note: row.note, created_at: row.created_at });
@@ -115,7 +145,7 @@ export default function Tasks() {
   useEffect(() => {
     fetchAll();
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") fetchAll();
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "INITIAL_SESSION") fetchAll();
       if (event === "SIGNED_OUT") {
         setTasks([]);
         setProjects([]);

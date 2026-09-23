@@ -50,12 +50,21 @@ export default function Priorities() {
   const weights = payload?.ahp?.weights;
 
   useEffect(() => {
-    supabase
-      .from("tasks")
-      .select("id, project_id, due_date, estimated_duration, projects(name)")
-      .then(({ data }) => {
-        const map: Record<string, TaskMeta> = {};
-        (data || []).forEach((t: any) => {
+    const loadTaskMeta = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setTaskMeta({});
+        return;
+      }
+
+      const { data } = await supabase
+        .from("tasks")
+        .select("id, project_id, due_date, estimated_duration, projects(name)")
+        .eq("user_id", user.id)
+        .eq("archived", false);
+
+      const map: Record<string, TaskMeta> = {};
+      (data || []).forEach((t: any) => {
           map[t.id] = {
             id: t.id,
             project_id: t.project_id,
@@ -65,7 +74,9 @@ export default function Priorities() {
           };
         });
         setTaskMeta(map);
-      });
+    };
+
+    void loadTaskMeta();
   }, [payload]);
 
   const rankPriorities = async () => {

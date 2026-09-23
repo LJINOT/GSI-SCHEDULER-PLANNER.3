@@ -98,11 +98,21 @@ export default function AdaptiveScheduling() {
 
   const fetchTasks = async () => {
     setLoadingTasks(true);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setTasks([]);
+      setLoadingTasks(false);
+      return;
+    }
+
     const { data } = await supabase
       .from("tasks")
       .select("id, title, status, due_date, start_time, estimated_duration, priority_score, category, updated_at")
+      .eq("user_id", user.id)
       .eq("archived", false)
       .order("updated_at", { ascending: false });
+
     setTasks((data as TaskRow[]) || []);
     setLoadingTasks(false);
   };

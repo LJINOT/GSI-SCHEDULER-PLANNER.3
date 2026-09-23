@@ -58,8 +58,17 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
   const [errors, setErrors] = useState<{ title?: string; newProject?: string }>({});
 
   useEffect(() => {
-    supabase.from("projects").select("id, name, color").order("created_at", { ascending: false })
-      .then(({ data }) => setProjects(data || []));
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setProjects([]); return; }
+      const { data } = await supabase
+        .from("projects")
+        .select("id, name, color")
+        .eq("user_id", user.id)
+        .eq("archived", false)
+        .order("created_at", { ascending: false });
+      setProjects(data || []);
+    })();
   }, []);
 
   const handleProjectChange = (val: string) => {
@@ -71,7 +80,7 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
     if (!newProjectName.trim()) { setErrors(p => ({ ...p, newProject: "Project name is required" })); return; }
     setErrors(p => ({ ...p, newProject: undefined }));
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!user) { toast.error("Please sign in to continue."); return; }
     const { data, error } = await supabase.from("projects").insert({
       user_id: user.id, name: newProjectName.trim(), description: newProjectDesc.trim() || null,
     }).select().single();

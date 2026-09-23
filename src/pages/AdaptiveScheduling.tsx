@@ -68,9 +68,23 @@ function sortBlocksChronologically(blocks: ScheduleBlock[]): ScheduleBlock[] {
   });
 }
 
+type AdaptiveMove = {
+  task_id: string;
+  title: string;
+  original_start?: string | null;
+  original_end?: string | null;
+  completed_minutes?: number;
+  remaining_minutes?: number;
+  new_start?: string | null;
+  new_end?: string | null;
+  status?: string;
+  reason?: string;
+};
+
 type Payload = {
   blocks: ScheduleBlock[];
   deferred?: { task_id: string; title: string }[];
+  adaptive_moves?: AdaptiveMove[];
   pso?: { fitness: number; iterations: number; swarm_size: number };
   window?: { start: string; end: string; peak_start: string; peak_end: string; break_style: string };
   algorithm?: string;
@@ -164,6 +178,20 @@ export default function AdaptiveScheduling() {
           title: t.title,
           reason: "Deadline is today",
         });
+      }
+
+      // Scheduled block ended, task still incomplete
+      if (t.status !== "done" && t.start_time) {
+        const start = new Date(t.start_time).getTime();
+        const durMin = Math.max(5, Number(t.estimated_duration) || 30);
+        const end = start + durMin * 60_000;
+        if (Number.isFinite(start) && end <= Date.now()) {
+          items.push({
+            id: t.id,
+            title: t.title,
+            reason: "Scheduled period ended — task still unfinished",
+          });
+        }
       }
     }
 
@@ -344,6 +372,52 @@ export default function AdaptiveScheduling() {
             </CardContent>
           </Card>
         )
+      )}
+
+
+      {payload?.adaptive_moves && payload.adaptive_moves.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Unfinished task moves
+          </h2>
+          <div className="rounded-lg border overflow-hidden max-h-[320px] overflow-y-auto">
+            <Table>
+              <TableHeader className="sticky top-0 z-10 bg-muted/95">
+                <TableRow className="bg-muted/40">
+                  <TableHead className="text-xs">Task</TableHead>
+                  <TableHead className="text-xs">Original</TableHead>
+                  <TableHead className="text-xs">Completed</TableHead>
+                  <TableHead className="text-xs">Remaining</TableHead>
+                  <TableHead className="text-xs">New schedule</TableHead>
+                  <TableHead className="text-xs">Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {payload.adaptive_moves.map((m) => (
+                  <TableRow key={m.task_id} className="text-sm">
+                    <TableCell className="py-2 font-medium max-w-[160px] truncate">{m.title}</TableCell>
+                    <TableCell className="py-2 font-mono text-xs text-muted-foreground">
+                      {m.original_start && m.original_end
+                        ? `${m.original_start} – ${m.original_end}`
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="py-2 text-xs">{m.completed_minutes ?? 0} min</TableCell>
+                    <TableCell className="py-2 text-xs">{m.remaining_minutes ?? 0} min</TableCell>
+                    <TableCell className="py-2 font-mono text-xs">
+                      {m.new_start && m.new_end ? `${m.new_start} – ${m.new_end}` : "—"}
+                    </TableCell>
+                    <TableCell className="py-2 text-xs">
+                      <span className="text-muted-foreground">{m.status}</span>
+                      {m.reason && (
+                        <p className="text-[10px] text-muted-foreground mt-0.5 max-w-[200px]">{m.reason}</p>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </section>
       )}
 
       {justAdapted && (

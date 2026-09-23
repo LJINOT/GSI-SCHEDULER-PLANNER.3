@@ -1,22 +1,25 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { motion } from "framer-motion";
 import { Play, Pause, RotateCcw, Focus, Loader2, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { formatPH } from "@/lib/date-utils";
-import { priorityFromScore } from "@/lib/status";
+import { priorityFromScore, PRIORITY_STYLES } from "@/lib/status";
 
 type FocusTask = {
   id: string;
   title: string;
+  description: string | null;
   estimated_duration: number | null;
   start_time: string | null;
   due_date: string | null;
   priority_score: number | null;
   status: string;
+  project_id: string | null;
+  projects?: { name: string; color?: string | null } | null;
 };
 
 function mmss(totalSeconds: number) {
@@ -26,10 +29,44 @@ function mmss(totalSeconds: number) {
   return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
 }
 
-/** Session length in minutes: estimated duration (min 5), no fixed 50-min override */
+/** Focus block minutes from task duration (min 5), default 25 */
 function targetMinutes(task: FocusTask | null): number {
   if (!task) return 25;
-  return Math.max(5, task.estimated_duration || 25);
+  return Math.max(5, Math.min(480, Number(task.estimated_duration) || 25));
+}
+
+function pickFocusTask(rows: FocusTask[]): FocusTask | null {
+  if (!rows.length) return null;
+  const now = Date.now();
+  const score = (t: FocusTask) => Number(t.priority_score) || 0;
+  const durationMs = (t: FocusTask) => targetMinutes(t) * 60_000;
+
+  const inBlock = rows.filter((t) => {
+    if (!t.start_time) return false;
+    const start = new Date(t.start_time).getTime();
+    if (!Number.isFinite(start)) return false;
+    return start <= now && now < start + durationMs(t);
+  });
+  if (inBlock.length) {
+    return [...inBlock].sort((a, b) => {
+      if (score(b) !== score(a)) return score(b) - score(a);
+      const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
+      const bd = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+      return ad - bd;
+    })[0];
+  }
+
+  const upcoming = rows
+    .filter((t) => t.start_time && new Date(t.start_time).getTime() > now)
+    .sort((a, b) => {
+      const as = new Date(a.start_time!).getTime();
+      const bs = new Date(b.start_time!).getTime();
+      if (as !== bs) return as - bs;
+      return score(b) - score(a);
+    });
+  if (upcoming.length) return upcoming[0];
+
+  return [...rows].sort((a, b) => score(b) - score(a))[0];
 }
 
 export default function FocusMode() {
@@ -40,15 +77,15 @@ export default function FocusMode() {
   const [running, setRunning] = useState(false);
   const [entryId, setEntryId] = useState<string | null>(null);
   const [sessionStartIso, setSessionStartIso] = useState<string | null>(null);
-  const [deadlineTick, setDeadlineTick] = useState(0);
   const finishedRef = useRef(false);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load focus task
   useEffect(() => {
     const fetchFocusTask = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
         if (!user) {
           setLoading(false);
           return;
@@ -56,53 +93,21 @@ export default function FocusMode() {
 
         const { data } = await supabase
           .from("tasks")
-          .select("id, title, estimated_duration, start_time, due_date, priority_score, status")
+          .select(
+            "id, title, description, estimated_duration, start_time, due_date, priority_score, status, project_id, projects(name, color)",
+          )
           .eq("user_id", user.id)
           .eq("archived", false)
           .neq("status", "done")
           .order("priority_score", { ascending: false, nullsFirst: false });
 
         const rows = (data || []) as FocusTask[];
-        if (rows.length === 0) {
-          setFocusTask(null);
-        } else {
-          // Prefer the task in the CURRENT time block (start_time .. start+duration).
-          // Among overlapping blocks, pick highest priority_score, then soonest due.
-          const now = Date.now();
-          const score = (t: FocusTask) => Number(t.priority_score) || 0;
-          const durationMs = (t: FocusTask) =>
-            Math.max(5, Math.min(480, Number(t.estimated_duration) || 30)) * 60_000;
-
-          const inBlock = rows.filter((t) => {
-            if (!t.start_time) return false;
-            const start = new Date(t.start_time).getTime();
-            if (!Number.isFinite(start)) return false;
-            const end = start + durationMs(t);
-            return start <= now && now < end;
-          });
-
-          let chosen: FocusTask | null = null;
-          if (inBlock.length > 0) {
-            chosen = [...inBlock].sort((a, b) => {
-              if (score(b) !== score(a)) return score(b) - score(a);
-              const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
-              const bd = b.due_date ? new Date(b.due_date).getTime() : Infinity;
-              return ad - bd;
-            })[0];
-          } else {
-            // Next upcoming scheduled block today/soon
-            const upcoming = rows
-              .filter((t) => t.start_time && new Date(t.start_time).getTime() > now)
-              .sort((a, b) => {
-                const as = new Date(a.start_time!).getTime();
-                const bs = new Date(b.start_time!).getTime();
-                if (as !== bs) return as - bs;
-                return score(b) - score(a);
-              });
-            if (upcoming.length > 0) chosen = upcoming[0];
-            else chosen = rows[0]; // highest priority overall (already ordered)
-          }
-          setFocusTask(chosen);
+        const chosen = pickFocusTask(rows);
+        setFocusTask(chosen);
+        if (chosen) {
+          const secs = targetMinutes(chosen) * 60;
+          setTotalSeconds(secs);
+          setRemaining(secs);
         }
       } catch {
         /* ignore */
@@ -112,10 +117,12 @@ export default function FocusMode() {
     fetchFocusTask();
   }, []);
 
-  // Restore active time entry for this user (survives navigation + refresh)
+  // Restore open time entry (no duplicate sessions)
   useEffect(() => {
     const restore = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) return;
 
       const { data: open } = await supabase
@@ -129,213 +136,223 @@ export default function FocusMode() {
 
       if (!open?.start_time) return;
 
-      // Load associated task if needed
       let task = focusTask;
       if (!task || task.id !== open.task_id) {
         const { data: t } = await supabase
           .from("tasks")
-          .select("id, title, estimated_duration, start_time, due_date, priority_score, status")
+          .select(
+            "id, title, description, estimated_duration, start_time, due_date, priority_score, status, project_id, projects(name, color)",
+          )
           .eq("id", open.task_id)
+          .eq("user_id", user.id)
           .maybeSingle();
         if (t) {
           task = t as FocusTask;
           setFocusTask(task);
         }
       }
+      if (!task) return;
 
-      const targetSec = targetMinutes(task) * 60;
-      const started = new Date(open.start_time).getTime();
-      const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
-      const left = Math.max(0, targetSec - elapsed);
-
+      const mins = targetMinutes(task);
+      const total = mins * 60;
+      setTotalSeconds(total);
       setEntryId(open.id);
       setSessionStartIso(open.start_time);
-      setTotalSeconds(targetSec);
+      const started = new Date(open.start_time).getTime();
+      const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      const left = Math.max(0, total - elapsed);
       setRemaining(left);
-      finishedRef.current = left <= 0;
-      // Keep running if time remains
-      setRunning(left > 0);
+      if (left > 0) setRunning(true);
     };
-    restore();
+    void restore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When focus task changes and no active entry, set duration from task
-  useEffect(() => {
-    if (entryId) return; // active session owns the clock
-    const mins = targetMinutes(focusTask);
-    setTotalSeconds(mins * 60);
-    setRemaining(mins * 60);
-    finishedRef.current = false;
-    setRunning(false);
-  }, [focusTask?.id, focusTask?.estimated_duration, entryId]);
-
-  // Tick: derive remaining from started_at + target (authoritative), not only decrement
-  useEffect(() => {
-    if (!running || !sessionStartIso) {
-      if (tickRef.current) {
-        clearInterval(tickRef.current);
-        tickRef.current = null;
-      }
-      return;
+  const clearTick = () => {
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
     }
-    const tick = () => {
+  };
+
+  const closeEntry = useCallback(
+    async (elapsedSeconds: number) => {
+      if (!entryId) return;
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const durationMin = Math.max(1, Math.round(elapsedSeconds / 60));
+      await supabase
+        .from("time_entries")
+        .update({
+          end_time: new Date().toISOString(),
+          duration: durationMin,
+        })
+        .eq("id", entryId)
+        .eq("user_id", user.id);
+
+      setEntryId(null);
+      setSessionStartIso(null);
+    },
+    [entryId],
+  );
+
+  useEffect(() => {
+    clearTick();
+    if (!running || !sessionStartIso) return;
+
+    tickRef.current = setInterval(() => {
       const started = new Date(sessionStartIso).getTime();
       const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
       const left = Math.max(0, totalSeconds - elapsed);
       setRemaining(left);
+
       if (left <= 0 && !finishedRef.current) {
         finishedRef.current = true;
         setRunning(false);
-        void completeSession();
-        toast.success("Focus session complete — take a short break!");
-        if ("Notification" in window && Notification.permission === "granted") {
-          new Notification("Focus session complete", { body: focusTask?.title || "Time for a break" });
-        }
+        clearTick();
+        void (async () => {
+          await closeEntry(totalSeconds);
+          toast.message(
+            "Focus block finished. Remaining work can be rescheduled in Adaptive Scheduling.",
+          );
+        })();
       }
-    };
-    tick();
-    tickRef.current = setInterval(tick, 1000);
-    return () => {
-      if (tickRef.current) clearInterval(tickRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running, sessionStartIso, totalSeconds, focusTask?.title]);
+    }, 500);
 
-  useEffect(() => {
-    const id = setInterval(() => setDeadlineTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, []);
+    return clearTick;
+  }, [running, sessionStartIso, totalSeconds, closeEntry]);
 
-  const completeSession = useCallback(async () => {
-    if (!entryId || !sessionStartIso) return;
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    const end = new Date().toISOString();
-    const duration = Math.max(
-      1,
-      Math.round((Date.now() - new Date(sessionStartIso).getTime()) / 60000),
-    );
-    await supabase
-      .from("time_entries")
-      .update({ end_time: end, duration })
-      .eq("id", entryId)
-      .eq("user_id", user.id);
-    setEntryId(null);
-    setSessionStartIso(null);
-  }, [entryId, sessionStartIso]);
-
-  const markTaskDone = async () => {
-    if (!focusTask) return;
-
-    const { data: { user } } = await supabase.auth.getUser();
+  const startOrResume = async () => {
+    if (!focusTask || remaining <= 0) return;
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     if (!user) {
-      toast.error("Please log in");
+      toast.error("Not logged in");
       return;
     }
 
-    // Close the active focus entry first so actual work time is preserved.
     if (entryId && sessionStartIso) {
-      await completeSession();
+      setRunning(true);
+      finishedRef.current = false;
+      return;
+    }
+
+    // Close any other open entry for this user
+    const { data: opens } = await supabase
+      .from("time_entries")
+      .select("id")
+      .eq("user_id", user.id)
+      .is("end_time", null);
+    for (const o of opens || []) {
+      await supabase
+        .from("time_entries")
+        .update({ end_time: new Date().toISOString(), duration: 0 })
+        .eq("id", o.id)
+        .eq("user_id", user.id);
+    }
+
+    const startIso = new Date().toISOString();
+    const { data: created, error } = await supabase
+      .from("time_entries")
+      .insert({
+        user_id: user.id,
+        task_id: focusTask.id,
+        start_time: startIso,
+        duration: 0,
+      })
+      .select("id")
+      .single();
+
+    if (error || !created) {
+      toast.error(error?.message || "Could not start focus session");
+      return;
+    }
+
+    setEntryId(created.id);
+    setSessionStartIso(startIso);
+    setRunning(true);
+    finishedRef.current = false;
+  };
+
+  const pause = async () => {
+    if (!running || !sessionStartIso) return;
+    setRunning(false);
+    clearTick();
+    const started = new Date(sessionStartIso).getTime();
+    const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
+    setRemaining(Math.max(0, totalSeconds - elapsed));
+    await closeEntry(elapsed);
+    // Keep remaining countdown; user can start a new segment later
+  };
+
+  const reset = () => {
+    // Reset UI timer only — does not delete saved time_entries
+    setRunning(false);
+    clearTick();
+    finishedRef.current = false;
+    const secs = targetMinutes(focusTask) * 60;
+    setTotalSeconds(secs);
+    setRemaining(secs);
+    // If a session is open, close it with elapsed so far
+    if (entryId && sessionStartIso) {
+      const started = new Date(sessionStartIso).getTime();
+      const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      void closeEntry(elapsed);
+    }
+    toast.message("Timer reset. Saved focus time was kept.");
+  };
+
+  const markTaskDone = async () => {
+    if (!focusTask) return;
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+
+    if (running && sessionStartIso) {
+      const started = new Date(sessionStartIso).getTime();
+      const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      setRunning(false);
+      await closeEntry(elapsed);
     }
 
     const { error } = await supabase
       .from("tasks")
       .update({
         status: "done",
+        completed_at: new Date().toISOString(),
       })
       .eq("id", focusTask.id)
       .eq("user_id", user.id);
 
     if (error) {
-      toast.error(error.message || "Could not mark task as done");
+      toast.error(error.message);
       return;
     }
-
-    setRunning(false);
-    setEntryId(null);
-    setSessionStartIso(null);
+    toast.success("Task marked complete");
     setFocusTask(null);
-    setTotalSeconds(25 * 60);
-    setRemaining(25 * 60);
-    finishedRef.current = false;
-
-    toast.success("Task marked as done");
+    setRemaining(0);
   };
 
-  const startOrResume = async () => {
-    if (!focusTask) return;
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      toast.error("Please log in");
-      return;
-    }
-
-    // Reuse existing open entry if present
-    if (entryId && sessionStartIso) {
-      setRunning(true);
-      return;
-    }
-
-    // Close any other open entries for this user (one active session)
-    await supabase
-      .from("time_entries")
-      .update({ end_time: new Date().toISOString() })
-      .eq("user_id", user.id)
-      .is("end_time", null);
-
-    const startIso = new Date().toISOString();
-    const { data, error } = await supabase
-      .from("time_entries")
-      .insert({
-        user_id: user.id,
-        task_id: focusTask.id,
-        start_time: startIso,
-      })
-      .select("id")
-      .single();
-
-    if (error) {
-      toast.error(error.message || "Could not start focus session");
-      return;
-    }
-
-    const mins = targetMinutes(focusTask);
-    setTotalSeconds(mins * 60);
-    setRemaining(mins * 60);
-    setEntryId(data.id);
-    setSessionStartIso(startIso);
-    finishedRef.current = false;
-    setRunning(true);
-  };
-
-  const pause = async () => {
-    // Pause: stop running UI but keep the open time entry so navigation preserves progress.
-    // Remaining is always computed from start_time when restored.
-    setRunning(false);
-  };
-
-  const reset = async () => {
-    if (entryId) {
-      await completeSession();
-    }
-    const mins = targetMinutes(focusTask);
-    setTotalSeconds(mins * 60);
-    setRemaining(mins * 60);
-    setRunning(false);
-    finishedRef.current = false;
-    setEntryId(null);
-    setSessionStartIso(null);
-  };
-
-  const pct = totalSeconds ? ((totalSeconds - remaining) / totalSeconds) * 100 : 0;
-
-  void deadlineTick; // keep deadline refresh if used below
+  const pct =
+    totalSeconds > 0
+      ? ((totalSeconds - remaining) / totalSeconds) * 100
+      : 0;
+  const pr = focusTask
+    ? priorityFromScore(focusTask.priority_score)
+    : null;
+  const prStyle = pr ? PRIORITY_STYLES[pr] : null;
+  const projectName = focusTask?.projects?.name || null;
+  const blockMin = Math.round(totalSeconds / 60);
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <div className="flex justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -344,77 +361,126 @@ export default function FocusMode() {
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      className="max-w-lg mx-auto space-y-6"
+      className="mx-auto max-w-lg space-y-4"
     >
-      <div>
-        <h1 className="font-display text-3xl font-bold flex items-center gap-2">
-          <Focus className="h-7 w-7 text-primary" /> Focus Mode
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Stay on one task. Timer continues if you leave this page or refresh.
+      <div className="text-center space-y-1">
+        <h1 className="font-display text-3xl font-bold">Focus Mode</h1>
+        <p className="text-sm text-muted-foreground">
+          One task. Full attention. Track real work time.
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="font-display text-lg">
-            {focusTask?.title || "No active task"}
-          </CardTitle>
-          {focusTask && (
-            <div className="flex flex-wrap gap-2 mt-2">
-              <Badge variant="outline">
-                {priorityFromScore(focusTask.priority_score)} priority
-              </Badge>
-              {focusTask.due_date && (
-                <Badge variant="outline">Due {formatPH(focusTask.due_date, "MMM d, h:mm a")}</Badge>
-              )}
-              <Badge variant="outline">{Math.round(totalSeconds / 60)} min target</Badge>
+      <Card className="border-border/80 shadow-sm">
+        <CardContent className="pt-10 pb-8 px-6 space-y-6">
+          <div className="flex flex-col items-center text-center space-y-3">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <Focus className="h-7 w-7" />
             </div>
-          )}
-        </CardHeader>
-        <CardContent className="space-y-6">
+
+            <h2 className="font-display text-2xl font-semibold leading-tight max-w-md">
+              {focusTask?.title || "No active task"}
+            </h2>
+
+            {focusTask?.description ? (
+              <p className="text-sm text-muted-foreground max-w-md line-clamp-3">
+                {focusTask.description}
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground/70">
+                {focusTask
+                  ? "No description"
+                  : "Create or schedule a task to begin focusing."}
+              </p>
+            )}
+          </div>
+
           <div className="text-center space-y-3">
-            <p className="font-display text-6xl font-bold tabular-nums tracking-tight text-foreground">
+            <p className="font-display text-6xl sm:text-7xl font-bold tabular-nums tracking-tight text-foreground">
               {mmss(remaining)}
             </p>
-            <div className="h-2 rounded-full bg-muted overflow-hidden">
+            <div className="mx-auto h-1.5 w-full max-w-xs rounded-full bg-muted overflow-hidden">
               <div
                 className="h-full bg-primary transition-all duration-500"
                 style={{ width: `${Math.min(100, pct)}%` }}
               />
             </div>
             <p className="text-xs text-muted-foreground">
-              {Math.round(totalSeconds / 60)}-minute focus block
-              {remaining === 0 ? " · finished" : running ? " · running" : entryId ? " · paused" : " · ready"}
+              {blockMin}-minute focus block ·{" "}
+              {remaining === 0
+                ? "finished"
+                : running
+                  ? "running"
+                  : entryId
+                    ? "paused"
+                    : "paused"}
             </p>
-            <div className="flex justify-center gap-2">
-              <Button
-                variant={running ? "secondary" : "default"}
-                onClick={() => (running ? pause() : startOrResume())}
-                disabled={remaining === 0 || !focusTask}
-              >
-                {running ? (
-                  <>
-                    <Pause className="mr-2 h-4 w-4" /> Pause
-                  </>
-                ) : (
-                  <>
-                    <Play className="mr-2 h-4 w-4" /> {entryId ? "Resume" : "Start"}
-                  </>
-                )}
-              </Button>
-              <Button variant="outline" onClick={reset} disabled={!focusTask}>
-                <RotateCcw className="mr-2 h-4 w-4" /> Reset
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={markTaskDone}
-                disabled={!focusTask}
-              >
-                <CheckCircle2 className="mr-2 h-4 w-4" /> Mark as Done
-              </Button>
-            </div>
           </div>
+
+          <div className="flex justify-center gap-3">
+            <Button
+              size="lg"
+              variant={running ? "secondary" : "default"}
+              onClick={() => (running ? pause() : startOrResume())}
+              disabled={remaining === 0 || !focusTask}
+              className="min-w-[120px]"
+            >
+              {running ? (
+                <>
+                  <Pause className="mr-2 h-4 w-4" /> Pause
+                </>
+              ) : (
+                <>
+                  <Play className="mr-2 h-4 w-4" /> Start
+                </>
+              )}
+            </Button>
+            <Button
+              size="lg"
+              variant="outline"
+              onClick={reset}
+              disabled={!focusTask}
+              className="min-w-[120px]"
+            >
+              <RotateCcw className="mr-2 h-4 w-4" /> Reset
+            </Button>
+          </div>
+
+          {focusTask && (
+            <div className="space-y-3 pt-2 border-t border-border/60">
+              <div className="flex flex-wrap justify-center gap-2">
+                {projectName && (
+                  <Badge variant="secondary" className="text-xs">
+                    {projectName}
+                  </Badge>
+                )}
+                {prStyle && (
+                  <Badge
+                    variant="outline"
+                    className={`text-xs capitalize ${prStyle.className}`}
+                  >
+                    {prStyle.label}
+                  </Badge>
+                )}
+                <Badge variant="outline" className="text-xs">
+                  {targetMinutes(focusTask)} min
+                </Badge>
+              </div>
+              {focusTask.due_date && (
+                <p className="text-center text-xs text-muted-foreground">
+                  Deadline {formatPH(focusTask.due_date, "MMM d, yyyy · h:mm a")}
+                </p>
+              )}
+              <div className="flex justify-center pt-1">
+                <Button
+                  variant="secondary"
+                  onClick={markTaskDone}
+                  className="min-w-[180px]"
+                >
+                  <CheckCircle2 className="mr-2 h-4 w-4" /> Mark Complete
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </motion.div>

@@ -318,20 +318,26 @@ export default function AddTask({
         "AddTask: starting AI analysis",
       );
 
-      const {
-        data,
-        error,
-      } = await supabase.functions.invoke(
-        "analyze-task",
-        {
-          body: {
-            title: title.trim(),
-            description,
-            category:
-              category || undefined,
+      const invokeAnalyze = () =>
+        supabase.functions.invoke(
+          "analyze-task",
+          {
+            body: {
+              title: title.trim(),
+              description,
+              category:
+                category || undefined,
+            },
           },
-        },
-      );
+        );
+
+      // One automatic retry helps Edge cold starts / transient network failures
+      let { data, error } = await invokeAnalyze();
+      if (error || (data && typeof data === "object" && (data as { ok?: boolean }).ok === false)) {
+        console.warn("AddTask: first analyze attempt failed, retrying once…", error || data);
+        await new Promise((r) => setTimeout(r, 800));
+        ({ data, error } = await invokeAnalyze());
+      }
 
       console.log(
         "AddTask: analyze-task response:",

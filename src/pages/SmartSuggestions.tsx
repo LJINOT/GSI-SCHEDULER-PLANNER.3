@@ -205,10 +205,11 @@ export default function SmartSuggestions() {
       const since = new Date();
       since.setDate(since.getDate() - 14);
 
-      const [{ data: entries }, { data: taskRows }, { data: logs }] = await Promise.all([
+      const [{ data: entries }, { data: taskRows }, { data: history }] = await Promise.all([
         supabase
           .from("time_entries")
           .select("id, start_time, end_time, duration, task_id")
+          .eq("user_id", user.id)
           .gte("start_time", since.toISOString())
           .order("start_time", { ascending: false }),
         supabase
@@ -217,46 +218,23 @@ export default function SmartSuggestions() {
           .eq("user_id", user.id)
           .eq("archived", false),
         supabase
-          .from("behavior_logs")
-          .select("recorded_at, metric_type, value")
+          .from("recommendation_history")
+          .select("created_at")
           .eq("user_id", user.id)
-          .order("recorded_at", { ascending: false })
-          .limit(5),
+          .eq("source", "smart-picks")
+          .order("created_at", { ascending: false })
+          .limit(1),
       ]);
 
       setTimeEntries((entries as TimeEntry[]) || []);
       setTasks((taskRows as TaskLite[]) || []);
 
-      const latest = logs?.[0]?.recorded_at || payload?.timestamp || null;
+      const latest = history?.[0]?.created_at || payload?.timestamp || null;
       setLastAnalyzedAt(latest);
       setLoadingPatterns(false);
     };
     load();
   }, [payload?.timestamp]);
-
-  // Refresh the live recommendation set for this account when the page opens.
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      setLoading(true);
-      try {
-        const { data, error } = await supabase.functions.invoke("smart-picks", { body: {} });
-        if (cancelled) return;
-        if (error) throw error;
-        const rawPicks = Array.isArray(data?.picks) ? data.picks as Suggestion[] : [];
-        const next: Payload = { ...(data || {}), picks: allocateNonOverlapping(rawPicks) };
-        setPayload(next);
-        saveCache(CACHE_KEY, next);
-        if (next.timestamp) setLastAnalyzedAt(next.timestamp);
-      } catch (err) {
-        if (!cancelled) console.error("Failed to refresh Smart Suggestions:", err);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    void refresh();
-    return () => { cancelled = true; };
-  }, []);
 
   const taskDurationMap = useMemo(() => {
     const m: Record<string, number | null> = {};
@@ -307,7 +285,7 @@ export default function SmartSuggestions() {
     const afternoon = hourCounts.slice(12, 17).reduce((a, b) => a + b, 0);
     const evening =
       hourCounts.slice(17, 24).reduce((a, b) => a + b, 0) +
-      hourCounts.slice(0, 5).reduce((a, b) => a + b, 0);
+      hourCounts.slice(0, 20).reduce((a, b) => a + b, 0);
     const maxPeriod = Math.max(morning, afternoon, evening, 1);
 
     const fmtHour = (h: number) => {
@@ -381,6 +359,12 @@ export default function SmartSuggestions() {
     }
     setLoading(false);
   };
+
+  useEffect(() => {
+    if (!payload?.picks?.length) void getSuggestions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
 
   const lastAnalyzedLabel = useMemo(() => {
     if (!lastAnalyzedAt) return "Not analyzed yet";

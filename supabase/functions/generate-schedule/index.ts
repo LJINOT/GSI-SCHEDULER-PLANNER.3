@@ -10,14 +10,14 @@ const corsHeaders = {
 type Task = {
   id: string;
   title: string;
-  category?: string;
-  difficulty?: string;
-  estimated_duration?: number;
+  category?: string | null;
+  difficulty?: string | null;
+  estimated_duration?: number | null;
   due_date?: string | null;
   start_time?: string | null;
   priority_score?: number | null;
-  status?: string;
-  archived?: boolean;
+  status?: string | null;
+  archived?: boolean | null;
 };
 
 type Block = {
@@ -26,24 +26,8 @@ type Block = {
   start: string;
   end: string;
   category: string;
-  kind?: "task" | "break";
+  kind: "task" | "break";
 };
-
-function parseHHMM(s: string): number {
-  const [h, m] = s.split(":").map(Number);
-  return h * 60 + (m || 0);
-}
-
-function toHHMM(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
-
-/* =========================================================
-   BREAK STYLE
-   ========================================================= */
 
 type BreakStyle =
   | "pomodoro"
@@ -55,6 +39,50 @@ type BreakBlock = {
   dur: number;
   title: string;
 };
+
+type CSPResult = {
+  blocks: Block[];
+  scheduledTaskIds: string[];
+};
+
+type PSOResult = {
+  order: number[];
+  best: number;
+};
+
+function parseHHMM(value: string): number {
+  const [hours, minutes] = value.split(":").map(Number);
+
+  return (
+    (Number.isFinite(hours) ? hours : 0) * 60 +
+    (Number.isFinite(minutes) ? minutes : 0)
+  );
+}
+
+function toHHMM(minutes: number): string {
+  const safe = Math.max(0, Math.round(minutes));
+
+  const hours = Math.floor(safe / 60);
+  const mins = safe % 60;
+
+  return `${String(hours).padStart(2, "0")}:${String(
+    mins
+  ).padStart(2, "0")}`;
+}
+
+function durationOf(task: Task): number {
+  return Math.max(
+    5,
+    Math.min(
+      480,
+      Number(task.estimated_duration) || 30
+    )
+  );
+}
+
+/* =========================================================
+   BREAK STYLE
+   ========================================================= */
 
 const BREAK_STYLES: Record<
   BreakStyle,
@@ -101,20 +129,34 @@ function getBreakBlocks(
   const style =
     (breakStyle || "pomodoro") as BreakStyle;
 
-  return (
-    BREAK_STYLES[style] ??
-    BREAK_STYLES.pomodoro
-  );
+  return BREAK_STYLES[style] ??
+    BREAK_STYLES.pomodoro;
 }
 
 /* =========================================================
-   CSP RESULT
+   TASK CLEANUP
    ========================================================= */
 
-type CSPResult = {
-  blocks: Block[];
-  scheduledTaskIds: string[];
-};
+/*
+ * A task should enter PSO/CSP only once.
+ */
+function uniqueTasks(tasks: Task[]): Task[] {
+  const seen = new Set<string>();
+  const result: Task[] = [];
+
+  for (const task of tasks) {
+    if (!task?.id) continue;
+
+    if (seen.has(task.id)) {
+      continue;
+    }
+
+    seen.add(task.id);
+    result.push(task);
+  }
+
+  return result;
+}
 
 /* =========================================================
    CSP
@@ -129,57 +171,91 @@ function csp(
   const blocks: Block[] = [];
   const scheduledTaskIds: string[] = [];
 
-  let cursor = startMin;
+  const unique = uniqueTasks(tasks);
 
-  const breaks = getBreakBlocks(
-    breakStyle
-  )
+  const breaks = getBreakBlocks(breakStyle)
     .filter(
-      (b) =>
-        b.start >= startMin &&
-        b.start + b.dur <= endMin
+      (breakBlock) =>
+        breakBlock.start >= startMin &&
+        breakBlock.start + breakBlock.dur <=
+          endMin
     )
     .sort(
       (a, b) => a.start - b.start
     );
 
+  let cursor = startMin;
   let breakIndex = 0;
 
+  const usedTaskIds = new Set<string>();
+  const usedBreakIds = new Set<string>();
+
   /*
-   * Add every break that starts before the
-   * current cursor.
+   * Adds a break exactly once.
    */
-  const flushPastBreaks = () => {
+  const addBreak = (
+    breakBlock: BreakBlock
+  ) => {
+    const id = `break-${breakBlock.start}`;
+
+    if (usedBreakIds.has(id)) {
+      return;
+    }
+
+    blocks.push({
+      task_id: id,
+      title: breakBlock.title,
+      start: toHHMM(
+        breakBlock.start
+      ),
+      end: toHHMM(
+        breakBlock.start +
+          breakBlock.dur
+      ),
+      category: "Break",
+      kind: "break",
+    });
+
+    usedBreakIds.add(id);
+  };
+
+  /*
+   * Move cursor through breaks that have
+   * already been reached.
+   */
+  const movePastReachedBreaks = () => {
     while (
       breakIndex < breaks.length
     ) {
-      const b = breaks[breakIndex];
+      const current =
+        breaks[breakIndex];
 
+      /*
+       * Break is completely before cursor.
+       */
       if (
         cursor >=
-        b.start + b.dur
+        current.start +
+          current.dur
       ) {
         breakIndex++;
         continue;
       }
 
+      /*
+       * Cursor is inside a break.
+       */
       if (
-        cursor >= b.start &&
-        cursor < b.start + b.dur
+        cursor >= current.start &&
+        cursor <
+          current.start +
+            current.dur
       ) {
-        blocks.push({
-          task_id: `break-${b.start}`,
-          title: b.title,
-          start: toHHMM(b.start),
-          end: toHHMM(
-            b.start + b.dur
-          ),
-          category: "Break",
-          kind: "break",
-        });
+        addBreak(current);
 
         cursor =
-          b.start + b.dur;
+          current.start +
+          current.dur;
 
         breakIndex++;
         continue;
@@ -189,181 +265,137 @@ function csp(
     }
   };
 
-  for (const task of tasks) {
-    const duration = Math.max(
-      5,
-      Math.min(
-        480,
-        task.estimated_duration || 30
-      )
-    );
+  for (const task of unique) {
+    if (usedTaskIds.has(task.id)) {
+      continue;
+    }
 
-    flushPastBreaks();
+    const duration =
+      durationOf(task);
 
     /*
-     * Find the next break.
+     * Move past breaks that have already
+     * been reached.
      */
-    const nextBreak =
-      breakIndex < breaks.length
-        ? breaks[breakIndex]
-        : null;
+    movePastReachedBreaks();
 
     /*
-     * If the task would cross the next break,
-     * place the break first and continue after it.
+     * Repeatedly move the task after any
+     * break that it would cross.
      */
-    if (
-      nextBreak &&
-      cursor < nextBreak.start &&
-      cursor + duration >
-        nextBreak.start
-    ) {
-      blocks.push({
-        task_id: `break-${nextBreak.start}`,
-        title: nextBreak.title,
-        start: toHHMM(
+    let placed = false;
+
+    while (!placed) {
+      movePastReachedBreaks();
+
+      const nextBreak =
+        breakIndex < breaks.length
+          ? breaks[breakIndex]
+          : null;
+
+      /*
+       * No remaining break.
+       */
+      if (!nextBreak) {
+        if (
+          cursor + duration <=
+          endMin
+        ) {
+          blocks.push({
+            task_id: task.id,
+            title: task.title,
+            start: toHHMM(cursor),
+            end: toHHMM(
+              cursor + duration
+            ),
+            category:
+              task.category ||
+              "General",
+            kind: "task",
+          });
+
+          usedTaskIds.add(
+            task.id
+          );
+
+          scheduledTaskIds.push(
+            task.id
+          );
+
+          cursor += duration;
+          placed = true;
+        }
+
+        /*
+         * No room left.
+         */
+        break;
+      }
+
+      /*
+       * There is enough room before the break.
+       */
+      if (
+        cursor <
+          nextBreak.start &&
+        cursor + duration <=
           nextBreak.start
-        ),
-        end: toHHMM(
-          nextBreak.start +
-            nextBreak.dur
-        ),
-        category: "Break",
-        kind: "break",
-      });
+      ) {
+        blocks.push({
+          task_id: task.id,
+          title: task.title,
+          start: toHHMM(cursor),
+          end: toHHMM(
+            cursor + duration
+          ),
+          category:
+            task.category ||
+            "General",
+          kind: "task",
+        });
+
+        usedTaskIds.add(
+          task.id
+        );
+
+        scheduledTaskIds.push(
+          task.id
+        );
+
+        cursor += duration;
+        placed = true;
+        break;
+      }
+
+      /*
+       * The task would cross the break.
+       *
+       * Move the task after the break.
+       */
+      addBreak(nextBreak);
 
       cursor =
         nextBreak.start +
         nextBreak.dur;
 
       breakIndex++;
+
+      /*
+       * Loop again and check the next break.
+       */
     }
-
-    flushPastBreaks();
-
-    /*
-     * If the task cannot fit inside the
-     * configured work window, do NOT place it.
-     *
-     * It will be returned as deferred.
-     */
-    if (
-      cursor + duration >
-      endMin
-    ) {
-      continue;
-    }
-
-    /*
-     * Final check for another break.
-     */
-    const followingBreak =
-      breakIndex < breaks.length
-        ? breaks[breakIndex]
-        : null;
-
-    if (
-      followingBreak &&
-      cursor < followingBreak.start &&
-      cursor + duration >
-        followingBreak.start
-    ) {
-      blocks.push({
-        task_id: `break-${followingBreak.start}`,
-        title: followingBreak.title,
-        start: toHHMM(
-          followingBreak.start
-        ),
-        end: toHHMM(
-          followingBreak.start +
-            followingBreak.dur
-        ),
-        category: "Break",
-        kind: "break",
-      });
-
-      cursor =
-        followingBreak.start +
-        followingBreak.dur;
-
-      breakIndex++;
-
-      if (
-        cursor + duration >
-        endMin
-      ) {
-        continue;
-      }
-    }
-
-    const taskStart = cursor;
-    const taskEnd =
-      cursor + duration;
-
-    /*
-     * Absolute work-window check.
-     */
-    if (
-      taskStart < startMin ||
-      taskEnd > endMin
-    ) {
-      continue;
-    }
-
-    /*
-     * Check against the previous block.
-     */
-    const previous =
-      blocks.length > 0
-        ? blocks[
-            blocks.length - 1
-          ]
-        : null;
-
-    if (previous) {
-      const previousEnd =
-        parseHHMM(
-          previous.end
-        );
-
-      if (
-        taskStart <
-        previousEnd
-      ) {
-        continue;
-      }
-    }
-
-    blocks.push({
-      task_id: task.id,
-      title: task.title,
-      start: toHHMM(taskStart),
-      end: toHHMM(taskEnd),
-      category:
-        task.category ||
-        "General",
-      kind: "task",
-    });
-
-    scheduledTaskIds.push(
-      task.id
-    );
-
-    cursor = taskEnd;
   }
 
   /*
-   * Sort everything chronologically.
+   * Chronological ordering.
    */
   blocks.sort((a, b) => {
-    const startDifference =
+    const startDiff =
       parseHHMM(a.start) -
       parseHHMM(b.start);
 
-    if (
-      startDifference !== 0
-    ) {
-      return startDifference;
+    if (startDiff !== 0) {
+      return startDiff;
     }
 
     return (
@@ -373,16 +405,38 @@ function csp(
   });
 
   /*
-   * Final safety validation.
+   * FINAL SAFETY VALIDATION
    *
-   * A valid schedule must NEVER contain
-   * overlapping blocks.
+   * Never return overlapping blocks.
    */
   const validBlocks: Block[] = [];
-  const validTaskIds: string[] =
-    [];
+  const validTaskIds: string[] = [];
 
   for (const block of blocks) {
+    const start =
+      parseHHMM(block.start);
+
+    const end =
+      parseHHMM(block.end);
+
+    if (
+      start < startMin ||
+      end > endMin ||
+      end <= start
+    ) {
+      continue;
+    }
+
+    const duplicateTask =
+      block.kind === "task" &&
+      validTaskIds.includes(
+        block.task_id
+      );
+
+    if (duplicateTask) {
+      continue;
+    }
+
     const previous =
       validBlocks.length > 0
         ? validBlocks[
@@ -396,34 +450,10 @@ function csp(
           previous.end
         );
 
-      const currentStart =
-        parseHHMM(
-          block.start
-        );
-
       if (
-        currentStart <
+        start <
         previousEnd
       ) {
-        /*
-         * Never return an overlapping block.
-         */
-        if (
-          block.kind === "task"
-        ) {
-          const index =
-            validTaskIds.indexOf(
-              block.task_id
-            );
-
-          if (index !== -1) {
-            validTaskIds.splice(
-              index,
-              1
-            );
-          }
-        }
-
         continue;
       }
     }
@@ -458,7 +488,8 @@ function fitness(
   endMin: number,
   peakStart: number,
   peakEnd: number,
-  breakStyle: string
+  breakStyle: string,
+  scheduleDate: string
 ): number {
   const result = csp(
     tasks,
@@ -467,13 +498,9 @@ function fitness(
     breakStyle
   );
 
-  const placedTasks =
-    result.blocks.filter(
-      (b) => b.kind === "task"
-    );
-
   /*
-   * Strong penalty for tasks that cannot fit.
+   * Strong penalty for every task
+   * that was not scheduled.
    */
   let score =
     (tasks.length -
@@ -481,51 +508,70 @@ function fitness(
         .length) *
     1000;
 
-  for (
-    let i = 0;
-    i < placedTasks.length;
-    i++
-  ) {
-    const t = tasks[i];
-    const b = placedTasks[i];
+  const taskMap = new Map(
+    tasks.map((task) => [
+      task.id,
+      task,
+    ])
+  );
 
-    if (!b) {
+  const placedTasks =
+    result.blocks.filter(
+      (block) =>
+        block.kind === "task"
+    );
+
+  /*
+   * Evaluate each actual placed task.
+   */
+  for (const block of placedTasks) {
+    const task =
+      taskMap.get(
+        block.task_id
+      );
+
+    if (!task) {
       continue;
     }
 
-    const bStart =
-      parseHHMM(b.start);
+    const start =
+      parseHHMM(block.start);
 
-    const bEnd =
-      parseHHMM(b.end);
+    const end =
+      parseHHMM(block.end);
+
+    const difficulty =
+      (
+        task.difficulty ||
+        ""
+      ).toLowerCase();
 
     const diffWeight =
-      t.difficulty === "hard"
+      difficulty === "hard"
         ? 3
-        : t.difficulty ===
-          "medium"
+        : difficulty === "medium"
         ? 1
         : 0.3;
 
     const insidePeak =
-      bStart >= peakStart &&
-      bEnd <= peakEnd;
+      start >= peakStart &&
+      end <= peakEnd;
 
     /*
-     * Hard tasks outside peak period.
+     * Hard tasks outside peak.
      */
     if (
-      t.difficulty === "hard" &&
+      difficulty === "hard" &&
       !insidePeak
     ) {
       score += 25;
     }
 
     /*
-     * Easy tasks inside peak period.
+     * Easy tasks inside peak.
      */
     if (
-      t.difficulty === "easy" &&
+      difficulty === "easy" &&
       insidePeak
     ) {
       score += 8;
@@ -535,42 +581,40 @@ function fitness(
      * Later placement penalty.
      */
     const windowSize =
-      endMin - startMin || 1;
+      Math.max(
+        1,
+        endMin - startMin
+      );
 
-    const startFrac =
-      (bStart - startMin) /
+    const startFraction =
+      (start - startMin) /
       windowSize;
 
     score +=
       diffWeight *
-      startFrac *
+      startFraction *
       6;
 
     /*
      * Deadline penalty.
      */
-    if (t.due_date) {
-      const due =
+    if (task.due_date) {
+      const scheduledEnd =
         new Date(
-          t.due_date
+          `${scheduleDate}T${block.end}:00`
         ).getTime();
 
-      const todayStart =
-        new Date();
-
-      todayStart.setHours(
-        0,
-        0,
-        0,
-        0
-      );
-
-      const endTs =
-        todayStart.getTime() +
-        bEnd * 60_000;
+      const due =
+        new Date(
+          task.due_date
+        ).getTime();
 
       if (
-        endTs > due
+        Number.isFinite(
+          scheduledEnd
+        ) &&
+        Number.isFinite(due) &&
+        scheduledEnd > due
       ) {
         score += 50;
       }
@@ -578,22 +622,37 @@ function fitness(
   }
 
   /*
-   * Category switching penalty.
+   * Context/category switching penalty.
    */
   for (
     let i = 1;
     i < placedTasks.length;
     i++
   ) {
-    if (
-      (
+    const previous =
+      taskMap.get(
+        placedTasks[
+          i - 1
+        ].task_id
+      );
+
+    const current =
+      taskMap.get(
         placedTasks[i]
-          .category || ""
-      ) !==
+          .task_id
+      );
+
+    if (
+      previous &&
+      current &&
       (
-        placedTasks[i - 1]
-          .category || ""
-      )
+        previous.category ||
+        "General"
+      ) !==
+        (
+          current.category ||
+          "General"
+        )
     ) {
       score += 2;
     }
@@ -610,14 +669,18 @@ function decode(
   keys: number[]
 ): number[] {
   return keys
-    .map((k, i) => ({
-      k,
-      i,
+    .map((key, index) => ({
+      key,
+      index,
     }))
     .sort(
-      (a, b) => a.k - b.k
+      (a, b) =>
+        a.key - b.key
     )
-    .map((o) => o.i);
+    .map(
+      (item) =>
+        item.index
+    );
 }
 
 function pso(
@@ -627,19 +690,20 @@ function pso(
   peakStart: number,
   peakEnd: number,
   breakStyle: string,
-  opts = {
+  scheduleDate: string,
+  options = {
     swarm: 25,
     iters: 60,
     w: 0.7,
     c1: 1.5,
     c2: 1.5,
   }
-) {
+): PSOResult {
   const n = tasks.length;
 
   if (n === 0) {
     return {
-      order: [] as number[],
+      order: [],
       best: 0,
     };
   }
@@ -651,7 +715,7 @@ function pso(
     Array.from(
       {
         length:
-          opts.swarm,
+          options.swarm,
       },
       () =>
         Array.from(
@@ -666,7 +730,7 @@ function pso(
     Array.from(
       {
         length:
-          opts.swarm,
+          options.swarm,
       },
       () =>
         Array.from(
@@ -681,22 +745,27 @@ function pso(
 
   const pbest =
     swarm.map(
-      (p) => [...p]
+      (particle) => [
+        ...particle,
+      ]
     );
 
   const pbestScore =
     swarm.map(
-      (p) =>
+      (particle) =>
         fitness(
-          decode(p).map(
-            (i) =>
-              tasks[i]
+          decode(
+            particle
+          ).map(
+            (index) =>
+              tasks[index]
           ),
           startMin,
           endMin,
           peakStart,
           peakEnd,
-          breakStyle
+          breakStyle,
+          scheduleDate
         )
     );
 
@@ -707,115 +776,210 @@ function pso(
       )
     );
 
-  let gbest = [
-    ...pbest[gIdx],
-  ];
+  let gbest =
+    pbest[gIdx]
+      ? [...pbest[gIdx]]
+      : [...swarm[0]];
 
   let gbestScore =
-    pbestScore[gIdx];
+    pbestScore[gIdx] ??
+    Number.POSITIVE_INFINITY;
 
   for (
-    let it = 0;
-    it < opts.iters;
-    it++
+    let iteration = 0;
+    iteration <
+    options.iters;
+    iteration++
   ) {
     for (
-      let i = 0;
-      i < opts.swarm;
-      i++
+      let particleIndex = 0;
+      particleIndex <
+      options.swarm;
+      particleIndex++
     ) {
       for (
-        let j = 0;
-        j < n;
-        j++
+        let dimension = 0;
+        dimension < n;
+        dimension++
       ) {
         const r1 = rng();
         const r2 = rng();
 
-        velocity[i][j] =
-          opts.w *
-            velocity[i][j] +
-          opts.c1 *
+        velocity[
+          particleIndex
+        ][dimension] =
+          options.w *
+            velocity[
+              particleIndex
+            ][dimension] +
+          options.c1 *
             r1 *
-            (pbest[i][j] -
-              swarm[i][j]) +
-          opts.c2 *
+            (
+              pbest[
+                particleIndex
+              ][dimension] -
+              swarm[
+                particleIndex
+              ][dimension]
+            ) +
+          options.c2 *
             r2 *
-            (gbest[j] -
-              swarm[i][j]);
+            (
+              gbest[dimension] -
+              swarm[
+                particleIndex
+              ][dimension]
+            );
 
-        swarm[i][j] =
+        swarm[
+          particleIndex
+        ][dimension] =
           Math.max(
             0,
             Math.min(
               1,
-              swarm[i][j] +
-                velocity[i][j]
+              swarm[
+                particleIndex
+              ][dimension] +
+                velocity[
+                  particleIndex
+                ][dimension]
             )
           );
       }
 
-      const s =
+      const currentScore =
         fitness(
           decode(
-            swarm[i]
+            swarm[
+              particleIndex
+            ]
           ).map(
-            (idx) =>
-              tasks[idx]
+            (index) =>
+              tasks[index]
           ),
           startMin,
           endMin,
           peakStart,
           peakEnd,
-          breakStyle
+          breakStyle,
+          scheduleDate
         );
 
       if (
-        s < pbestScore[i]
+        currentScore <
+        pbestScore[
+          particleIndex
+        ]
       ) {
-        pbestScore[i] =
-          s;
+        pbestScore[
+          particleIndex
+        ] = currentScore;
 
-        pbest[i] = [
-          ...swarm[i],
+        pbest[
+          particleIndex
+        ] = [
+          ...swarm[
+            particleIndex
+          ],
         ];
       }
 
       if (
-        s < gbestScore
+        currentScore <
+        gbestScore
       ) {
-        gbestScore = s;
+        gbestScore =
+          currentScore;
 
         gbest = [
-          ...swarm[i],
+          ...swarm[
+            particleIndex
+          ],
         ];
       }
     }
   }
 
   return {
-    order:
-      decode(gbest),
-    best:
-      gbestScore,
+    order: decode(
+      gbest
+    ),
+    best: gbestScore,
   };
 }
 
 /* =========================================================
-   PERSIST GENERATED SCHEDULE
+   PERSIST SCHEDULE
    ========================================================= */
 
 async function persistSchedule(
   supabase: any,
+  userId: string,
+  tasks: Task[],
   blocks: Block[],
   scheduleDate: string
 ) {
+  /*
+   * Only task blocks are persisted to
+   * tasks.start_time.
+   */
   const taskBlocks =
     blocks.filter(
-      (b) =>
-        b.kind === "task"
+      (block) =>
+        block.kind === "task"
     );
 
+  /*
+   * Clear previous active task start times
+   * belonging to this schedule date.
+   *
+   * We identify the date from the stored
+   * timestamp prefix so future schedules
+   * are not accidentally cleared.
+   */
+  const oldScheduledTasks =
+    tasks.filter((task) => {
+      if (!task.start_time) {
+        return false;
+      }
+
+      return (
+        String(
+          task.start_time
+        ).slice(0, 10) ===
+        scheduleDate
+      );
+    });
+
+  for (
+    const task of oldScheduledTasks
+  ) {
+    const { error } =
+      await supabase
+        .from("tasks")
+        .update({
+          start_time: null,
+        })
+        .eq(
+          "id",
+          task.id
+        )
+        .eq(
+          "user_id",
+          userId
+        );
+
+    if (error) {
+      throw new Error(
+        `Failed to clear old schedule for ${task.title}: ${error.message}`
+      );
+    }
+  }
+
+  /*
+   * Save the new task start times.
+   */
   for (
     const block of taskBlocks
   ) {
@@ -832,14 +996,189 @@ async function persistSchedule(
         .eq(
           "id",
           block.task_id
+        )
+        .eq(
+          "user_id",
+          userId
         );
 
     if (error) {
       throw new Error(
-        `Failed to save schedule for task ${block.task_id}: ${error.message}`
+        `Failed to save schedule for ${block.title}: ${error.message}`
       );
     }
   }
+
+  /*
+   * The schedules table becomes the authoritative
+   * generated timeline for the Schedule page.
+   *
+   * The project already contains this table.
+   */
+  const { data: existingSchedules, error: findError } =
+    await supabase
+      .from("schedules")
+      .select("id")
+      .eq(
+        "user_id",
+        userId
+      )
+      .eq(
+        "schedule_date",
+        scheduleDate
+      );
+
+  if (findError) {
+    throw new Error(
+      `Failed to read existing schedule: ${findError.message}`
+    );
+  }
+
+  if (
+    existingSchedules &&
+    existingSchedules.length > 0
+  ) {
+    /*
+     * Update all existing rows for the date.
+     *
+     * This also repairs duplicate schedule
+     * rows left by older versions.
+     */
+    const { error: updateError } =
+      await supabase
+        .from("schedules")
+        .update({
+          timeline: blocks,
+        })
+        .eq(
+          "user_id",
+          userId
+        )
+        .eq(
+          "schedule_date",
+          scheduleDate
+        );
+
+    if (updateError) {
+      throw new Error(
+        `Failed to update saved schedule: ${updateError.message}`
+      );
+    }
+  } else {
+    const { error: insertError } =
+      await supabase
+        .from("schedules")
+        .insert({
+          user_id:
+            userId,
+          schedule_date:
+            scheduleDate,
+          timeline:
+            blocks,
+        });
+
+    if (insertError) {
+      throw new Error(
+        `Failed to save generated schedule: ${insertError.message}`
+      );
+    }
+  }
+}
+
+/* =========================================================
+   FINAL VALIDATION
+   ========================================================= */
+
+function validateBlocks(
+  blocks: Block[],
+  startMin: number,
+  endMin: number
+): Block[] {
+  const sorted = [...blocks].sort(
+    (a, b) => {
+      const startDiff =
+        parseHHMM(a.start) -
+        parseHHMM(b.start);
+
+      if (startDiff !== 0) {
+        return startDiff;
+      }
+
+      return (
+        parseHHMM(a.end) -
+        parseHHMM(b.end)
+      );
+    }
+  );
+
+  const result: Block[] = [];
+  const seenTaskIds =
+    new Set<string>();
+
+  for (const block of sorted) {
+    const start =
+      parseHHMM(block.start);
+
+    const end =
+      parseHHMM(block.end);
+
+    if (
+      start < startMin ||
+      end > endMin ||
+      end <= start
+    ) {
+      throw new Error(
+        `Invalid block outside work window: ${block.title}`
+      );
+    }
+
+    if (
+      block.kind === "task"
+    ) {
+      if (
+        seenTaskIds.has(
+          block.task_id
+        )
+      ) {
+        throw new Error(
+          `Duplicate task in generated schedule: ${block.title}`
+        );
+      }
+
+      seenTaskIds.add(
+        block.task_id
+      );
+    }
+
+    const previous =
+      result.length > 0
+        ? result[
+            result.length - 1
+          ]
+        : null;
+
+    if (previous) {
+      const previousEnd =
+        parseHHMM(
+          previous.end
+        );
+
+      if (
+        start <
+        previousEnd
+      ) {
+        throw new Error(
+          `Overlapping schedule detected between "${previous.title}" and "${block.title}".`
+        );
+      }
+    }
+
+    result.push(
+      block
+    );
+  }
+
+  return result;
 }
 
 /* =========================================================
@@ -878,7 +1217,7 @@ serve(async (req) => {
           global: {
             headers: {
               Authorization:
-                authHeader!,
+                authHeader || "",
             },
           },
         }
@@ -909,7 +1248,7 @@ serve(async (req) => {
     }
 
     /* =====================================================
-       REQUEST BODY
+       REQUEST
        ===================================================== */
 
     let body: any = {};
@@ -921,22 +1260,19 @@ serve(async (req) => {
       body = {};
     }
 
-    /*
-     * Default to today's date.
-     *
-     * Auto Schedule can optionally send:
-     * {
-     *   schedule_date: "2026-09-23"
-     * }
-     */
     const scheduleDate =
-      body?.schedule_date ||
-      new Date()
-        .toISOString()
-        .slice(0, 10);
+      typeof body?.schedule_date ===
+        "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(
+        body.schedule_date
+      )
+        ? body.schedule_date
+        : new Date()
+            .toISOString()
+            .slice(0, 10);
 
     /* =====================================================
-       GET ACTIVE TASKS
+       TASKS
        ===================================================== */
 
     const {
@@ -945,7 +1281,9 @@ serve(async (req) => {
     } =
       await supabase
         .from("tasks")
-        .select("*")
+        .select(
+          "id, title, category, difficulty, estimated_duration, due_date, start_time, priority_score, status, archived"
+        )
         .eq(
           "user_id",
           user.id
@@ -963,16 +1301,15 @@ serve(async (req) => {
       throw tasksError;
     }
 
-    /*
-     * ALL active unfinished tasks are candidates.
-     *
-     * No arbitrary 24-hour filter.
-     */
-    const tasks: Task[] =
-      (allTasks || []).filter(
-        (t: any) =>
-          t.archived !== true &&
-          t.status !== "done"
+    const tasks =
+      uniqueTasks(
+        (allTasks || []).filter(
+          (task: Task) =>
+            task.archived !==
+              true &&
+            task.status !==
+              "done"
+        )
       );
 
     if (
@@ -982,8 +1319,10 @@ serve(async (req) => {
         JSON.stringify({
           blocks: [],
           deferred: [],
+          scheduled_count: 0,
+          deferred_count: 0,
           algorithm:
-            "csp-pso",
+            "csp + pso-random-key + peak-aware",
           timestamp:
             new Date().toISOString(),
         }),
@@ -1013,7 +1352,7 @@ serve(async (req) => {
           "id",
           user.id
         )
-        .single();
+        .maybeSingle();
 
     const workStart =
       profile?.work_start ||
@@ -1065,30 +1404,33 @@ serve(async (req) => {
     }
 
     /* =====================================================
-       PRIORITY / URGENCY ORDER
+       URGENCY ORDER
        ===================================================== */
 
-    const byUrgency =
+    const orderedInput =
       [...tasks].sort(
         (a, b) => {
-          const ad =
+          const aDue =
             a.due_date
               ? new Date(
                   a.due_date
                 ).getTime()
-              : Infinity;
+              : Number.POSITIVE_INFINITY;
 
-          const bd =
+          const bDue =
             b.due_date
               ? new Date(
                   b.due_date
                 ).getTime()
-              : Infinity;
+              : Number.POSITIVE_INFINITY;
 
           if (
-            ad !== bd
+            aDue !==
+            bDue
           ) {
-            return ad - bd;
+            return (
+              aDue - bDue
+            );
           }
 
           return (
@@ -1109,18 +1451,21 @@ serve(async (req) => {
       best,
     } =
       pso(
-        byUrgency,
+        orderedInput,
         startMin,
         endMin,
         peakStartMin,
         peakEndMin,
-        breakStyle
+        breakStyle,
+        scheduleDate
       );
 
     const ordered =
       order.map(
-        (i) =>
-          byUrgency[i]
+        (index) =>
+          orderedInput[
+            index
+          ]
       );
 
     /* =====================================================
@@ -1135,12 +1480,25 @@ serve(async (req) => {
         breakStyle
       );
 
-    const blocks =
-      cspResult.blocks;
+    const validatedBlocks =
+      validateBlocks(
+        cspResult.blocks,
+        startMin,
+        endMin
+      );
 
     const scheduledIds =
       new Set(
-        cspResult.scheduledTaskIds
+        validatedBlocks
+          .filter(
+            (block) =>
+              block.kind ===
+              "task"
+          )
+          .map(
+            (block) =>
+              block.task_id
+          )
       );
 
     const deferred =
@@ -1152,84 +1510,16 @@ serve(async (req) => {
       );
 
     /* =====================================================
-       SAVE GENERATED TIMES
+       SAVE
        ===================================================== */
 
-    if (
-      blocks.length > 0
-    ) {
-      await persistSchedule(
-        supabase,
-        blocks,
-        scheduleDate
-      );
-    }
-
-    /* =====================================================
-       FINAL CHRONOLOGICAL SORT
-       ===================================================== */
-
-    blocks.sort(
-      (a, b) => {
-        const startDiff =
-          parseHHMM(
-            a.start
-          ) -
-          parseHHMM(
-            b.start
-          );
-
-        if (
-          startDiff !== 0
-        ) {
-          return startDiff;
-        }
-
-        return (
-          parseHHMM(
-            a.end
-          ) -
-          parseHHMM(
-            b.end
-          )
-        );
-      }
+    await persistSchedule(
+      supabase,
+      user.id,
+      tasks,
+      validatedBlocks,
+      scheduleDate
     );
-
-    /* =====================================================
-       FINAL OVERLAP VALIDATION
-       ===================================================== */
-
-    for (
-      let i = 1;
-      i < blocks.length;
-      i++
-    ) {
-      const previous =
-        blocks[i - 1];
-
-      const current =
-        blocks[i];
-
-      if (
-        parseHHMM(
-          current.start
-        ) <
-        parseHHMM(
-          previous.end
-        )
-      ) {
-        console.error(
-          "Invalid overlapping schedule detected:",
-          previous,
-          current
-        );
-
-        throw new Error(
-          "CSP generated an overlapping schedule. Schedule was not accepted."
-        );
-      }
-    }
 
     /* =====================================================
        RESPONSE
@@ -1237,7 +1527,8 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify({
-        blocks,
+        blocks:
+          validatedBlocks,
 
         deferred:
           deferred.map(
@@ -1247,10 +1538,9 @@ serve(async (req) => {
               title:
                 task.title,
               duration:
-                task.estimated_duration ||
-                30,
+                durationOf(task),
               priority:
-                task.priority_score ||
+                task.priority_score ??
                 null,
               status:
                 task.status ||
@@ -1259,9 +1549,16 @@ serve(async (req) => {
           ),
 
         pso: {
-          fitness: best,
+          fitness:
+            best,
           iterations: 60,
           swarm_size: 25,
+          inertia_weight:
+            0.7,
+          cognitive:
+            1.5,
+          social:
+            1.5,
         },
 
         window: {
@@ -1280,9 +1577,7 @@ serve(async (req) => {
         },
 
         scheduled_count:
-          cspResult
-            .scheduledTaskIds
-            .length,
+          scheduledIds.size,
 
         deferred_count:
           deferred.length,
@@ -1301,16 +1596,18 @@ serve(async (req) => {
         },
       }
     );
-  } catch (e) {
+  } catch (error) {
     console.error(
       "generate-schedule error:",
-      e
+      error
     );
 
     return new Response(
       JSON.stringify({
         error:
-          (e as Error).message,
+          error instanceof Error
+            ? error.message
+            : String(error),
       }),
       {
         status: 500,

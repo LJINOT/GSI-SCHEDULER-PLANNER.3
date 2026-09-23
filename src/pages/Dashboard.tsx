@@ -121,8 +121,9 @@ export default function Dashboard() {
       supabase
         .from("tasks")
         .select("id, title, status, due_date, start_time, priority_score, category, project_id, estimated_duration")
-        .eq("user_id", user.id),
-      supabase.from("projects").select("id, name, color").eq("user_id", user.id),
+        .eq("user_id", user.id)
+        .or("archived.eq.false,archived.is.null"),
+      supabase.from("projects").select("id, name, color").eq("user_id", user.id).or("archived.eq.false,archived.is.null"),
       supabase.from("profiles").select("full_name").eq("id", user.id).single(),
     ]);
     setTasks((taskData as Task[]) || []);
@@ -146,9 +147,13 @@ export default function Dashboard() {
   const fetchModuleSummaries = async () => {
     const todayPH = formatPH(new Date(), "yyyy-MM-dd");
 
+    const { data: { user: riskUser } } = await supabase.auth.getUser();
+    if (!riskUser) return;
     const { data: riskData } = await supabase
       .from("tasks")
       .select("id, title, status, due_date, start_time, priority_score, category, project_id, estimated_duration")
+      .eq("user_id", riskUser.id)
+      .or("archived.eq.false,archived.is.null")
       .not("due_date", "is", null)
       .neq("status", "done");
 

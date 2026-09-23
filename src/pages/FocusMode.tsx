@@ -61,8 +61,49 @@ export default function FocusMode() {
           .eq("archived", false)
           .neq("status", "done")
           .order("priority_score", { ascending: false, nullsFirst: false });
-        if (data?.[0]) setFocusTask(data[0] as FocusTask);
-        // data contains ALL active tasks for this user (no artificial limit of 1)
+
+        const rows = (data || []) as FocusTask[];
+        if (rows.length === 0) {
+          setFocusTask(null);
+        } else {
+          // Prefer the task in the CURRENT time block (start_time .. start+duration).
+          // Among overlapping blocks, pick highest priority_score, then soonest due.
+          const now = Date.now();
+          const score = (t: FocusTask) => Number(t.priority_score) || 0;
+          const durationMs = (t: FocusTask) =>
+            Math.max(5, Math.min(480, Number(t.estimated_duration) || 30)) * 60_000;
+
+          const inBlock = rows.filter((t) => {
+            if (!t.start_time) return false;
+            const start = new Date(t.start_time).getTime();
+            if (!Number.isFinite(start)) return false;
+            const end = start + durationMs(t);
+            return start <= now && now < end;
+          });
+
+          let chosen: FocusTask | null = null;
+          if (inBlock.length > 0) {
+            chosen = [...inBlock].sort((a, b) => {
+              if (score(b) !== score(a)) return score(b) - score(a);
+              const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
+              const bd = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+              return ad - bd;
+            })[0];
+          } else {
+            // Next upcoming scheduled block today/soon
+            const upcoming = rows
+              .filter((t) => t.start_time && new Date(t.start_time).getTime() > now)
+              .sort((a, b) => {
+                const as = new Date(a.start_time!).getTime();
+                const bs = new Date(b.start_time!).getTime();
+                if (as !== bs) return as - bs;
+                return score(b) - score(a);
+              });
+            if (upcoming.length > 0) chosen = upcoming[0];
+            else chosen = rows[0]; // highest priority overall (already ordered)
+          }
+          setFocusTask(chosen);
+        }
       } catch {
         /* ignore */
       }

@@ -57,14 +57,21 @@ export default function Priorities() {
         return;
       }
 
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("tasks")
         .select("id, project_id, due_date, estimated_duration, projects(name)")
         .eq("user_id", user.id)
         .eq("archived", false);
 
-      const map: Record<string, TaskMeta> = {};
-      (data || []).forEach((t: any) => {
+      if (error) {
+        console.error("Failed to load priority task metadata:", error);
+        setTaskMeta({});
+        return;
+      }
+
+      {
+        const map: Record<string, TaskMeta> = {};
+        (data || []).forEach((t: any) => {
           map[t.id] = {
             id: t.id,
             project_id: t.project_id,
@@ -74,10 +81,10 @@ export default function Priorities() {
           };
         });
         setTaskMeta(map);
+      }
     };
-
     void loadTaskMeta();
-  }, [payload]);
+  }, [payload?.timestamp]);
 
   const rankPriorities = async () => {
     setLoading(true);
@@ -93,6 +100,12 @@ export default function Priorities() {
     }
     setLoading(false);
   };
+
+  // Always calculate priorities from the current user's live database data.
+  // Do not display an old cached ranking when a new account opens this page.
+  useEffect(() => {
+    void rankPriorities();
+  }, []);
 
   const priorityColors: Record<string, string> = {
     high: "bg-destructive/10 text-destructive",

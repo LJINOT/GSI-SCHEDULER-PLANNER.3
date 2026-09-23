@@ -90,6 +90,13 @@ export default function Today() {
 
   useEffect(() => {
     const load = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setTaskMap({});
+        setRecentActivityIds(new Set());
+        return;
+      }
+
       const since = new Date();
       since.setDate(since.getDate() - 7);
 

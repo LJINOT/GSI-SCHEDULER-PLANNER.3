@@ -6,13 +6,10 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Loader2, Target, Folder, User } from "lucide-react";
-import { loadCache, saveCache } from "@/lib/persist-cache";
 import { DevPanel, DevStat, DevBar } from "@/components/DevPanel";
 import { useDevMode } from "@/hooks/use-dev-mode";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { format } from "date-fns";
-
-const CACHE_KEY = "gsi-cache:priorities-ranked";
 
 type Criteria = { deadline: number; difficulty: number; duration: number; category: number };
 type RankedTask = { id: string; title: string; score: number; priority: string; reasoning: string; criteria?: Criteria };
@@ -40,7 +37,7 @@ const PRIORITY_FILTERS = [
 ];
 
 export default function Priorities() {
-  const [payload, setPayload] = useState<Payload | null>(() => loadCache<Payload>(CACHE_KEY));
+  const [payload, setPayload] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(false);
   const [taskMeta, setTaskMeta] = useState<Record<string, TaskMeta>>({});
   const [priorityFilter, setPriorityFilter] = useState("all");
@@ -50,42 +47,26 @@ export default function Priorities() {
   const weights = payload?.ahp?.weights;
 
   useEffect(() => {
-    const loadTaskMeta = async () => {
+    let cancelled = false;
+    const loadMeta = async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        setTaskMeta({});
-        return;
-      }
-
-      const { data } = await supabase
+      if (!user) { if (!cancelled) setTaskMeta({}); return; }
+      const { data, error } = await supabase
         .from("tasks")
         .select("id, project_id, due_date, estimated_duration, projects(name)")
         .eq("user_id", user.id)
-        .eq("archived", false);
-
+        .eq("archived", false)
+        .neq("status", "done");
+      if (error) { console.error("Failed to load priority task metadata:", error); return; }
       const map: Record<string, TaskMeta> = {};
       (data || []).forEach((t: any) => {
-          map[t.id] = {
-            id: t.id,
-            project_id: t.project_id,
-            project_name: t.projects?.name || null,
-            due_date: t.due_date || null,
-            estimated_duration: t.estimated_duration ?? null,
-          };
-        });
-        setTaskMeta(map);
+        map[t.id] = { id: t.id, project_id: t.project_id, project_name: t.projects?.name || null, due_date: t.due_date || null, estimated_duration: t.estimated_duration ?? null };
+      });
+      if (!cancelled) setTaskMeta(map);
     };
-
-    void loadTaskMeta();
-  }, [payload]);
-
-  // Auto-rank when page opens with no ranked list (new users / empty cache)
-  useEffect(() => {
-    if (!payload || !payload.tasks || payload.tasks.length === 0) {
-      void rankPriorities();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void loadMeta();
+    return () => { cancelled = true; };
+  }, [payload?.timestamp]);
 
   const rankPriorities = async () => {
     setLoading(true);
@@ -94,13 +75,18 @@ export default function Priorities() {
       if (error) throw error;
       const next: Payload = { tasks: data?.tasks || [], ahp: data?.ahp, algorithm: data?.algorithm, timestamp: data?.timestamp };
       setPayload(next);
-      saveCache(CACHE_KEY, next);
       toast.success("Priorities ranked with AHP!");
     } catch (err: any) {
       toast.error(err.message || "Failed to rank priorities");
     }
     setLoading(false);
   };
+
+  // Always calculate fresh priorities for the currently authenticated user.
+  // Priorities does not use browser cache as a source of truth.
+  useEffect(() => {
+    void rankPriorities();
+  }, []);
 
   const priorityColors: Record<string, string> = {
     high: "bg-destructive/10 text-destructive",

@@ -104,11 +104,13 @@ export default function Today() {
         supabase
           .from("tasks")
           .select("id, title, status, due_date, start_time, estimated_duration, priority_score, category")
+          .eq("user_id", user.id)
           .eq("archived", false)
           .neq("status", "done"),
         supabase
           .from("time_entries")
           .select("task_id")
+          .eq("user_id", user.id)
           .gte("start_time", since.toISOString()),
       ]);
 
@@ -126,6 +128,29 @@ export default function Today() {
     };
     load();
   }, [payload?.timestamp]);
+
+  // Always refresh recommendations from the current account when the page opens.
+  // This prevents a new user from seeing a stale one-task cached result.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      setLoading(true);
+      try {
+        const { data, error } = await supabase.functions.invoke("smart-picks", { body: {} });
+        if (cancelled) return;
+        if (error) throw error;
+        const next: Payload = { ...(data || {}), picks: Array.isArray(data?.picks) ? data.picks : [] };
+        setPayload(next);
+        saveCache(CACHE_KEY, next);
+      } catch (err) {
+        if (!cancelled) console.error("Failed to refresh Today AI recommendations:", err);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void refresh();
+    return () => { cancelled = true; };
+  }, []);
 
   const rankedRows = useMemo(() => {
     return picks.map((p, i) => {

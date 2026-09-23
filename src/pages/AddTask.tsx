@@ -240,6 +240,24 @@ export default function AddTask({
         return;
       }
 
+      const norm = newProjectName.trim().toLowerCase();
+      const { data: existingProjects } = await supabase
+        .from("projects")
+        .select("id, name")
+        .eq("user_id", user.id)
+        .or("archived.eq.false,archived.is.null");
+      if ((existingProjects || []).some(
+        (row: { name?: string }) =>
+          String(row.name || "").trim().toLowerCase() === norm,
+      )) {
+        setErrors((p) => ({
+          ...p,
+          newProject:
+            "Project name already exists. Please use a different project name.",
+        }));
+        return;
+      }
+
       const {
         data,
         error,
@@ -255,7 +273,11 @@ export default function AddTask({
         .single();
 
       if (error) {
-        toast.error(error.message);
+        toast.error(
+          /duplicate|unique/i.test(error.message || "")
+            ? "Project name already exists. Please use a different project name."
+            : error.message,
+        );
         return;
       }
 
@@ -318,26 +340,20 @@ export default function AddTask({
         "AddTask: starting AI analysis",
       );
 
-      const invokeAnalyze = () =>
-        supabase.functions.invoke(
-          "analyze-task",
-          {
-            body: {
-              title: title.trim(),
-              description,
-              category:
-                category || undefined,
-            },
+      const {
+        data,
+        error,
+      } = await supabase.functions.invoke(
+        "analyze-task",
+        {
+          body: {
+            title: title.trim(),
+            description,
+            category:
+              category || undefined,
           },
-        );
-
-      // One automatic retry helps Edge cold starts / transient network failures
-      let { data, error } = await invokeAnalyze();
-      if (error || (data && typeof data === "object" && (data as { ok?: boolean }).ok === false)) {
-        console.warn("AddTask: first analyze attempt failed, retrying once…", error || data);
-        await new Promise((r) => setTimeout(r, 800));
-        ({ data, error } = await invokeAnalyze());
-      }
+        },
+      );
 
       console.log(
         "AddTask: analyze-task response:",
@@ -622,26 +638,23 @@ export default function AddTask({
     // Duplicate title checker
     // ------------------------------------
 
-    const { data: dupes } =
-      await supabase
-        .from("tasks")
-        .select("id, title")
-        .eq("user_id", user.id)
-        .ilike(
-          "title",
-          title.trim(),
-        );
+    const normalizedTitle = title.trim().toLowerCase();
+    const { data: existingTitles } = await supabase
+      .from("tasks")
+      .select("id, title")
+      .eq("user_id", user.id)
+      .eq("archived", false);
 
-    if (
-      dupes &&
-      dupes.length > 0
-    ) {
+    const dup = (existingTitles || []).some(
+      (row: { title?: string }) =>
+        String(row.title || "").trim().toLowerCase() === normalizedTitle,
+    );
+
+    if (dup) {
       setErrors((p) => ({
         ...p,
-        title:
-          "A task with this title already exists. Use different or more specific words so it stays unique and identifiable.",
+        title: "Task title already exists. Please use a different task title.",
       }));
-
       setLoading(false);
       return;
     }

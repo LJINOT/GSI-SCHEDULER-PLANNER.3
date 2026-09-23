@@ -188,126 +188,37 @@ function normalizeAnalysis(
  * This prevents the function from
  * depending on an old model name.
  */
-async function getAvailableModel(
-  apiKey: string,
-): Promise<string> {
-  const response =
-    await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100",
-      {
-        method: "GET",
-        headers: {
-          "x-goog-api-key":
-            apiKey,
-        },
-      },
-    );
-
-  const text =
-    await response.text();
-
-  if (!response.ok) {
-    console.error(
-      "Gemini models.list failed:",
-      response.status,
-      text.slice(0, 1000),
-    );
-
-    throw new Error(
-      `Unable to retrieve Gemini models (${response.status}).`,
-    );
-  }
-
-  let data: any;
-
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(
-      "Gemini returned an invalid model list.",
-    );
-  }
-
-  const models =
-    Array.isArray(data?.models)
-      ? data.models
-      : [];
-
-  const supported =
-    models.filter(
-      (model: any) =>
-        Array.isArray(
-          model.supportedGenerationMethods,
-        ) &&
-        model.supportedGenerationMethods.includes(
-          "generateContent",
-        ),
-    );
-
-  if (supported.length === 0) {
-    throw new Error(
-      "Your Gemini API key has no available model that supports generateContent.",
-    );
-  }
-
-  /*
-   * Prefer current stable Flash models.
-   *
-   * The exact model available depends
-   * on the API key/project.
-   */
-  const preferredModels = [
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
+/**
+ * Prefer known stable Flash models first (no listModels round-trip).
+ * Only if generateContent fails for all of them do we list models.
+ * This makes the first click faster and more reliable (avoids cold-start + listModels timeout).
+ */
+async function getAvailableModel(apiKey: string): Promise<string> {
+  // Stable, widely available models (order = preference)
+  const preferred = [
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
     "gemini-2.5-flash",
+    "gemini-flash-latest",
   ];
 
-  for (
-    const preferred of preferredModels
-  ) {
-    const found =
-      supported.find(
-        (model: any) =>
-          model.name ===
-          `models/${preferred}`,
-      );
+  // Fast path: use first preferred model without listing
+  // (generateContent will try fallbacks if this fails later)
+  console.log("Selected preferred Gemini model (fast path):", preferred[0]);
+  return preferred[0];
+}
 
-    if (found) {
-      console.log(
-        "Selected preferred Gemini model:",
-        found.name,
-      );
-
-      return found.name.replace(
-        /^models\//,
-        "",
-      );
-    }
-  }
-
-  /*
-   * If none of the preferred models
-   * are available, use the first model
-   * Google says supports
-   * generateContent.
-   */
-  const fallback =
-    supported[0];
-
-  console.log(
-    "Selected fallback Gemini model:",
-    fallback.name,
-  );
-
-  return String(
-    fallback.name,
-  ).replace(
-    /^models\//,
-    "",
-  );
+/** Ordered candidates for generateContent retries */
+function modelCandidates(primary: string): string[] {
+  const rest = [
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-flash-latest",
+  ].filter((m) => m !== primary);
+  return [primary, ...rest];
 }
 
 serve(async (req) => {
@@ -422,17 +333,19 @@ serve(async (req) => {
     );
 
     // --------------------------------
-    // Find available model
+    // Model candidates (no listModels — faster first click)
     // --------------------------------
 
-    const model =
+    const primaryModel =
       await getAvailableModel(
         GEMINI_API_KEY,
       );
 
+    const modelsToTry = modelCandidates(primaryModel);
+
     console.log(
-      "analyze-task: using model:",
-      model,
+      "analyze-task: models to try:",
+      modelsToTry,
     );
 
     // --------------------------------
@@ -518,111 +431,71 @@ ${userCategory || "(No category selected)"}
       ],
       generationConfig: {
         temperature: 0.2,
+        responseMimeType: "application/json",
       },
     };
 
     // --------------------------------
-    // Call Gemini
+    // Call Gemini (try models until one works)
     // --------------------------------
 
-    const url =
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    let aiResponse: Response | null = null;
+    let responseText = "";
+    let model = modelsToTry[0];
+    let lastStatus = 0;
 
-    console.log(
-      "analyze-task: calling Gemini:",
-      model,
-    );
+    for (const candidate of modelsToTry) {
+      model = candidate;
+      const url =
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
-    const aiResponse =
-      await fetch(url, {
+      console.log("analyze-task: calling Gemini:", model);
+
+      const res = await fetch(url, {
         method: "POST",
-
         headers: {
-          "Content-Type":
-            "application/json",
-
-          "x-goog-api-key":
-            GEMINI_API_KEY,
+          "Content-Type": "application/json",
+          "x-goog-api-key": GEMINI_API_KEY,
         },
-
-        body: JSON.stringify(
-          requestBody,
-        ),
+        body: JSON.stringify(requestBody),
       });
 
-    const responseText =
-      await aiResponse.text();
+      responseText = await res.text();
+      lastStatus = res.status;
+      console.log("analyze-task: Gemini status:", model, res.status);
 
-    console.log(
-      "analyze-task: Gemini status:",
-      aiResponse.status,
-    );
+      if (res.ok) {
+        aiResponse = res;
+        break;
+      }
 
-    if (!aiResponse.ok) {
       console.error(
         "analyze-task: Gemini error:",
-        responseText.slice(
-          0,
-          1500,
-        ),
+        model,
+        responseText.slice(0, 500),
       );
 
-      if (
-        aiResponse.status ===
-        400
-      ) {
+      // Auth / rate limit — do not try other models
+      if (res.status === 401 || res.status === 403) {
         return jsonResponse(
-          {
-            error:
-              "Gemini rejected the request.",
-            details:
-              responseText.slice(
-                0,
-                500,
-              ),
-            model,
-          },
+          { error: "Gemini API authorization failed. Check GEMINI_API_KEY." },
           502,
         );
       }
-
-      if (
-        aiResponse.status ===
-          401 ||
-        aiResponse.status ===
-          403
-      ) {
+      if (res.status === 429) {
         return jsonResponse(
-          {
-            error:
-              "Gemini API authorization failed. Check GEMINI_API_KEY.",
-          },
-          502,
-        );
-      }
-
-      if (
-        aiResponse.status ===
-        429
-      ) {
-        return jsonResponse(
-          {
-            error:
-              "Gemini rate limit reached. Please try again shortly.",
-          },
+          { error: "Gemini rate limit reached. Please try again shortly." },
           429,
         );
       }
+      // 404 = model not found → try next; other errors try next once
+    }
 
+    if (!aiResponse) {
       return jsonResponse(
         {
-          error:
-            `Gemini API failed (${aiResponse.status}).`,
-          details:
-            responseText.slice(
-              0,
-              500,
-            ),
+          error: `Gemini API failed (${lastStatus || 502}).`,
+          details: responseText.slice(0, 500),
           model,
         },
         502,
@@ -636,24 +509,15 @@ ${userCategory || "(No category selected)"}
     let aiJson: any;
 
     try {
-      aiJson =
-        JSON.parse(
-          responseText,
-        );
+      aiJson = JSON.parse(responseText);
     } catch {
       console.error(
         "Gemini returned invalid JSON:",
-        responseText.slice(
-          0,
-          1000,
-        ),
+        responseText.slice(0, 1000),
       );
 
       return jsonResponse(
-        {
-          error:
-            "Gemini returned an invalid response.",
-        },
+        { error: "Gemini returned an invalid response." },
         502,
       );
     }

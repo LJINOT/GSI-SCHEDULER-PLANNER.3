@@ -238,6 +238,7 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
       status: initialStatus,
       user_id: user.id,
       project_id: projectId !== "none" ? projectId : null,
+      archived: false,
     });
 
     setLoading(false);
@@ -246,7 +247,11 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
       toast.success("Task created!");
       resetForm();
       if (embedded) onCreated?.();
-      else navigate("/tasks");
+      else {
+        // Open Tasks and, if assigned to a project, open that folder so the new task is visible
+        const pid = projectId !== "none" ? projectId : null;
+        navigate(pid ? `/tasks?project=${pid}` : "/tasks");
+      }
     }
   };
 

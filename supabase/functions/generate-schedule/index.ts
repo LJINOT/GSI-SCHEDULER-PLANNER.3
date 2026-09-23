@@ -1185,6 +1185,258 @@ function validateBlocks(
    MAIN EDGE FUNCTION
    ========================================================= */
 
+
+/* =========================================================
+   ADAPTIVE: unfinished detection + local reschedule
+   ========================================================= */
+
+function toHHMM(mins: number): string {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+type Occupied = { start: number; end: number; taskId?: string };
+
+function buildOccupiedFromTasks(
+  tasks: Task[],
+  scheduleDate: string,
+  excludeIds: Set<string>,
+  breakStyle: string,
+  startMin: number,
+  endMin: number,
+): Occupied[] {
+  const occ: Occupied[] = [];
+  for (const b of getBreakBlocks(breakStyle)) {
+    if (b.start >= startMin && b.start + b.dur <= endMin) {
+      occ.push({ start: b.start, end: b.start + b.dur });
+    }
+  }
+  for (const task of tasks) {
+    if (excludeIds.has(task.id)) continue;
+    if (!task.start_time) continue;
+    if (String(task.start_time).slice(0, 10) !== scheduleDate) continue;
+    const timePart = String(task.start_time).includes("T")
+      ? String(task.start_time).split("T")[1].slice(0, 5)
+      : null;
+    if (!timePart) continue;
+    const sm = parseHHMM(timePart);
+    const dur = durationOf(task);
+    occ.push({ start: sm, end: sm + dur, taskId: task.id });
+  }
+  return occ.sort((a, b) => a.start - b.start);
+}
+
+function findFreeSlot(
+  duration: number,
+  occupied: Occupied[],
+  workStart: number,
+  workEnd: number,
+  notBefore: number,
+): { start: number; end: number } | null {
+  if (duration <= 0) return null;
+  let cursor = Math.max(workStart, notBefore);
+  const blocked = [...occupied].sort((a, b) => a.start - b.start);
+  for (let guard = 0; guard < 2000 && cursor + duration <= workEnd; guard++) {
+    let hit: Occupied | null = null;
+    for (const b of blocked) {
+      if (cursor < b.end && cursor + duration > b.start) {
+        hit = b;
+        break;
+      }
+    }
+    if (!hit) return { start: cursor, end: cursor + duration };
+    cursor = Math.max(cursor + 1, hit.end);
+  }
+  return null;
+}
+
+type AdaptiveMove = {
+  task_id: string;
+  title: string;
+  original_start: string | null;
+  original_end: string | null;
+  completed_minutes: number;
+  remaining_minutes: number;
+  new_start: string | null;
+  new_end: string | null;
+  status: "rescheduled" | "needs_rescheduling" | "completed";
+  reason: string;
+};
+
+/**
+ * Apply remaining durations from time_entries and detect unfinished scheduled tasks
+ * whose planned end is in the past.
+ */
+function applyRemainingDurations(
+  tasks: Task[],
+  completedByTask: Map<string, number>,
+  scheduleDate: string,
+  now: Date,
+): { tasks: Task[]; unfinishedIds: string[]; movesSeed: AdaptiveMove[] } {
+  const unfinishedIds: string[] = [];
+  const movesSeed: AdaptiveMove[] = [];
+  const adjusted = tasks.map((t) => {
+    const est = durationOf(t);
+    const done = Math.max(0, completedByTask.get(t.id) || 0);
+    const remaining = Math.max(0, est - done);
+    if (done >= est && est > 0) {
+      // Fully worked — leave for completion handling elsewhere
+      movesSeed.push({
+        task_id: t.id,
+        title: t.title,
+        original_start: t.start_time || null,
+        original_end: null,
+        completed_minutes: done,
+        remaining_minutes: 0,
+        new_start: null,
+        new_end: null,
+        status: "completed",
+        reason: "Actual work met or exceeded estimated duration.",
+      });
+      return { ...t, estimated_duration: 0 };
+    }
+    const next = { ...t, estimated_duration: remaining > 0 ? remaining : est };
+
+    if (
+      t.start_time &&
+      String(t.start_time).slice(0, 10) === scheduleDate &&
+      remaining > 0
+    ) {
+      const timePart = String(t.start_time).includes("T")
+        ? String(t.start_time).split("T")[1].slice(0, 5)
+        : "09:00";
+      const startM = parseHHMM(timePart);
+      const endM = startM + est; // original planned end using original estimate
+      const endDate = new Date(`${scheduleDate}T${toHHMM(endM)}:00`);
+      // If scheduled end is past and task not done → unfinished
+      if (endDate.getTime() <= now.getTime()) {
+        unfinishedIds.push(t.id);
+        movesSeed.push({
+          task_id: t.id,
+          title: t.title,
+          original_start: timePart,
+          original_end: toHHMM(endM),
+          completed_minutes: done,
+          remaining_minutes: remaining,
+          new_start: null,
+          new_end: null,
+          status: "needs_rescheduling",
+          reason:
+            "Task was unfinished during its scheduled period. Remaining work needs a valid slot.",
+        });
+      }
+    }
+    return next;
+  }).filter((t) => (t.estimated_duration || 0) > 0 || unfinishedIds.includes(t.id));
+
+  // Keep unfinished even if remaining was set
+  return { tasks: adjusted.filter((t) => durationOf(t) > 0), unfinishedIds, movesSeed };
+}
+
+function localRescheduleUnfinished(
+  tasks: Task[],
+  unfinishedIds: string[],
+  scheduleDate: string,
+  startMin: number,
+  endMin: number,
+  breakStyle: string,
+  movesSeed: AdaptiveMove[],
+): { blocks: Block[]; moves: AdaptiveMove[]; allPlaced: boolean } {
+  const unfinishedSet = new Set(unfinishedIds);
+  const occupied = buildOccupiedFromTasks(
+    tasks,
+    scheduleDate,
+    unfinishedSet,
+    breakStyle,
+    startMin,
+    endMin,
+  );
+
+  // Existing blocks for non-unfinished tasks
+  const blocks: Block[] = [];
+  for (const o of occupied) {
+    if (o.taskId) {
+      const task = tasks.find((x) => x.id === o.taskId);
+      blocks.push({
+        task_id: o.taskId,
+        title: task?.title || "Task",
+        start: toHHMM(o.start),
+        end: toHHMM(o.end),
+        category: task?.category || "General",
+        kind: "task",
+      });
+    } else {
+      blocks.push({
+        task_id: `break-${o.start}`,
+        title: "Break",
+        start: toHHMM(o.start),
+        end: toHHMM(o.end),
+        category: "Break",
+        kind: "break",
+      });
+    }
+  }
+
+  const moves: AdaptiveMove[] = movesSeed.map((m) => ({ ...m }));
+  let allPlaced = true;
+  const nowMin =
+    new Date().getHours() * 60 + new Date().getMinutes();
+
+  // Sort unfinished by priority_score desc then due date
+  const unfinishedTasks = tasks
+    .filter((t) => unfinishedSet.has(t.id))
+    .sort((a, b) => {
+      const pd = (b.priority_score || 0) - (a.priority_score || 0);
+      if (pd !== 0) return pd;
+      const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
+      const bd = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+      return ad - bd;
+    });
+
+  for (const task of unfinishedTasks) {
+    const dur = durationOf(task);
+    // Prefer later today after now
+    let slot = findFreeSlot(dur, occupied, startMin, endMin, Math.max(startMin, nowMin));
+    // Else any free slot today in work window
+    if (!slot) {
+      slot = findFreeSlot(dur, occupied, startMin, endMin, startMin);
+    }
+
+    const move = moves.find((m) => m.task_id === task.id);
+    if (slot) {
+      occupied.push({ start: slot.start, end: slot.end, taskId: task.id });
+      occupied.sort((a, b) => a.start - b.start);
+      blocks.push({
+        task_id: task.id,
+        title: task.title,
+        start: toHHMM(slot.start),
+        end: toHHMM(slot.end),
+        category: task.category || "General",
+        kind: "task",
+      });
+      if (move) {
+        move.new_start = toHHMM(slot.start);
+        move.new_end = toHHMM(slot.end);
+        move.status = "rescheduled";
+        move.reason =
+          "Task was unfinished during its scheduled period. Remaining work was moved to the next valid available time slot.";
+      }
+    } else {
+      allPlaced = false;
+      if (move) {
+        move.status = "needs_rescheduling";
+        move.reason =
+          "No valid time slot is available before the deadline on this day.";
+      }
+    }
+  }
+
+  blocks.sort((a, b) => parseHHMM(a.start) - parseHHMM(b.start));
+  return { blocks, moves, allPlaced };
+}
+
+
 serve(async (req) => {
   if (
     req.method ===
@@ -1301,7 +1553,7 @@ serve(async (req) => {
       throw tasksError;
     }
 
-    const tasks =
+    let tasks =
       uniqueTasks(
         (allTasks || []).filter(
           (task: Task) =>
@@ -1401,6 +1653,141 @@ serve(async (req) => {
       throw new Error(
         "Work end time must be later than work start time."
       );
+    }
+
+    const isAdaptive = body?.adaptive === true;
+
+    /* =====================================================
+       ADAPTIVE: remaining duration + local reschedule
+       ===================================================== */
+
+    let adaptiveMoves: AdaptiveMove[] = [];
+
+    if (isAdaptive) {
+      // Actual work from time_entries (user-scoped)
+      const { data: entries } = await supabase
+        .from("time_entries")
+        .select("task_id, duration, start_time, end_time")
+        .eq("user_id", user.id);
+
+      const completedByTask = new Map<string, number>();
+      for (const e of entries || []) {
+        if (!e.task_id) continue;
+        let mins = Number(e.duration) || 0;
+        if (mins <= 0 && e.start_time && e.end_time) {
+          mins = Math.max(
+            0,
+            Math.round(
+              (new Date(e.end_time).getTime() - new Date(e.start_time).getTime()) /
+                60000,
+            ),
+          );
+        }
+        completedByTask.set(
+          e.task_id,
+          (completedByTask.get(e.task_id) || 0) + mins,
+        );
+      }
+
+      const applied = applyRemainingDurations(
+        tasks,
+        completedByTask,
+        scheduleDate,
+        new Date(),
+      );
+      // Replace tasks with remaining-duration versions
+      tasks = applied.tasks;
+      adaptiveMoves = applied.movesSeed;
+
+      if (applied.unfinishedIds.length > 0) {
+        const local = localRescheduleUnfinished(
+          tasks,
+          applied.unfinishedIds,
+          scheduleDate,
+          startMin,
+          endMin,
+          breakStyle,
+          adaptiveMoves,
+        );
+        adaptiveMoves = local.moves;
+
+        if (local.allPlaced) {
+          const validatedBlocks = validateBlocks(
+            local.blocks,
+            startMin,
+            endMin,
+          );
+          await persistSchedule(
+            supabase,
+            user.id,
+            tasks,
+            validatedBlocks,
+            scheduleDate,
+          );
+
+          // Task history notes (best-effort)
+          for (const m of adaptiveMoves) {
+            if (m.status !== "rescheduled") continue;
+            try {
+              await supabase.from("task_history").insert({
+                task_id: m.task_id,
+                user_id: user.id,
+                note: m.reason,
+                changes: {
+                  type: "adaptive_reschedule",
+                  completed_minutes: m.completed_minutes,
+                  remaining_minutes: m.remaining_minutes,
+                  new_start: m.new_start,
+                  new_end: m.new_end,
+                },
+              });
+            } catch {
+              /* optional table */
+            }
+          }
+
+          return new Response(
+            JSON.stringify({
+              blocks: validatedBlocks,
+              deferred: adaptiveMoves
+                .filter((m) => m.status === "needs_rescheduling")
+                .map((m) => ({
+                  task_id: m.task_id,
+                  title: m.title,
+                  duration: m.remaining_minutes,
+                  status: "needs_rescheduling",
+                })),
+              adaptive_moves: adaptiveMoves,
+              adaptive: true,
+              pso: null,
+              window: {
+                start: workStart,
+                end: workEnd,
+                peak_start: peakStart,
+                peak_end: peakEnd,
+                break_style: breakStyle,
+                schedule_date: scheduleDate,
+              },
+              scheduled_count: validatedBlocks.filter((b) => b.kind === "task")
+                .length,
+              deferred_count: adaptiveMoves.filter(
+                (m) => m.status === "needs_rescheduling",
+              ).length,
+              algorithm: "adaptive-local + csp-validate",
+              timestamp: new Date().toISOString(),
+              note:
+                "Local adaptive reschedule used remaining duration from time entries; other tasks kept in place.",
+            }),
+            {
+              headers: {
+                ...corsHeaders,
+                "Content-Type": "application/json",
+              },
+            },
+          );
+        }
+        // else fall through to full PSO+CSP with remaining durations
+      }
     }
 
     /* =====================================================

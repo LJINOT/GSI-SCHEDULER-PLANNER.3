@@ -108,8 +108,8 @@ export default function Projects() {
     }
     const uid = user.id;
     const [{ data: p, error: pErr }, { data: t, error: tErr }] = await Promise.all([
-      supabase.from("projects").select("*").eq("user_id", uid).eq("archived", false).order("created_at", { ascending: false }),
-      supabase.from("tasks").select("id, title, description, status, due_date, start_time, estimated_duration, project_id").eq("user_id", uid).eq("archived", false),
+      supabase.from("projects").select("*").eq("user_id", uid).or("archived.eq.false,archived.is.null").order("created_at", { ascending: false }),
+      supabase.from("tasks").select("id, title, description, status, due_date, start_time, estimated_duration, project_id").eq("user_id", uid).or("archived.eq.false,archived.is.null"),
     ]);
     if (pErr) toast.error(pErr.message);
     if (tErr) toast.error(tErr.message);
@@ -121,7 +121,7 @@ export default function Projects() {
   useEffect(() => {
     fetchAll();
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") fetchAll();
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "INITIAL_SESSION") fetchAll();
       if (event === "SIGNED_OUT") {
         setProjects([]);
         setTasks([]);
@@ -171,7 +171,7 @@ export default function Projects() {
       return;
     }
     const { error } = await supabase.from("projects").insert({
-      user_id: user.id, name: name.trim(), description: description.trim() || null, color,
+      user_id: user.id, name: name.trim(), description: description.trim() || null, color, archived: false,
     });
     if (error) toast.error(error.message);
     else {

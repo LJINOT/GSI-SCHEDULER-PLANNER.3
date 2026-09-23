@@ -74,10 +74,20 @@ export default function Tasks() {
   }, [searchParams, loading]);
 
   const fetchAll = async () => {
+    const { data: { user }, error: authErr } = await supabase.auth.getUser();
+    if (authErr || !user) {
+      setTasks([]);
+      setProjects([]);
+      setHistory({});
+      setLoading(false);
+      if (!user) toast.error("Please sign in to view your tasks.");
+      return;
+    }
+    const uid = user.id;
     const [{ data: t, error }, { data: p }, { data: h }] = await Promise.all([
-      supabase.from("tasks").select("*").eq("archived", false).order("created_at", { ascending: false }),
-      supabase.from("projects").select("id, name, color").eq("archived", false).order("created_at", { ascending: false }),
-      supabase.from("task_history").select("id, task_id, note, created_at").order("created_at", { ascending: false }),
+      supabase.from("tasks").select("*").eq("user_id", uid).eq("archived", false).order("created_at", { ascending: false }),
+      supabase.from("projects").select("id, name, color").eq("user_id", uid).eq("archived", false).order("created_at", { ascending: false }),
+      supabase.from("task_history").select("id, task_id, note, created_at").eq("user_id", uid).order("created_at", { ascending: false }),
     ]);
     if (error) toast.error(error.message);
     else setTasks(t || []);
@@ -102,7 +112,18 @@ export default function Tasks() {
     if (tasksToUpdate.length > 0) fetchAll();
   }, [tasks]);
 
-  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => {
+    fetchAll();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") fetchAll();
+      if (event === "SIGNED_OUT") {
+        setTasks([]);
+        setProjects([]);
+        setHistory({});
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     checkStartTimes();

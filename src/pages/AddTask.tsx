@@ -95,173 +95,54 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
     setAiMeta(null);
   };
 
- const analyzeTask = async () => {
-  if (!title.trim()) {
-    toast({
-      title: "Task title required",
-      description: "Enter a task title before using AI analysis.",
-      variant: "destructive",
-    });
-    return;
-  }
-
-  setAnalyzing(true);
-
-  try {
-    console.log("AddTask: calling analyze-task");
-
-    const { data, error } =
-      await supabase.functions.invoke(
-        "analyze-task",
-        {
-          body: {
-            title: title.trim(),
-            description,
-            category: category || undefined,
-          },
-        },
-      );
-
-    console.log(
-      "AddTask: analyze-task data:",
-      data,
-    );
-
-    console.log(
-      "AddTask: analyze-task error:",
-      error,
-    );
-
-    if (error) {
-      throw new Error(
-        error.message ||
-          "Unable to connect to the AI analysis function.",
-      );
-    }
-
-    const payload =
-      data &&
-      typeof data === "object"
-        ? data as Record<string, unknown>
-        : null;
-
-    if (!payload) {
-      throw new Error(
-        "The AI function returned no data.",
-      );
-    }
-
-    // New Edge Function returns:
-    // { ok: false, error, details }
-    if (payload.ok === false) {
-      const errorMessage =
-        typeof payload.error === "string"
-          ? payload.error
-          : "AI analysis failed.";
-
-      const details =
-        typeof payload.details === "string"
-          ? payload.details
-          : "";
-
-      throw new Error(
-        details
-          ? `${errorMessage} ${details}`
-          : errorMessage,
-      );
-    }
-
-    if (
-      typeof payload.duration !== "number"
-    ) {
-      throw new Error(
-        "AI returned an invalid analysis.",
-      );
-    }
-
-    setAiMeta({
-      duration: payload.duration as number,
-
-      difficulty:
-        typeof payload.difficulty === "string"
-          ? payload.difficulty
-          : "medium",
-
-      category:
-        typeof payload.category === "string"
-          ? payload.category
-          : category,
-
-      priority:
-        typeof payload.priority === "string"
-          ? payload.priority
-          : "medium",
-
-      corrected_description:
-        typeof payload.corrected_description ===
-        "string"
+  const analyzeTask = async () => {
+    if (!title.trim()) { setErrors(p => ({ ...p, title: "Enter a title first" })); return; }
+    if (analyzing) return;
+    setAnalyzing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("analyze-task", {
+        body: { title, description, category: category || undefined },
+      });
+      // Functions may put the payload error on data.error even when error is set
+      const payload = data && typeof data === "object" ? data as Record<string, unknown> : null;
+      if (error) {
+        const msg =
+          (payload && typeof payload.error === "string" && payload.error) ||
+          error.message ||
+          "Analysis failed";
+        throw new Error(msg);
+      }
+      if (payload?.error && typeof payload.error === "string") {
+        throw new Error(payload.error);
+      }
+      if (!payload || typeof payload.duration !== "number") {
+        throw new Error("AI returned an invalid analysis. Please try again.");
+      }
+      setAiMeta({
+        duration: payload.duration as number,
+        difficulty: String(payload.difficulty || "medium"),
+        category: String(payload.category || category || "General"),
+        priority: payload.priority ? String(payload.priority) : undefined,
+        corrected_description: typeof payload.corrected_description === "string"
           ? payload.corrected_description
-          : description,
-    });
-
-    // Apply AI results to the form.
-    setDuration(
-      String(payload.duration),
-    );
-
-    if (
-      typeof payload.difficulty === "string"
-    ) {
-      setDifficulty(
-        payload.difficulty as
-          | "easy"
-          | "medium"
-          | "hard",
-      );
+          : undefined,
+      });
+      if (
+        typeof payload.corrected_description === "string" &&
+        payload.corrected_description &&
+        payload.corrected_description !== description
+      ) {
+        setDescription(payload.corrected_description);
+        toast.success("AI analysis complete — description auto-corrected");
+      } else {
+        toast.success("AI analysis complete!");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Analysis failed";
+      toast.error(msg);
     }
-
-    // Only replace category if the user
-    // has not already selected one.
-    if (
-      !category &&
-      typeof payload.category === "string"
-    ) {
-      setCategory(payload.category);
-    }
-
-    if (
-      typeof payload.corrected_description ===
-        "string" &&
-      payload.corrected_description.trim()
-    ) {
-      setDescription(
-        payload.corrected_description,
-      );
-    }
-
-    toast({
-      title: "AI analysis complete",
-      description:
-        "The task details were analyzed successfully.",
-    });
-  } catch (error) {
-    console.error(
-      "AddTask: AI analysis failed:",
-      error,
-    );
-
-    toast({
-      title: "AI analysis failed",
-      description:
-        error instanceof Error
-          ? error.message
-          : "Unable to analyze the task.",
-      variant: "destructive",
-    });
-  } finally {
     setAnalyzing(false);
-  }
-};
+  };
 
   const isValidYear = (dateStr: string) => {
     if (!dateStr) return true;

@@ -15,17 +15,13 @@ type Analysis = {
 
 function extractJsonObject(text: string): unknown {
   if (!text) throw new Error("Empty AI content");
-  // Strip markdown fences if present
   let s = text.trim();
   if (s.startsWith("```")) {
     s = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   }
-  // Prefer first {...} block
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    s = s.slice(start, end + 1);
-  }
+  if (start >= 0 && end > start) s = s.slice(start, end + 1);
   return JSON.parse(s);
 }
 
@@ -36,46 +32,32 @@ function normalizeAnalysis(
 ): Analysis {
   let duration = Number(raw.duration);
   if (!Number.isFinite(duration)) duration = 30;
-  duration = Math.round(duration);
-  duration = Math.min(480, Math.max(5, duration));
+  duration = Math.min(480, Math.max(5, Math.round(duration)));
 
   const diffRaw = String(raw.difficulty || "medium").toLowerCase();
-  const difficulty = (["easy", "medium", "hard"].includes(diffRaw)
-    ? diffRaw
-    : "medium") as Analysis["difficulty"];
+  const difficulty = (["easy", "medium", "hard"].includes(diffRaw) ? diffRaw : "medium") as Analysis["difficulty"];
 
   const priRaw = String(raw.priority || "medium").toLowerCase();
-  const priority = (["high", "medium", "low"].includes(priRaw)
-    ? priRaw
-    : "medium") as Analysis["priority"];
+  const priority = (["high", "medium", "low"].includes(priRaw) ? priRaw : "medium") as Analysis["priority"];
 
-  // Always preserve user-selected category when provided
   let category = (userCategory && String(userCategory).trim())
     ? String(userCategory).trim()
     : String(raw.category || "General").trim();
   if (!category) category = "General";
 
-  let corrected = raw.corrected_description;
-  if (typeof corrected !== "string") {
-    corrected = originalDescription || "";
-  }
-  if (!originalDescription || !String(originalDescription).trim()) {
-    corrected = "";
-  }
+  let corrected: string =
+    typeof raw.corrected_description === "string" ? raw.corrected_description : (originalDescription || "");
+  if (!originalDescription || !String(originalDescription).trim()) corrected = "";
 
-  return {
-    duration,
-    difficulty,
-    category,
-    priority,
-    corrected_description: corrected as string,
-  };
+  return { duration, difficulty, category, priority, corrected_description: corrected };
 }
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
+
+  console.log("analyze-task: function started");
 
   try {
     let body: Record<string, unknown> = {};
@@ -92,6 +74,12 @@ serve(async (req) => {
     const description = typeof body.description === "string" ? body.description : "";
     const category = typeof body.category === "string" ? body.category : undefined;
 
+    console.log("analyze-task: request received", {
+      hasTitle: !!title,
+      hasDescription: !!description,
+      hasCategory: !!category,
+    });
+
     if (!title || typeof title !== "string" || !title.trim()) {
       return new Response(JSON.stringify({ error: "title required" }), {
         status: 400,
@@ -101,9 +89,14 @@ serve(async (req) => {
 
     const AI_PROVIDER_KEY = Deno.env.get("LOVABLE_API_KEY");
     const AI_ENDPOINT = "https://ai.gateway.lovable.dev/v1/chat/completions";
+    console.log("analyze-task: LOVABLE_API_KEY configured:", Boolean(AI_PROVIDER_KEY));
+
     if (!AI_PROVIDER_KEY) {
       return new Response(
-        JSON.stringify({ error: "AI provider key is not configured." }),
+        JSON.stringify({
+          error:
+            "AI provider key is not configured. Set LOVABLE_API_KEY (sk_…) in Supabase Edge Function secrets for this project.",
+        }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
@@ -111,21 +104,19 @@ serve(async (req) => {
     const systemPrompt = `You are an AI task analyzer for the GSI Schedule Planner.
 Analyze the given task and return ONLY valid JSON.
 Required fields:
-duration: Estimated minutes to complete the task. Must be an integer from 5 to 480.
-difficulty: Must be exactly one of: easy, medium, hard
-category: Best-fit task category string.
-priority: Must be exactly one of: high, medium, low
-corrected_description: Lightly correct spelling and grammar while preserving the user's meaning and writing style. If no description was provided, return an empty string.
-If the user already selected a category, keep the user's selected category.
-Do not return Markdown.
-Do not return an explanation.
-Return ONLY the JSON object.`;
+duration: integer from 5 to 480
+difficulty: exactly one of easy, medium, hard
+category: best-fit task category string
+priority: exactly one of high, medium, low
+corrected_description: lightly fix spelling/grammar; empty string if no description
+If the user already selected a category, keep it.
+Return ONLY the JSON object. No markdown.`;
 
     const userPrompt = `Title: ${title.trim()}
-Description: ${description.trim() ? description : "(none)"}
-User-provided category: ${category?.trim() ? category : "(none)"}`;
+Description: ${description.trim() || "(none)"}
+User-provided category: ${category?.trim() || "(none)"}`;
 
-    // Request plain JSON content (not tool_calls) for reliability
+    console.log("analyze-task: calling AI gateway");
     const aiRes = await fetch(AI_ENDPOINT, {
       method: "POST",
       headers: {
@@ -142,26 +133,31 @@ User-provided category: ${category?.trim() ? category : "(none)"}`;
       }),
     });
 
+    console.log("analyze-task: AI status:", aiRes.status);
+
     if (!aiRes.ok) {
       const errText = await aiRes.text().catch(() => "");
-      console.error("AI gateway error", aiRes.status, errText.slice(0, 500));
+      console.error("analyze-task: AI gateway response:", aiRes.status, errText.slice(0, 500));
       if (aiRes.status === 401 || aiRes.status === 403) {
         return new Response(
-          JSON.stringify({ error: "AI provider authorization failed. Check LOVABLE_API_KEY." }),
+          JSON.stringify({
+            error:
+              "AI provider authorization failed. LOVABLE_API_KEY must be a valid key starting with sk_.",
+          }),
           { status: aiRes.status, headers: { ...corsHeaders, "Content-Type": "application/json" } },
         );
       }
       if (aiRes.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "AI rate limit reached. Please try again in a moment." }),
-          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-        );
+        return new Response(JSON.stringify({ error: "AI rate limit reached. Please try again in a moment." }), {
+          status: 429,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
       if (aiRes.status === 402) {
-        return new Response(
-          JSON.stringify({ error: "AI credits exhausted. Please add credits to continue." }),
-          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-        );
+        return new Response(JSON.stringify({ error: "AI credits exhausted. Please add credits to continue." }), {
+          status: 402,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
       return new Response(
         JSON.stringify({ error: `AI gateway error (${aiRes.status}). Please try again.` }),
@@ -171,8 +167,6 @@ User-provided category: ${category?.trim() ? category : "(none)"}`;
 
     const aiJson = await aiRes.json();
     const message = aiJson?.choices?.[0]?.message;
-
-    // Prefer message.content JSON; fall back to tool_calls for older gateway behavior
     let parsed: Record<string, unknown> | null = null;
 
     const content = message?.content;
@@ -180,16 +174,13 @@ User-provided category: ${category?.trim() ? category : "(none)"}`;
       try {
         parsed = extractJsonObject(content) as Record<string, unknown>;
       } catch (e) {
-        console.error("Failed to parse content JSON", e, content.slice(0, 300));
+        console.error("analyze-task: content parse failed", String(e), String(content).slice(0, 300));
       }
     } else if (Array.isArray(content)) {
-      // Some models return content parts
-      const textPart = content.map((p: { text?: string; type?: string }) => p.text || "").join("");
-      if (textPart.trim()) {
-        try {
-          parsed = extractJsonObject(textPart) as Record<string, unknown>;
-        } catch { /* continue */ }
-      }
+      const textPart = content.map((p: { text?: string }) => p.text || "").join("");
+      try {
+        if (textPart.trim()) parsed = extractJsonObject(textPart) as Record<string, unknown>;
+      } catch { /* continue */ }
     }
 
     if (!parsed && message?.tool_calls?.[0]?.function?.arguments) {
@@ -197,11 +188,12 @@ User-provided category: ${category?.trim() ? category : "(none)"}`;
         const args = message.tool_calls[0].function.arguments;
         parsed = typeof args === "string" ? JSON.parse(args) : args;
       } catch (e) {
-        console.error("Failed to parse tool_calls arguments", e);
+        console.error("analyze-task: tool_calls parse failed", e);
       }
     }
 
     if (!parsed || typeof parsed !== "object") {
+      console.error("analyze-task: no usable AI payload");
       return new Response(
         JSON.stringify({ error: "AI returned an invalid analysis. Please try again." }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
@@ -209,6 +201,12 @@ User-provided category: ${category?.trim() ? category : "(none)"}`;
     }
 
     const result = normalizeAnalysis(parsed, category, description);
+    console.log("analyze-task: success", {
+      duration: result.duration,
+      difficulty: result.difficulty,
+      category: result.category,
+      priority: result.priority,
+    });
 
     return new Response(
       JSON.stringify({
@@ -220,9 +218,9 @@ User-provided category: ${category?.trim() ? category : "(none)"}`;
     );
   } catch (e) {
     console.error("analyze-task error:", e);
-    return new Response(
-      JSON.stringify({ error: (e as Error).message || "AI analysis failed" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ error: (e as Error).message || "AI analysis failed" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });

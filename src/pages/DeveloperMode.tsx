@@ -27,7 +27,7 @@ import {
   useDevUnlock,
 } from "@/hooks/use-dev-mode";
 
-// Raw production source
+// Raw source imports — actual production code
 import scheduleSource from "../../supabase/functions/generate-schedule/index.ts?raw";
 import prioritiesSource from "../../supabase/functions/rank-priorities/index.ts?raw";
 
@@ -42,7 +42,7 @@ function CodeBlock({ code }: { code: string }) {
 /* =========================================================
    AHP
    Mathematical Model:
-   
+
    Weight Normalization:
    Σ wj = 1
 
@@ -88,7 +88,7 @@ const HOW_PSO = [
 
   "4. The inertia weight w controls the influence of the particle's previous movement. The cognitive coefficient c1 controls the influence of the particle's personal best position, while c2 controls the influence of the swarm's global best position.",
 
-  "5. The random variables r1 and r2 are values between 0 and 1. They introduce variation into the particle movement and allow the swarm to explore different candidate solutions.",
+  "5. The random variables r1 and r2 are values between 0 and 1. They introduce variation into particle movement and allow the swarm to explore different candidate solutions.",
 
   "6. The particle position is updated using Xi(t+1) = Xi(t) + Vi(t+1). This produces a new candidate solution for the next iteration.",
 
@@ -113,6 +113,9 @@ const HOW_PSO = [
    (tistart + di ≤ tjstart)
    OR
    (tjstart + dj ≤ tistart)
+
+   Break Style:
+   User-selected break pattern from Personalization
    ========================================================= */
 
 const HOW_CSP = [
@@ -124,11 +127,17 @@ const HOW_CSP = [
 
   "4. Tasks must not overlap. For any two tasks i and j, either task i finishes before task j starts, or task j finishes before task i starts: (tistart + di ≤ tjstart) OR (tjstart + dj ≤ tistart).",
 
-  "5. The CSP evaluates the candidate task order and assigns feasible time slots while respecting the work window and scheduling constraints.",
+  "5. CSP uses the Break Style selected by the user in Settings → Personalization. The selected break_style determines the work-and-break pattern used when placing tasks.",
 
-  "6. The CSP provides the feasibility layer of the scheduling framework. PSO explores candidate task sequences, while CSP determines whether the selected sequence can be placed while satisfying the required scheduling constraints.",
+  "6. Breaks are treated as scheduling constraints. When a task would overlap a required break, the task is moved to the available time after the break instead of being placed across the break.",
 
-  "7. A valid schedule is therefore one in which tasks are assigned permissible time slots, finish within their deadlines, and do not overlap with other scheduled tasks.",
+  "7. The selected Break Style is read from the user's profile and is used when Auto Schedule or another schedule-generation process creates or regenerates the schedule.",
+
+  "8. For a given PSO task order, CSP performs deterministic sequential placement using the work window, task durations, deadlines, non-overlap rules, and the selected Break Style.",
+
+  "9. The CSP provides the feasibility layer of the scheduling framework. PSO explores candidate task sequences, while CSP determines whether each sequence can be placed while satisfying the scheduling constraints.",
+
+  "10. A valid schedule therefore contains task blocks and break blocks that remain within the work window, do not overlap, respect the selected Break Style, and satisfy the required task constraints.",
 ];
 
 export default function DeveloperMode() {
@@ -167,8 +176,6 @@ export default function DeveloperMode() {
       animate={{ opacity: 1, y: 0 }}
       className="max-w-6xl mx-auto space-y-6"
     >
-      {/* HEADER */}
-
       <div className="flex items-center gap-3">
         <div className="h-10 w-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
           <Code2 className="h-5 w-5" />
@@ -184,8 +191,6 @@ export default function DeveloperMode() {
           </p>
         </div>
       </div>
-
-      {/* CONTROLS */}
 
       <Card>
         <CardHeader className="pb-2">
@@ -282,8 +287,6 @@ export default function DeveloperMode() {
 
         </CardContent>
       </Card>
-
-      {/* ALGORITHM TABS */}
 
       <Tabs defaultValue="ahp" className="w-full">
 

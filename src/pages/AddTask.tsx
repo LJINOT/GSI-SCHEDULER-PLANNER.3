@@ -58,17 +58,8 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
   const [errors, setErrors] = useState<{ title?: string; newProject?: string }>({});
 
   useEffect(() => {
-    (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setProjects([]); return; }
-      const { data } = await supabase
-        .from("projects")
-        .select("id, name, color")
-        .eq("user_id", user.id)
-        .eq("archived", false)
-        .order("created_at", { ascending: false });
-      setProjects(data || []);
-    })();
+    supabase.from("projects").select("id, name, color").order("created_at", { ascending: false })
+      .then(({ data }) => setProjects(data || []));
   }, []);
 
   const handleProjectChange = (val: string) => {
@@ -80,7 +71,7 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
     if (!newProjectName.trim()) { setErrors(p => ({ ...p, newProject: "Project name is required" })); return; }
     setErrors(p => ({ ...p, newProject: undefined }));
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { toast.error("Please sign in to continue."); return; }
+    if (!user) return;
     const { data, error } = await supabase.from("projects").insert({
       user_id: user.id, name: newProjectName.trim(), description: newProjectDesc.trim() || null,
     }).select().single();
@@ -106,21 +97,49 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
 
   const analyzeTask = async () => {
     if (!title.trim()) { setErrors(p => ({ ...p, title: "Enter a title first" })); return; }
+    if (analyzing) return;
     setAnalyzing(true);
     try {
       const { data, error } = await supabase.functions.invoke("analyze-task", {
         body: { title, description, category: category || undefined },
       });
-      if (error) throw error;
-      setAiMeta(data);
-      if (data?.corrected_description && data.corrected_description !== description) {
-        setDescription(data.corrected_description);
+      // Functions may put the payload error on data.error even when error is set
+      const payload = data && typeof data === "object" ? data as Record<string, unknown> : null;
+      if (error) {
+        const msg =
+          (payload && typeof payload.error === "string" && payload.error) ||
+          error.message ||
+          "Analysis failed";
+        throw new Error(msg);
+      }
+      if (payload?.error && typeof payload.error === "string") {
+        throw new Error(payload.error);
+      }
+      if (!payload || typeof payload.duration !== "number") {
+        throw new Error("AI returned an invalid analysis. Please try again.");
+      }
+      setAiMeta({
+        duration: payload.duration as number,
+        difficulty: String(payload.difficulty || "medium"),
+        category: String(payload.category || category || "General"),
+        priority: payload.priority ? String(payload.priority) : undefined,
+        corrected_description: typeof payload.corrected_description === "string"
+          ? payload.corrected_description
+          : undefined,
+      });
+      if (
+        typeof payload.corrected_description === "string" &&
+        payload.corrected_description &&
+        payload.corrected_description !== description
+      ) {
+        setDescription(payload.corrected_description);
         toast.success("AI analysis complete — description auto-corrected");
       } else {
         toast.success("AI analysis complete!");
       }
-    } catch (err: any) {
-      toast.error(err.message || "Analysis failed");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Analysis failed";
+      toast.error(msg);
     }
     setAnalyzing(false);
   };
@@ -238,7 +257,6 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
       status: initialStatus,
       user_id: user.id,
       project_id: projectId !== "none" ? projectId : null,
-      archived: false,
     });
 
     setLoading(false);
@@ -247,11 +265,7 @@ export default function AddTask({ embedded = false, onCreated }: { embedded?: bo
       toast.success("Task created!");
       resetForm();
       if (embedded) onCreated?.();
-      else {
-        // Open Tasks and, if assigned to a project, open that folder so the new task is visible
-        const pid = projectId !== "none" ? projectId : null;
-        navigate(pid ? `/tasks?project=${pid}` : "/tasks");
-      }
+      else navigate("/tasks");
     }
   };
 

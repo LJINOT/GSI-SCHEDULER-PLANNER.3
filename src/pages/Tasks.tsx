@@ -190,7 +190,7 @@ export default function Tasks() {
     const title = editTask.title.trim();
     if (!title) { setEditErrors({ title: "Task title is required." }); return; }
     const dup = tasks.some(t => t.id !== editTask.id && t.title.trim().toLowerCase() === title.toLowerCase());
-    if (dup) { setEditErrors({ title: "A task with this title already exists." }); return; }
+    if (dup) { setEditErrors({ title: "Task title already exists. Please use a different task title." }); return; }
     setEditErrors({});
     setSavingEdit(true);
     const before = tasks.find(t => t.id === editTask.id);
@@ -221,7 +221,7 @@ export default function Tasks() {
       }
     }
     setSavingEdit(false);
-    if (error) { toast.error(error.message); return; }
+    if (error) { toast.error(/duplicate|unique/i.test(error.message || "") ? "Task title already exists. Please use a different task title." : error.message); return; }
     toast.success("Task updated");
     setEditTask(null);
     setEditNote("");

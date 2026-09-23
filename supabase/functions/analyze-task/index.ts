@@ -1,5 +1,13 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
+/**
+ * Analyze Task — Google AI Studio (Gemini API)
+ * Secret (Supabase Edge Function secrets only):
+ *   GEMINI_API_KEY=<key from https://aistudio.google.com/apikey>
+ *
+ * Does NOT use Lovable or OpenAI.
+ */
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -35,18 +43,25 @@ function normalizeAnalysis(
   duration = Math.min(480, Math.max(5, Math.round(duration)));
 
   const diffRaw = String(raw.difficulty || "medium").toLowerCase();
-  const difficulty = (["easy", "medium", "hard"].includes(diffRaw) ? diffRaw : "medium") as Analysis["difficulty"];
+  const difficulty = (["easy", "medium", "hard"].includes(diffRaw)
+    ? diffRaw
+    : "medium") as Analysis["difficulty"];
 
   const priRaw = String(raw.priority || "medium").toLowerCase();
-  const priority = (["high", "medium", "low"].includes(priRaw) ? priRaw : "medium") as Analysis["priority"];
+  const priority = (["high", "medium", "low"].includes(priRaw)
+    ? priRaw
+    : "medium") as Analysis["priority"];
 
-  let category = (userCategory && String(userCategory).trim())
-    ? String(userCategory).trim()
-    : String(raw.category || "General").trim();
+  let category =
+    userCategory && String(userCategory).trim()
+      ? String(userCategory).trim()
+      : String(raw.category || "General").trim();
   if (!category) category = "General";
 
-  let corrected: string =
-    typeof raw.corrected_description === "string" ? raw.corrected_description : (originalDescription || "");
+  let corrected =
+    typeof raw.corrected_description === "string"
+      ? raw.corrected_description
+      : originalDescription || "";
   if (!originalDescription || !String(originalDescription).trim()) corrected = "";
 
   return { duration, difficulty, category, priority, corrected_description: corrected };
@@ -57,7 +72,7 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  console.log("analyze-task: function started");
+  console.log("analyze-task: started (Google AI Studio / Gemini)");
 
   try {
     let body: Record<string, unknown> = {};
@@ -74,12 +89,6 @@ serve(async (req) => {
     const description = typeof body.description === "string" ? body.description : "";
     const category = typeof body.category === "string" ? body.category : undefined;
 
-    console.log("analyze-task: request received", {
-      hasTitle: !!title,
-      hasDescription: !!description,
-      hasCategory: !!category,
-    });
-
     if (!title || typeof title !== "string" || !title.trim()) {
       return new Response(JSON.stringify({ error: "title required" }), {
         status: 400,
@@ -87,113 +96,129 @@ serve(async (req) => {
       });
     }
 
-    const AI_PROVIDER_KEY = Deno.env.get("LOVABLE_API_KEY");
-    const AI_ENDPOINT = "https://ai.gateway.lovable.dev/v1/chat/completions";
-    console.log("analyze-task: LOVABLE_API_KEY configured:", Boolean(AI_PROVIDER_KEY));
+    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+    console.log("analyze-task: GEMINI_API_KEY configured:", Boolean(GEMINI_API_KEY));
 
-    if (!AI_PROVIDER_KEY) {
+    if (!GEMINI_API_KEY) {
       return new Response(
         JSON.stringify({
           error:
-            "AI provider key is not configured. Set LOVABLE_API_KEY (sk_…) in Supabase Edge Function secrets for this project.",
+            "Gemini API key is not configured. Set GEMINI_API_KEY in Supabase Edge Function secrets (from Google AI Studio).",
         }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
+    // Prefer a widely available flash model; fall back list if one is unavailable
+    const models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest"];
+
     const systemPrompt = `You are an AI task analyzer for the GSI Schedule Planner.
-Analyze the given task and return ONLY valid JSON.
-Required fields:
-duration: integer from 5 to 480
-difficulty: exactly one of easy, medium, hard
-category: best-fit task category string
-priority: exactly one of high, medium, low
-corrected_description: lightly fix spelling/grammar; empty string if no description
-If the user already selected a category, keep it.
-Return ONLY the JSON object. No markdown.`;
+Analyze the given task and return ONLY valid JSON with these fields:
+- duration: integer minutes from 5 to 480
+- difficulty: exactly one of "easy", "medium", "hard"
+- category: best-fit category string
+- priority: exactly one of "high", "medium", "low"
+- corrected_description: lightly fix spelling/grammar; empty string if no description was provided
+If the user already selected a category, keep that category.
+No markdown. No explanation. ONLY the JSON object.`;
 
     const userPrompt = `Title: ${title.trim()}
 Description: ${description.trim() || "(none)"}
 User-provided category: ${category?.trim() || "(none)"}`;
 
-    console.log("analyze-task: calling AI gateway");
-    const aiRes = await fetch(AI_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${AI_PROVIDER_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+    const requestBody = {
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }],
+        },
+      ],
+      generationConfig: {
         temperature: 0.2,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-    });
+        responseMimeType: "application/json",
+      },
+    };
 
-    console.log("analyze-task: AI status:", aiRes.status);
+    let lastStatus = 0;
+    let lastErr = "";
+    let aiJson: Record<string, unknown> | null = null;
 
-    if (!aiRes.ok) {
-      const errText = await aiRes.text().catch(() => "");
-      console.error("analyze-task: AI gateway response:", aiRes.status, errText.slice(0, 500));
-      if (aiRes.status === 401 || aiRes.status === 403) {
+    for (const model of models) {
+      const url =
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+
+      console.log("analyze-task: calling Gemini model:", model);
+      const aiRes = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+
+      lastStatus = aiRes.status;
+      const text = await aiRes.text();
+      console.log("analyze-task: Gemini status:", model, aiRes.status);
+
+      if (!aiRes.ok) {
+        lastErr = text.slice(0, 400);
+        console.error("analyze-task: Gemini error:", model, lastErr);
+        // Try next model on 404 (model not found)
+        if (aiRes.status === 404) continue;
+        break;
+      }
+
+      try {
+        aiJson = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        lastErr = "Invalid JSON from Gemini";
+        continue;
+      }
+      break;
+    }
+
+    if (!aiJson) {
+      if (lastStatus === 400 || lastStatus === 401 || lastStatus === 403) {
         return new Response(
           JSON.stringify({
             error:
-              "AI provider authorization failed. LOVABLE_API_KEY must be a valid key starting with sk_.",
+              "Gemini authorization failed. Check that GEMINI_API_KEY from Google AI Studio is valid.",
           }),
-          { status: aiRes.status, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          { status: lastStatus || 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
         );
       }
-      if (aiRes.status === 429) {
-        return new Response(JSON.stringify({ error: "AI rate limit reached. Please try again in a moment." }), {
-          status: 429,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      if (aiRes.status === 402) {
-        return new Response(JSON.stringify({ error: "AI credits exhausted. Please add credits to continue." }), {
-          status: 402,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+      if (lastStatus === 429) {
+        return new Response(
+          JSON.stringify({ error: "Gemini rate limit reached. Please try again shortly." }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
       }
       return new Response(
-        JSON.stringify({ error: `AI gateway error (${aiRes.status}). Please try again.` }),
+        JSON.stringify({
+          error: `Gemini API error (${lastStatus || 500}). Please try again.`,
+        }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const aiJson = await aiRes.json();
-    const message = aiJson?.choices?.[0]?.message;
-    let parsed: Record<string, unknown> | null = null;
+    // Extract text from Gemini response
+    const candidates = aiJson.candidates as Array<{
+      content?: { parts?: Array<{ text?: string }> };
+    }> | undefined;
+    const content =
+      candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
 
-    const content = message?.content;
-    if (typeof content === "string" && content.trim()) {
-      try {
-        parsed = extractJsonObject(content) as Record<string, unknown>;
-      } catch (e) {
-        console.error("analyze-task: content parse failed", String(e), String(content).slice(0, 300));
-      }
-    } else if (Array.isArray(content)) {
-      const textPart = content.map((p: { text?: string }) => p.text || "").join("");
-      try {
-        if (textPart.trim()) parsed = extractJsonObject(textPart) as Record<string, unknown>;
-      } catch { /* continue */ }
+    if (!content.trim()) {
+      console.error("analyze-task: empty Gemini content", JSON.stringify(aiJson).slice(0, 300));
+      return new Response(
+        JSON.stringify({ error: "AI returned an invalid analysis. Please try again." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
 
-    if (!parsed && message?.tool_calls?.[0]?.function?.arguments) {
-      try {
-        const args = message.tool_calls[0].function.arguments;
-        parsed = typeof args === "string" ? JSON.parse(args) : args;
-      } catch (e) {
-        console.error("analyze-task: tool_calls parse failed", e);
-      }
-    }
-
-    if (!parsed || typeof parsed !== "object") {
-      console.error("analyze-task: no usable AI payload");
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = extractJsonObject(content) as Record<string, unknown>;
+    } catch (e) {
+      console.error("analyze-task: JSON parse failed", e, content.slice(0, 300));
       return new Response(
         JSON.stringify({ error: "AI returned an invalid analysis. Please try again." }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
@@ -211,16 +236,16 @@ User-provided category: ${category?.trim() || "(none)"}`;
     return new Response(
       JSON.stringify({
         ...result,
-        algorithm: "llm:google/gemini-2.5-flash",
+        algorithm: "llm:google/gemini-flash",
         timestamp: new Date().toISOString(),
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (e) {
     console.error("analyze-task error:", e);
-    return new Response(JSON.stringify({ error: (e as Error).message || "AI analysis failed" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: (e as Error).message || "AI analysis failed" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
 });

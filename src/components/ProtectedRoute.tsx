@@ -15,7 +15,13 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
           supabase.from("profiles").select("timezone").eq("id", session.user.id).single()
             .then(({ data }) => { if (data?.timezone) syncTimezoneFromProfile(data.timezone); });
         } else {
-          try { localStorage.removeItem("gsi-auth-uid"); } catch {}
+          try {
+            localStorage.removeItem("gsi-auth-uid");
+            // Drop any unscoped leftovers; scoped keys use uid prefix and stay isolated
+            ["gsi-cache:schedule-blocks", "gsi-cache:adaptive-schedule", "gsi-cache:smart-picks", "gsi-cache:today"].forEach((k) => {
+              try { localStorage.removeItem(k); } catch {}
+            });
+          } catch {}
         };
     });
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -25,7 +31,13 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
           supabase.from("profiles").select("timezone").eq("id", session.user.id).single()
             .then(({ data }) => { if (data?.timezone) syncTimezoneFromProfile(data.timezone); });
         } else {
-          try { localStorage.removeItem("gsi-auth-uid"); } catch {}
+          try {
+            localStorage.removeItem("gsi-auth-uid");
+            // Drop any unscoped leftovers; scoped keys use uid prefix and stay isolated
+            ["gsi-cache:schedule-blocks", "gsi-cache:adaptive-schedule", "gsi-cache:smart-picks", "gsi-cache:today"].forEach((k) => {
+              try { localStorage.removeItem(k); } catch {}
+            });
+          } catch {}
         };
     });
     return () => subscription.unsubscribe();

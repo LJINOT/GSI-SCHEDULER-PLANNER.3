@@ -1,22 +1,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
-/**
- * GSI Schedule Planner
- * Analyze Task - Google AI Studio Gemini
- *
- * Required Supabase secret:
- * GEMINI_API_KEY
- *
- * This function does NOT use Lovable AI or OpenAI.
- */
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods":
     "POST, OPTIONS",
-  "Content-Type": "application/json",
 };
 
 type Analysis = {
@@ -27,39 +16,60 @@ type Analysis = {
   corrected_description: string;
 };
 
-function jsonResponse(data: unknown) {
-  return new Response(JSON.stringify(data), {
-    status: 200,
-    headers: corsHeaders,
-  });
+function jsonResponse(
+  data: unknown,
+  status = 200,
+) {
+  return new Response(
+    JSON.stringify(data),
+    {
+      status,
+      headers: {
+        ...corsHeaders,
+        "Content-Type":
+          "application/json",
+      },
+    },
+  );
 }
 
-function extractJsonObject(text: string): unknown {
-  if (!text || !text.trim()) {
-    throw new Error("Gemini returned empty content.");
-  }
-
-  let value = text.trim();
-
-  // Remove markdown code fences.
-  value = value
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-
-  const start = value.indexOf("{");
-  const end = value.lastIndexOf("}");
-
-  if (start < 0 || end < 0 || end <= start) {
+function extractJsonObject(
+  text: string,
+): unknown {
+  if (!text) {
     throw new Error(
-      `No JSON object found in Gemini response: ${value.slice(0, 500)}`,
+      "Empty AI response",
     );
   }
 
-  value = value.slice(start, end + 1);
+  let s = text.trim();
 
-  return JSON.parse(value);
+  // Remove markdown code fences
+  if (s.startsWith("```")) {
+    s = s
+      .replace(
+        /^```(?:json)?\s*/i,
+        "",
+      )
+      .replace(
+        /\s*```$/i,
+        "",
+      )
+      .trim();
+  }
+
+  // Find the JSON object
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+
+  if (start >= 0 && end > start) {
+    s = s.slice(
+      start,
+      end + 1,
+    );
+  }
+
+  return JSON.parse(s);
 }
 
 function normalizeAnalysis(
@@ -67,61 +77,97 @@ function normalizeAnalysis(
   userCategory?: string,
   originalDescription?: string,
 ): Analysis {
-  let duration = Number(raw.duration);
+  // -----------------------------
+  // Duration
+  // -----------------------------
+
+  let duration = Number(
+    raw.duration,
+  );
 
   if (!Number.isFinite(duration)) {
     duration = 30;
   }
 
   duration = Math.round(duration);
-  duration = Math.min(480, Math.max(5, duration));
 
-  const difficultyValue = String(
-    raw.difficulty || "medium",
-  )
-    .toLowerCase()
-    .trim();
+  duration = Math.min(
+    480,
+    Math.max(5, duration),
+  );
 
-  const difficulty = (
-    ["easy", "medium", "hard"].includes(difficultyValue)
-      ? difficultyValue
-      : "medium"
-  ) as Analysis["difficulty"];
+  // -----------------------------
+  // Difficulty
+  // -----------------------------
 
-  const priorityValue = String(
-    raw.priority || "medium",
-  )
-    .toLowerCase()
-    .trim();
+  const diffRaw = String(
+    raw.difficulty ||
+      "medium",
+  ).toLowerCase();
 
-  const priority = (
-    ["high", "medium", "low"].includes(priorityValue)
-      ? priorityValue
-      : "medium"
-  ) as Analysis["priority"];
+  const difficulty =
+    (
+      [
+        "easy",
+        "medium",
+        "hard",
+      ].includes(diffRaw)
+        ? diffRaw
+        : "medium"
+    ) as Analysis["difficulty"];
 
-  let category = "";
+  // -----------------------------
+  // Priority
+  // -----------------------------
 
-  // User-selected category always takes priority.
-  if (userCategory && userCategory.trim()) {
-    category = userCategory.trim();
-  } else {
-    category = String(raw.category || "General").trim();
-  }
+  const priorityRaw = String(
+    raw.priority ||
+      "medium",
+  ).toLowerCase();
+
+  const priority =
+    (
+      [
+        "high",
+        "medium",
+        "low",
+      ].includes(priorityRaw)
+        ? priorityRaw
+        : "medium"
+    ) as Analysis["priority"];
+
+  // -----------------------------
+  // Category
+  // -----------------------------
+
+  let category =
+    userCategory &&
+    userCategory.trim()
+      ? userCategory.trim()
+      : String(
+          raw.category ||
+            "General",
+        ).trim();
 
   if (!category) {
     category = "General";
   }
 
-  let correctedDescription = "";
+  // -----------------------------
+  // Corrected description
+  // -----------------------------
 
-  if (typeof raw.corrected_description === "string") {
-    correctedDescription = raw.corrected_description;
-  } else {
-    correctedDescription = originalDescription || "";
-  }
+  let correctedDescription =
+    typeof raw.corrected_description ===
+    "string"
+      ? raw.corrected_description
+      : originalDescription ||
+        "";
 
-  if (!originalDescription || !originalDescription.trim()) {
+  if (
+    !originalDescription ||
+    !originalDescription.trim()
+  ) {
     correctedDescription = "";
   }
 
@@ -130,437 +176,555 @@ function normalizeAnalysis(
     difficulty,
     category,
     priority,
-    corrected_description: correctedDescription,
+    corrected_description:
+      correctedDescription,
   };
 }
 
-function getGeminiError(text: string): string {
-  if (!text) {
-    return "Gemini returned no error details.";
+/**
+ * Get available Gemini models for
+ * the current API key.
+ *
+ * This prevents the function from
+ * depending on an old model name.
+ */
+async function getAvailableModel(
+  apiKey: string,
+): Promise<string> {
+  const response =
+    await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100",
+      {
+        method: "GET",
+        headers: {
+          "x-goog-api-key":
+            apiKey,
+        },
+      },
+    );
+
+  const text =
+    await response.text();
+
+  if (!response.ok) {
+    console.error(
+      "Gemini models.list failed:",
+      response.status,
+      text.slice(0, 1000),
+    );
+
+    throw new Error(
+      `Unable to retrieve Gemini models (${response.status}).`,
+    );
   }
+
+  let data: any;
 
   try {
-    const parsed = JSON.parse(text);
-
-    if (
-      parsed?.error?.message &&
-      typeof parsed.error.message === "string"
-    ) {
-      return parsed.error.message;
-    }
-
-    return JSON.stringify(parsed).slice(0, 1000);
+    data = JSON.parse(text);
   } catch {
-    return text.slice(0, 1000);
+    throw new Error(
+      "Gemini returned an invalid model list.",
+    );
   }
+
+  const models =
+    Array.isArray(data?.models)
+      ? data.models
+      : [];
+
+  const supported =
+    models.filter(
+      (model: any) =>
+        Array.isArray(
+          model.supportedGenerationMethods,
+        ) &&
+        model.supportedGenerationMethods.includes(
+          "generateContent",
+        ),
+    );
+
+  if (supported.length === 0) {
+    throw new Error(
+      "Your Gemini API key has no available model that supports generateContent.",
+    );
+  }
+
+  /*
+   * Prefer current stable Flash models.
+   *
+   * The exact model available depends
+   * on the API key/project.
+   */
+  const preferredModels = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+  ];
+
+  for (
+    const preferred of preferredModels
+  ) {
+    const found =
+      supported.find(
+        (model: any) =>
+          model.name ===
+          `models/${preferred}`,
+      );
+
+    if (found) {
+      console.log(
+        "Selected preferred Gemini model:",
+        found.name,
+      );
+
+      return found.name.replace(
+        /^models\//,
+        "",
+      );
+    }
+  }
+
+  /*
+   * If none of the preferred models
+   * are available, use the first model
+   * Google says supports
+   * generateContent.
+   */
+  const fallback =
+    supported[0];
+
+  console.log(
+    "Selected fallback Gemini model:",
+    fallback.name,
+  );
+
+  return String(
+    fallback.name,
+  ).replace(
+    /^models\//,
+    "",
+  );
 }
 
 serve(async (req) => {
-  console.log("=================================");
-  console.log("ANALYZE-TASK START");
-  console.log("=================================");
-
-  // ------------------------------------
+  // --------------------------------
   // CORS
-  // ------------------------------------
+  // --------------------------------
 
   if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: corsHeaders,
-    });
+    return new Response(
+      null,
+      {
+        status: 204,
+        headers:
+          corsHeaders,
+      },
+    );
   }
-
-  // ------------------------------------
-  // Only POST
-  // ------------------------------------
 
   if (req.method !== "POST") {
-    return jsonResponse({
-      ok: false,
-      error: "Only POST requests are allowed.",
-    });
+    return jsonResponse(
+      {
+        error:
+          "Method not allowed",
+      },
+      405,
+    );
   }
 
-  try {
-    // ------------------------------------
-    // Read body
-    // ------------------------------------
+  console.log(
+    "analyze-task: started",
+  );
 
-    let body: Record<string, unknown>;
+  try {
+    // --------------------------------
+    // Read request
+    // --------------------------------
+
+    let body: Record<
+      string,
+      unknown
+    >;
 
     try {
-      body = await req.json();
+      body =
+        await req.json();
     } catch {
-      console.error("Invalid JSON request.");
-
-      return jsonResponse({
-        ok: false,
-        error: "Invalid JSON request body.",
-      });
+      return jsonResponse(
+        {
+          error:
+            "Invalid JSON body.",
+        },
+        400,
+      );
     }
 
     const title =
-      typeof body.title === "string"
+      typeof body.title ===
+      "string"
         ? body.title.trim()
         : "";
 
     const description =
-      typeof body.description === "string"
-        ? body.description
+      typeof body.description ===
+      "string"
+        ? body.description.trim()
         : "";
 
-    const category =
-      typeof body.category === "string"
-        ? body.category
-        : undefined;
-
-    console.log("Title:", title);
-    console.log(
-      "Description:",
-      description ? "provided" : "none",
-    );
-    console.log(
-      "Category:",
-      category || "none",
-    );
-
-    // ------------------------------------
-    // Validate title
-    // ------------------------------------
+    const userCategory =
+      typeof body.category ===
+      "string"
+        ? body.category.trim()
+        : "";
 
     if (!title) {
-      return jsonResponse({
-        ok: false,
-        error: "Task title is required.",
-      });
+      return jsonResponse(
+        {
+          error:
+            "Task title is required.",
+        },
+        400,
+      );
     }
 
-    // ------------------------------------
-    // Gemini key
-    // ------------------------------------
+    // --------------------------------
+    // Gemini API key
+    // --------------------------------
 
     const GEMINI_API_KEY =
-      Deno.env.get("GEMINI_API_KEY");
-
-    console.log(
-      "GEMINI_API_KEY exists:",
-      Boolean(GEMINI_API_KEY),
-    );
+      Deno.env.get(
+        "GEMINI_API_KEY",
+      );
 
     if (!GEMINI_API_KEY) {
       console.error(
-        "GEMINI_API_KEY IS MISSING.",
+        "GEMINI_API_KEY is missing.",
       );
 
-      return jsonResponse({
-        ok: false,
-        error:
-          "GEMINI_API_KEY is missing from Supabase Edge Function secrets.",
-      });
+      return jsonResponse(
+        {
+          error:
+            "Gemini API key is not configured. Add GEMINI_API_KEY to Supabase Edge Function secrets.",
+        },
+        500,
+      );
     }
 
-    // ------------------------------------
-    // Prompt
-    // ------------------------------------
+    console.log(
+      "analyze-task: Gemini API key configured:",
+      Boolean(
+        GEMINI_API_KEY,
+      ),
+    );
 
-    const prompt = `
+    // --------------------------------
+    // Find available model
+    // --------------------------------
+
+    const model =
+      await getAvailableModel(
+        GEMINI_API_KEY,
+      );
+
+    console.log(
+      "analyze-task: using model:",
+      model,
+    );
+
+    // --------------------------------
+    // Prompt
+    // --------------------------------
+
+    const systemPrompt = `
 You are the AI task analyzer for the GSI Schedule Planner.
 
-Analyze this task and return ONLY valid JSON.
+Analyze the user's task based ONLY on the information provided.
 
-Required JSON format:
+Return ONLY one valid JSON object.
 
-{
-  "duration": 30,
-  "difficulty": "medium",
-  "category": "School",
-  "priority": "medium",
-  "corrected_description": ""
-}
-
-Rules:
+Required fields:
 
 duration:
-- integer
-- minimum 5
-- maximum 480
+- Estimated time needed to complete the task.
+- Integer number of minutes.
+- Minimum 5.
+- Maximum 480.
+- Base the estimate on the actual task.
 
 difficulty:
-- exactly "easy", "medium", or "hard"
-
-priority:
-- exactly "high", "medium", or "low"
+- Must be exactly:
+  "easy"
+  "medium"
+  "hard"
+- Judge the difficulty from the actual task.
 
 category:
-- choose the best category
-- if the user already selected a category, keep it exactly
+- Choose the most suitable category for the task.
+- If the user already selected a category, KEEP THAT CATEGORY.
+- Do not replace a user-selected category.
+
+priority:
+- Must be exactly:
+  "high"
+  "medium"
+  "low"
+- Judge priority from the task's urgency, importance, and wording.
+- Do not automatically make every task high priority.
 
 corrected_description:
-- lightly correct spelling and grammar
-- preserve the user's meaning
-- if there is no description, return ""
+- Correct spelling and grammar lightly.
+- Keep the user's original meaning.
+- Do not add information.
+- If no description was provided, return an empty string.
 
-Do not return Markdown.
-Do not return explanations.
-Do not return code fences.
-Return ONLY the JSON object.
+IMPORTANT:
+- Different tasks must produce different analysis when appropriate.
+- Do not use fixed example values.
+- Do not always return 180 minutes.
+- Do not always return hard.
+- Do not always return high priority.
+- Do not return Markdown.
+- Do not return an explanation.
 
+Return ONLY JSON.
+`;
+
+    const userPrompt = `
 TASK TITLE:
 ${title}
 
 TASK DESCRIPTION:
-${description.trim() || "(none)"}
+${description || "(No description provided)"}
 
 USER SELECTED CATEGORY:
-${category?.trim() || "(none)"}
+${userCategory || "(No category selected)"}
 `;
 
-    // ------------------------------------
-    // Models
-    // ------------------------------------
-
-    const models = [
-      "gemini-2.0-flash",
-      "gemini-1.5-flash",
-      "gemini-1.5-flash-latest",
-    ];
-
-    let geminiData: Record<string, unknown> | null = null;
-    let lastStatus = 0;
-    let lastError = "";
-
-    // ------------------------------------
-    // Call Gemini
-    // ------------------------------------
-
-    for (const model of models) {
-      const url =
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
-          GEMINI_API_KEY,
-        )}`;
-
-      console.log(
-        "Calling Gemini:",
-        model,
-      );
-
-      try {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                role: "user",
-                parts: [
-                  {
-                    text: prompt,
-                  },
-                ],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.2,
-              responseMimeType: "application/json",
+    const requestBody = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text:
+                `${systemPrompt}\n\n${userPrompt}`,
             },
-          }),
-        });
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+      },
+    };
 
-        lastStatus = response.status;
+    // --------------------------------
+    // Call Gemini
+    // --------------------------------
 
-        const responseText =
-          await response.text();
+    const url =
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
-        console.log(
-          "Gemini HTTP status:",
-          response.status,
-        );
+    console.log(
+      "analyze-task: calling Gemini:",
+      model,
+    );
 
-        if (!response.ok) {
-          lastError =
-            getGeminiError(responseText);
+    const aiResponse =
+      await fetch(url, {
+        method: "POST",
 
-          console.error(
-            "Gemini ERROR:",
-            lastError,
-          );
+        headers: {
+          "Content-Type":
+            "application/json",
 
-          // Only try another model when
-          // the model itself is unavailable.
-          if (response.status === 404) {
-            continue;
-          }
+          "x-goog-api-key":
+            GEMINI_API_KEY,
+        },
 
-          break;
-        }
-
-        try {
-          geminiData =
-            JSON.parse(responseText);
-
-          console.log(
-            "Gemini response parsed.",
-          );
-
-          break;
-        } catch (error) {
-          console.error(
-            "Could not parse Gemini response:",
-            error,
-          );
-
-          lastError =
-            "Gemini returned invalid JSON.";
-        }
-      } catch (error) {
-        console.error(
-          "Network error calling Gemini:",
-          error,
-        );
-
-        lastError =
-          error instanceof Error
-            ? error.message
-            : "Network error calling Gemini.";
-
-        lastStatus = 500;
-
-        break;
-      }
-    }
-
-    // ------------------------------------
-    // Gemini failed
-    //
-    // IMPORTANT:
-    // We return HTTP 200 intentionally.
-    //
-    // This prevents Supabase JS from hiding
-    // the actual error behind:
-    //
-    // "Edge Function returned a non-2xx
-    // status code"
-    // ------------------------------------
-
-    if (!geminiData) {
-      console.error(
-        "GEMINI FAILED",
-      );
-
-      console.error(
-        "Status:",
-        lastStatus,
-      );
-
-      console.error(
-        "Error:",
-        lastError,
-      );
-
-      return jsonResponse({
-        ok: false,
-        error:
-          `Gemini API failed (${lastStatus || 500}).`,
-        details:
-          lastError ||
-          "No error details were returned.",
-        gemini_status:
-          lastStatus || 500,
+        body: JSON.stringify(
+          requestBody,
+        ),
       });
-    }
 
-    // ------------------------------------
-    // Extract Gemini candidates
-    // ------------------------------------
+    const responseText =
+      await aiResponse.text();
 
-    const candidates =
-      Array.isArray(geminiData.candidates)
-        ? geminiData.candidates
-        : [];
+    console.log(
+      "analyze-task: Gemini status:",
+      aiResponse.status,
+    );
 
-    if (!candidates.length) {
+    if (!aiResponse.ok) {
       console.error(
-        "Gemini returned no candidates.",
-      );
-
-      console.error(
-        JSON.stringify(geminiData).slice(
+        "analyze-task: Gemini error:",
+        responseText.slice(
           0,
-          3000,
+          1500,
         ),
       );
 
-      return jsonResponse({
-        ok: false,
-        error:
-          "Gemini returned no analysis.",
-        details:
-          "The Gemini response contained no candidates.",
-      });
+      if (
+        aiResponse.status ===
+        400
+      ) {
+        return jsonResponse(
+          {
+            error:
+              "Gemini rejected the request.",
+            details:
+              responseText.slice(
+                0,
+                500,
+              ),
+            model,
+          },
+          502,
+        );
+      }
+
+      if (
+        aiResponse.status ===
+          401 ||
+        aiResponse.status ===
+          403
+      ) {
+        return jsonResponse(
+          {
+            error:
+              "Gemini API authorization failed. Check GEMINI_API_KEY.",
+          },
+          502,
+        );
+      }
+
+      if (
+        aiResponse.status ===
+        429
+      ) {
+        return jsonResponse(
+          {
+            error:
+              "Gemini rate limit reached. Please try again shortly.",
+          },
+          429,
+        );
+      }
+
+      return jsonResponse(
+        {
+          error:
+            `Gemini API failed (${aiResponse.status}).`,
+          details:
+            responseText.slice(
+              0,
+              500,
+            ),
+          model,
+        },
+        502,
+      );
     }
 
-    const firstCandidate =
-      candidates[0] as {
-        content?: {
-          parts?: Array<{
-            text?: string;
-          }>;
-        };
-        finishReason?: string;
-      };
+    // --------------------------------
+    // Parse Gemini response
+    // --------------------------------
+
+    let aiJson: any;
+
+    try {
+      aiJson =
+        JSON.parse(
+          responseText,
+        );
+    } catch {
+      console.error(
+        "Gemini returned invalid JSON:",
+        responseText.slice(
+          0,
+          1000,
+        ),
+      );
+
+      return jsonResponse(
+        {
+          error:
+            "Gemini returned an invalid response.",
+        },
+        502,
+      );
+    }
+
+    // --------------------------------
+    // Extract generated text
+    // --------------------------------
+
+    const candidates =
+      Array.isArray(
+        aiJson?.candidates,
+      )
+        ? aiJson.candidates
+        : [];
 
     const parts =
-      firstCandidate?.content?.parts || [];
+      candidates?.[0]?.content
+        ?.parts;
 
-    const content = parts
-      .map((part) =>
-        typeof part.text === "string"
-          ? part.text
-          : "",
-      )
-      .join("")
-      .trim();
+    let content = "";
+
+    if (
+      Array.isArray(parts)
+    ) {
+      content = parts
+        .map(
+          (part: any) =>
+            typeof part?.text ===
+            "string"
+              ? part.text
+              : "",
+        )
+        .join("");
+    }
 
     console.log(
-      "Gemini finish reason:",
-      firstCandidate?.finishReason ||
-        "unknown",
-    );
-
-    console.log(
-      "Gemini content:",
+      "analyze-task: Gemini content:",
       content.slice(0, 1000),
     );
 
-    // ------------------------------------
-    // Empty content
-    // ------------------------------------
+    if (!content.trim()) {
+      console.error(
+        "Gemini returned no text:",
+        JSON.stringify(
+          aiJson,
+        ).slice(0, 2000),
+      );
 
-    if (!content) {
-      return jsonResponse({
-        ok: false,
-        error:
-          "Gemini returned empty content.",
-        details:
-          `Finish reason: ${
-            firstCandidate?.finishReason ||
-            "unknown"
-          }`,
-      });
+      return jsonResponse(
+        {
+          error:
+            "Gemini returned an empty analysis.",
+        },
+        502,
+      );
     }
 
-    // ------------------------------------
+    // --------------------------------
     // Parse AI JSON
-    // ------------------------------------
+    // --------------------------------
 
-    let parsed: Record<string, unknown>;
+    let parsed: Record<
+      string,
+      unknown
+    >;
 
     try {
       parsed =
-        extractJsonObject(content) as Record<
+        extractJsonObject(
+          content,
+        ) as Record<
           string,
           unknown
         >;
@@ -570,71 +734,83 @@ ${category?.trim() || "(none)"}
         error,
       );
 
-      return jsonResponse({
-        ok: false,
-        error:
-          "Gemini returned an invalid task analysis.",
-        details:
-          error instanceof Error
-            ? error.message
-            : "Invalid JSON.",
-        raw:
-          content.slice(0, 500),
-      });
+      console.error(
+        "Raw Gemini content:",
+        content.slice(
+          0,
+          1500,
+        ),
+      );
+
+      return jsonResponse(
+        {
+          error:
+            "Gemini returned an invalid task analysis.",
+        },
+        502,
+      );
     }
 
-    // ------------------------------------
+    // --------------------------------
     // Normalize
-    // ------------------------------------
+    // --------------------------------
 
     const result =
       normalizeAnalysis(
         parsed,
-        category,
-        description,
+        userCategory ||
+          undefined,
+        description ||
+          undefined,
       );
 
     console.log(
-      "=================================",
-    );
-    console.log(
-      "ANALYZE-TASK SUCCESS",
-    );
-    console.log(
+      "analyze-task: success:",
       result,
     );
-    console.log(
-      "=================================",
-    );
 
-    // ------------------------------------
-    // SUCCESS
-    // ------------------------------------
+    // --------------------------------
+    // Return result to AddTask.tsx
+    // --------------------------------
 
     return jsonResponse({
       ok: true,
-      ...result,
+
+      duration:
+        result.duration,
+
+      difficulty:
+        result.difficulty,
+
+      category:
+        result.category,
+
+      priority:
+        result.priority,
+
+      corrected_description:
+        result.corrected_description,
+
       algorithm:
-        "llm:google-gemini",
+        `llm:${model}`,
+
       timestamp:
         new Date().toISOString(),
     });
   } catch (error) {
-    // ------------------------------------
-    // Unexpected error
-    // ------------------------------------
-
     console.error(
-      "UNEXPECTED ANALYZE-TASK ERROR:",
+      "analyze-task fatal error:",
       error,
     );
 
-    return jsonResponse({
-      ok: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : "AI analysis failed.",
-    });
+    return jsonResponse(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "AI analysis failed.",
+      },
+      500,
+    );
   }
 });

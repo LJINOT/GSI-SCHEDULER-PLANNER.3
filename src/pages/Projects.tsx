@@ -98,16 +98,37 @@ export default function Projects() {
   }, [highlightId, loading]);
 
   const fetchAll = async () => {
-    const [{ data: p }, { data: t }] = await Promise.all([
-      supabase.from("projects").select("*").eq("archived", false).order("created_at", { ascending: false }),
-      supabase.from("tasks").select("id, title, description, status, due_date, start_time, estimated_duration, project_id").eq("archived", false),
+    const { data: { user }, error: authErr } = await supabase.auth.getUser();
+    if (authErr || !user) {
+      setProjects([]);
+      setTasks([]);
+      setLoading(false);
+      if (!user) toast.error("Please sign in to view your projects.");
+      return;
+    }
+    const uid = user.id;
+    const [{ data: p, error: pErr }, { data: t, error: tErr }] = await Promise.all([
+      supabase.from("projects").select("*").eq("user_id", uid).eq("archived", false).order("created_at", { ascending: false }),
+      supabase.from("tasks").select("id, title, description, status, due_date, start_time, estimated_duration, project_id").eq("user_id", uid).eq("archived", false),
     ]);
+    if (pErr) toast.error(pErr.message);
+    if (tErr) toast.error(tErr.message);
     setProjects(p || []);
     setTasks(t || []);
     setLoading(false);
   };
 
-  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => {
+    fetchAll();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") fetchAll();
+      if (event === "SIGNED_OUT") {
+        setProjects([]);
+        setTasks([]);
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   const resetProjectForm = () => {
     setName(""); setDescription(""); setColor(COLORS[0]); setNameError(""); setEditingProject(null);
@@ -144,8 +165,11 @@ export default function Projects() {
       return;
     }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    const { data: { user }, error: authErr } = await supabase.auth.getUser();
+    if (authErr || !user) {
+      toast.error("Please sign in to create a project.");
+      return;
+    }
     const { error } = await supabase.from("projects").insert({
       user_id: user.id, name: name.trim(), description: description.trim() || null, color,
     });

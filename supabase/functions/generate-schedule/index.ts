@@ -1328,6 +1328,98 @@ function applyRemainingDurations(
   return { tasks: adjusted.filter((t) => durationOf(t) > 0), unfinishedIds, movesSeed };
 }
 
+
+
+type BehavioralProfile = {
+  peakStartMin: number;
+  peakEndMin: number;
+  avgActualMinutes: number;
+  completionRate: number;
+  actualMinutes: number;
+  completedSessions: number;
+  evidenceLevel: "limited" | "learning";
+};
+
+function localHourMinute(iso: string, timeZone: string): { hour: number; minute: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(iso));
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? NaN);
+    const hour = get("hour"), minute = get("minute");
+    return Number.isFinite(hour) && Number.isFinite(minute) ? { hour, minute } : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildBehavioralProfile(
+  timeEntries: any[],
+  completedTasks: any[],
+  timeZone: string,
+  fallbackStart: number,
+  fallbackEnd: number,
+  totalTaskCount?: number,
+): BehavioralProfile {
+  const histogram = new Array(24).fill(0);
+  let actualMinutes = 0;
+  let completedSessions = 0;
+
+  for (const e of timeEntries || []) {
+    const mins = Number(e.duration) || (e.start_time
+      ? Math.max(0, Math.round(((e.end_time ? new Date(e.end_time).getTime() : Date.now()) - new Date(e.start_time).getTime()) / 60000))
+      : 0);
+    if (!e.start_time || mins <= 0) continue;
+    const hm = localHourMinute(e.start_time, timeZone);
+    if (!hm) continue;
+    histogram[hm.hour] += Math.min(180, mins);
+    actualMinutes += mins;
+    completedSessions += 1;
+  }
+
+  for (const t of completedTasks || []) {
+    const when = t.completed_at || t.updated_at;
+    if (!when) continue;
+    const hm = localHourMinute(when, timeZone);
+    if (!hm) continue;
+    // A completed task is a stronger success signal than mere activity.
+    histogram[hm.hour] += 45;
+  }
+
+  const sampleCount = completedSessions + (completedTasks || []).length;
+  const enoughEvidence = completedSessions >= 2 || actualMinutes >= 90 || (completedTasks || []).length >= 2;
+
+  let bestHour = Math.floor(fallbackStart / 60);
+  let bestScore = -1;
+  for (let h = 0; h < 24; h++) {
+    const score = histogram[h] + histogram[(h + 1) % 24] * 0.65;
+    if (score > bestScore) {
+      bestScore = score;
+      bestHour = h;
+    }
+  }
+
+  const avgActualMinutes = timeEntries?.length
+    ? Math.round(actualMinutes / Math.max(1, completedSessions))
+    : 0;
+
+  const total = Math.max(0, Number(totalTaskCount ?? (completedTasks || []).length));
+  const completionRate = total > 0 ? Math.min(1, (completedTasks || []).length / total) : 0;
+
+  return {
+    peakStartMin: enoughEvidence ? bestHour * 60 : fallbackStart,
+    peakEndMin: enoughEvidence ? Math.min(bestHour * 60 + 120, 24 * 60) : fallbackEnd,
+    avgActualMinutes,
+    completionRate,
+    actualMinutes,
+    completedSessions: sampleCount,
+    evidenceLevel: enoughEvidence ? "learning" : "limited",
+  };
+}
+
 function localRescheduleUnfinished(
   tasks: Task[],
   unfinishedIds: string[],
@@ -1336,6 +1428,8 @@ function localRescheduleUnfinished(
   endMin: number,
   breakStyle: string,
   movesSeed: AdaptiveMove[],
+  peakStartMin: number,
+  peakEndMin: number,
 ): { blocks: Block[]; moves: AdaptiveMove[]; allPlaced: boolean } {
   const unfinishedSet = new Set(unfinishedIds);
   const occupied = buildOccupiedFromTasks(
@@ -1390,12 +1484,17 @@ function localRescheduleUnfinished(
 
   for (const task of unfinishedTasks) {
     const dur = durationOf(task);
-    // Prefer later today after now
-    let slot = findFreeSlot(dur, occupied, startMin, endMin, Math.max(startMin, nowMin));
-    // Else any free slot today in work window
-    if (!slot) {
-      slot = findFreeSlot(dur, occupied, startMin, endMin, startMin);
+    const difficulty = String(task.difficulty || "medium").toLowerCase();
+    let preferred = Math.max(startMin, nowMin);
+    if (difficulty === "hard") {
+      preferred = Math.max(preferred, peakStartMin);
+    } else if (difficulty === "easy" && preferred < peakEndMin) {
+      preferred = Math.max(preferred, peakEndMin);
     }
+    // Prefer a behavior-aligned slot, then fall back to any valid slot today.
+    let slot = findFreeSlot(dur, occupied, startMin, endMin, preferred);
+    if (!slot) slot = findFreeSlot(dur, occupied, startMin, endMin, Math.max(startMin, nowMin));
+    if (!slot) slot = findFreeSlot(dur, occupied, startMin, endMin, startMin);
 
     const move = moves.find((m) => m.task_id === task.id);
     if (slot) {
@@ -1569,7 +1668,7 @@ serve(async (req) => {
           scheduled_count: 0,
           deferred_count: 0,
           algorithm:
-            "csp + pso-random-key + peak-aware",
+            "csp + pso-random-key + behavior-aware peak scheduling",
           timestamp:
             new Date().toISOString(),
         }),
@@ -1593,7 +1692,7 @@ serve(async (req) => {
       await supabase
         .from("profiles")
         .select(
-          "work_start, work_end, peak_start, peak_end, break_style"
+          "work_start, work_end, peak_start, peak_end, break_style, timezone"
         )
         .eq(
           "id",
@@ -1631,15 +1730,8 @@ serve(async (req) => {
         workEnd
       );
 
-    const peakStartMin =
-      parseHHMM(
-        peakStart
-      );
-
-    const peakEndMin =
-      parseHHMM(
-        peakEnd
-      );
+    let peakStartMin = parseHHMM(peakStart);
+    let peakEndMin = parseHHMM(peakEnd);
 
     if (
       endMin <=
@@ -1648,6 +1740,24 @@ serve(async (req) => {
       throw new Error(
         "Work end time must be later than work start time."
       );
+    }
+
+    const userTz = profile?.timezone || "UTC";
+    const [{ data: behaviorEntries }, { data: completedTasksForBehavior }] = await Promise.all([
+      supabase.from("time_entries").select("task_id, start_time, end_time, duration").eq("user_id", user.id),
+      supabase.from("tasks").select("id, completed_at, updated_at").eq("user_id", user.id).eq("status", "done").or("archived.eq.false,archived.is.null"),
+    ]);
+    const behavior = buildBehavioralProfile(
+      behaviorEntries || [],
+      completedTasksForBehavior || [],
+      userTz,
+      peakStartMin,
+      peakEndMin,
+      tasks.length + (completedTasksForBehavior || []).length,
+    );
+    if (behavior.evidenceLevel === "learning") {
+      peakStartMin = behavior.peakStartMin;
+      peakEndMin = behavior.peakEndMin;
     }
 
     const isAdaptive = body?.adaptive === true;
@@ -1703,6 +1813,8 @@ serve(async (req) => {
           endMin,
           breakStyle,
           adaptiveMoves,
+          peakStartMin,
+          peakEndMin,
         );
         adaptiveMoves = local.moves;
 
@@ -1967,7 +2079,15 @@ serve(async (req) => {
           deferred.length,
 
         algorithm:
-          "csp + pso-random-key + peak-aware",
+          "csp + pso-random-key + behavior-aware peak scheduling",
+        behavior_profile: {
+          evidence_level: behavior.evidenceLevel,
+          actual_minutes: behavior.actualMinutes,
+          average_actual_minutes: behavior.avgActualMinutes,
+          completed_sessions: behavior.completedSessions,
+          learned_peak_start: toHHMM(behavior.peakStartMin),
+          learned_peak_end: toHHMM(behavior.peakEndMin),
+        },
 
         timestamp:
           new Date().toISOString(),

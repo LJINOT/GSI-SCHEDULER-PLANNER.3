@@ -31,6 +31,14 @@ type Insights = {
     risky_tasks: RiskyTask[];
   };
   totals?: { completed: number; pending: number; total: number };
+  behavior_profile?: {
+    evidence_level: "limited" | "learning";
+    actual_minutes: number;
+    average_actual_minutes: number;
+    completed_sessions: number;
+    learned_peak_start: string;
+    learned_peak_end: string;
+  };
 };
 
 const RANGE_OPTIONS = [
@@ -57,9 +65,15 @@ export default function ProductivityInsights() {
       if (error) throw error;
       setData(aiData);
 
-      // Category stats + missed-deadline counter scoped to range
+      // Category stats + missed-deadline counter scoped to the current user and analysis range.
       const sinceISO = new Date(Date.now() - Number(rangeDays) * 24 * 60 * 60 * 1000).toISOString();
-      const { data: rangeTasks } = await supabase.from("tasks").select("category, status, due_date, updated_at").gte("created_at", sinceISO);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not logged in");
+      const [{ data: rangePending }, { data: rangeCompleted }] = await Promise.all([
+        supabase.from("tasks").select("category, status, due_date, completed_at").eq("user_id", user.id).or("archived.eq.false,archived.is.null").neq("status", "done"),
+        supabase.from("tasks").select("category, status, due_date, completed_at").eq("user_id", user.id).or("archived.eq.false,archived.is.null").eq("status", "done").gte("completed_at", sinceISO),
+      ]);
+      const rangeTasks = [...(rangePending || []), ...(rangeCompleted || [])];
       const cats: Record<string, number> = {};
       let missed = 0;
       const nowMs = Date.now();
@@ -68,7 +82,7 @@ export default function ProductivityInsights() {
         if (t.due_date) {
           const dueMs = new Date(t.due_date).getTime();
           if (t.status === "done") {
-            if (t.updated_at && new Date(t.updated_at).getTime() > dueMs) missed++;
+            if (t.completed_at && new Date(t.completed_at).getTime() > dueMs) missed++;
           } else if (dueMs < nowMs) {
             missed++;
           }
@@ -138,15 +152,12 @@ export default function ProductivityInsights() {
             raw={{ insights: data, category_distribution: categoryData, missed_deadlines: missedDeadlines }}
           >
             <p className="text-[11px] text-muted-foreground">
-              <strong>Sources:</strong> <code>tasks</code> (status, due_date, updated_at, estimated_duration, category)
-              and <code>behavior_logs</code> (metric_type = peak_hour), both filtered to the selected range of{" "}
-              {data.range_days ?? rangeDays} days and scoped to your user id by row-level security.
+              <strong>Sources:</strong> actual <code>time_entries</code>, completed tasks using <code>completed_at</code>, pending tasks, and the user's timezone/preferences.
+              Behavioral calculations are scoped to your user id and use the selected analysis range for completed work.
             </p>
             <p className="text-[11px] text-muted-foreground">
-              <strong>Formulas:</strong> productivity score = completed ÷ total tasks in range × 100 · avg task duration
-              = mean of estimated_duration over completed tasks · peak hours = most frequent completion hour (Asia/Manila)
-              · deadline risk factor = 70% current urgency (overdue, ≤24h, ≤72h weighting over pending tasks with
-              deadlines) + 30% historical late-completion rate · missed deadlines = done-after-due + still-pending-past-due.
+              <strong>Behavior model:</strong> actual session minutes are grouped by the user's local start hour; completed tasks add a success signal.
+              A learned two-hour window is used when enough evidence exists. Actual time is preferred over estimated duration.
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               <DevStat label="Range (days)" value={data.range_days ?? rangeDays} />
@@ -194,6 +205,17 @@ export default function ProductivityInsights() {
               </Card>
             )}
           </div>
+
+          {data.behavior_profile && (
+            <Card>
+              <CardContent className="py-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+                <span><strong>Learned window:</strong> {data.behavior_profile.learned_peak_start}–{data.behavior_profile.learned_peak_end}</span>
+                <span><strong>Actual work:</strong> {data.behavior_profile.actual_minutes} min</span>
+                <span><strong>Avg session:</strong> {data.behavior_profile.average_actual_minutes} min</span>
+                <span><strong>Sessions:</strong> {data.behavior_profile.completed_sessions}</span>
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardContent className="pt-6 flex items-center gap-4">

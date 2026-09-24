@@ -142,6 +142,97 @@ function taskStartOnToday(iso: string, tz: string, todayStr: string): number | n
   }
 }
 
+
+type BehavioralProfile = {
+  peakStartMin: number;
+  peakEndMin: number;
+  avgActualMinutes: number;
+  completionRate: number;
+  actualMinutes: number;
+  completedSessions: number;
+  evidenceLevel: "limited" | "learning";
+};
+
+function localHourMinute(iso: string, timeZone: string): { hour: number; minute: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(iso));
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? NaN);
+    const hour = get("hour"), minute = get("minute");
+    return Number.isFinite(hour) && Number.isFinite(minute) ? { hour, minute } : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildBehavioralProfile(
+  timeEntries: any[],
+  completedTasks: any[],
+  timeZone: string,
+  fallbackStart: number,
+  fallbackEnd: number,
+  totalTaskCount?: number,
+): BehavioralProfile {
+  const histogram = new Array(24).fill(0);
+  let actualMinutes = 0;
+  let completedSessions = 0;
+
+  for (const e of timeEntries || []) {
+    const mins = Number(e.duration) || (e.start_time
+      ? Math.max(0, Math.round(((e.end_time ? new Date(e.end_time).getTime() : Date.now()) - new Date(e.start_time).getTime()) / 60000))
+      : 0);
+    if (!e.start_time || mins <= 0) continue;
+    const hm = localHourMinute(e.start_time, timeZone);
+    if (!hm) continue;
+    histogram[hm.hour] += Math.min(180, mins);
+    actualMinutes += mins;
+    completedSessions += 1;
+  }
+
+  for (const t of completedTasks || []) {
+    const when = t.completed_at || t.updated_at;
+    if (!when) continue;
+    const hm = localHourMinute(when, timeZone);
+    if (!hm) continue;
+    // A completed task is a stronger success signal than mere activity.
+    histogram[hm.hour] += 45;
+  }
+
+  const sampleCount = completedSessions + (completedTasks || []).length;
+  const enoughEvidence = completedSessions >= 2 || actualMinutes >= 90 || (completedTasks || []).length >= 2;
+
+  let bestHour = Math.floor(fallbackStart / 60);
+  let bestScore = -1;
+  for (let h = 0; h < 24; h++) {
+    const score = histogram[h] + histogram[(h + 1) % 24] * 0.65;
+    if (score > bestScore) {
+      bestScore = score;
+      bestHour = h;
+    }
+  }
+
+  const avgActualMinutes = timeEntries?.length
+    ? Math.round(actualMinutes / Math.max(1, completedSessions))
+    : 0;
+
+  const total = Math.max(0, Number(totalTaskCount ?? (completedTasks || []).length));
+  const completionRate = total > 0 ? Math.min(1, (completedTasks || []).length / total) : 0;
+
+  return {
+    peakStartMin: enoughEvidence ? bestHour * 60 : fallbackStart,
+    peakEndMin: enoughEvidence ? Math.min(bestHour * 60 + 120, 24 * 60) : fallbackEnd,
+    avgActualMinutes,
+    completionRate,
+    actualMinutes,
+    completedSessions: sampleCount,
+    evidenceLevel: enoughEvidence ? "learning" : "limited",
+  };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -161,10 +252,11 @@ serve(async (req) => {
       });
     }
 
-    const [{ data: tasks }, { data: profile }, { data: behaviorLogs }] = await Promise.all([
+    const [{ data: tasks }, { data: profile }, { data: timeEntries }, { data: completedTasks }] = await Promise.all([
       supabase.from("tasks").select("*").neq("status", "done").eq("user_id", user.id).or("archived.eq.false,archived.is.null"),
       supabase.from("profiles").select("work_start, work_end, peak_start, peak_end, break_style, timezone").eq("id", user.id).single(),
-      supabase.from("behavior_logs").select("*").eq("user_id", user.id).eq("metric_type", "peak_hour").order("recorded_at", { ascending: false }).limit(1),
+      supabase.from("time_entries").select("task_id, start_time, end_time, duration").eq("user_id", user.id),
+      supabase.from("tasks").select("id, completed_at, updated_at").eq("user_id", user.id).eq("status", "done").or("archived.eq.false,archived.is.null"),
     ]);
 
     if (!tasks || tasks.length === 0) {
@@ -173,21 +265,20 @@ serve(async (req) => {
       });
     }
 
-    let peakStartMin = parseHHMM(profile?.peak_start || profile?.work_start || "09:00");
-    let peakEndMin = parseHHMM(profile?.peak_end || "12:00");
+    const configuredPeakStart = parseHHMM(profile?.peak_start || profile?.work_start || "09:00");
+    const configuredPeakEnd = parseHHMM(profile?.peak_end || "12:00");
+    const userTz = profile?.timezone || "UTC";
+    const behavior = buildBehavioralProfile(timeEntries || [], completedTasks || [], userTz, configuredPeakStart, configuredPeakEnd, (tasks || []).length + (completedTasks || []).length);
+    const peakStartMin = behavior.peakStartMin;
+    const peakEndMin = behavior.peakEndMin;
     const workStartMin = parseHHMM(profile?.work_start || "09:00");
     // Recommendation search window: respect work_end but allow evening if work_end is early
     // so sequential long tasks can still get non-overlapping slots (recommendation-only).
     const configuredEnd = parseHHMM(profile?.work_end || "17:00");
     const workEndMin = Math.max(configuredEnd, 22 * 60); // up to 10 PM for suggestion packing
-    let source: "behavior" | "personalization" | "general" = profile?.peak_start ? "personalization" : "general";
-    if (behaviorLogs?.[0]?.value && typeof (behaviorLogs[0].value as any).hour === "number") {
-      peakStartMin = (behaviorLogs[0].value as any).hour * 60;
-      peakEndMin = peakStartMin + 120;
-      source = "behavior";
-    }
-
-    const userTz = profile?.timezone || "UTC";
+    const source: "behavior" | "personalization" | "general" = behavior.evidenceLevel === "learning"
+      ? "behavior"
+      : profile?.peak_start ? "personalization" : "general";
     const { hour: localHour, minOfDay: localMin, todayStr } = localNow(userTz);
 
     // Occupied: fixed breaks + existing scheduled tasks today
@@ -351,6 +442,12 @@ serve(async (req) => {
           weights: W,
           peak_source: source,
           peak_window: `${to12h(toHHMM(peakStartMin))} – ${to12h(toHHMM(peakEndMin))}`,
+          behavior: {
+            evidence_level: behavior.evidenceLevel,
+            actual_minutes: behavior.actualMinutes,
+            average_actual_minutes: behavior.avgActualMinutes,
+            completed_sessions: behavior.completedSessions,
+          },
           break_style: profile?.break_style || "pomodoro",
           timezone: userTz,
         },
@@ -371,6 +468,13 @@ serve(async (req) => {
         algorithm: "ahp-immediate-tasks + sequential-non-overlapping-slots",
         timestamp: recommendationTimestamp,
         timezone: userTz,
+        behavior_profile: {
+          evidence_level: behavior.evidenceLevel,
+          actual_minutes: behavior.actualMinutes,
+          average_actual_minutes: behavior.avgActualMinutes,
+          completed_sessions: behavior.completedSessions,
+          completion_rate: behavior.completionRate,
+        },
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );

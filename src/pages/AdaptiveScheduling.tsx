@@ -99,9 +99,9 @@ type ChangeItem = {
 };
 
 export default function AdaptiveScheduling() {
-  const [payload, setPayload] = useState<Payload | null>(() => {
-    return loadCache<Payload>(CACHE_KEY) || loadCache<Payload>(AUTO_CACHE_KEY);
-  });
+  // Never use a previous user's/stale browser schedule as the initial source of truth.
+  // The current authenticated user's database schedule is loaded first.
+  const [payload, setPayload] = useState<Payload | null>(null);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -124,7 +124,7 @@ export default function AdaptiveScheduling() {
       .from("tasks")
       .select("id, title, status, due_date, start_time, estimated_duration, priority_score, category, updated_at")
       .eq("user_id", user.id)
-      .eq("archived", false)
+      .or("archived.eq.false,archived.is.null")
       .order("updated_at", { ascending: false });
 
     setTasks((data as TaskRow[]) || []);
@@ -133,6 +133,31 @@ export default function AdaptiveScheduling() {
 
   useEffect(() => {
     fetchTasks();
+    // Load the current authenticated user's saved schedule from the database.
+    // Do not invoke generate-schedule on page load because that would regenerate/persist a schedule.
+    const loadCurrent = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const now = new Date();
+      const scheduleDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const { data: rows } = await supabase
+        .from("schedules")
+        .select("timeline, schedule_date, created_at")
+        .eq("user_id", user.id)
+        .eq("schedule_date", scheduleDate)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const row = rows?.[0] as any;
+      if (!row || !Array.isArray(row.timeline)) return;
+      const next: Payload = {
+        blocks: sortBlocksChronologically(row.timeline),
+        algorithm: "loaded-from-current-user-schedule",
+        timestamp: row.created_at,
+      };
+      setPayload(next);
+      saveCache(CACHE_KEY, next);
+    };
+    void loadCurrent();
   }, []);
 
   const changes = useMemo<ChangeItem[]>(() => {

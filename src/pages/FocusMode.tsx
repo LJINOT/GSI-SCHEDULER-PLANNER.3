@@ -320,19 +320,25 @@ export default function FocusMode() {
       await closeEntry(elapsed);
     }
 
-    const { error } = await supabase
-      .from("tasks")
-      .update({
-        status: "done",
-        completed_at: new Date().toISOString(),
-      })
-      .eq("id", focusTask.id)
-      .eq("user_id", user.id);
+    const { data, error } = await supabase.functions.invoke("complete-task", {
+      body: { task_id: focusTask.id },
+    });
 
     if (error) {
       toast.error(error.message);
       return;
     }
+
+    const body =
+      typeof data === "string"
+        ? JSON.parse(data)
+        : data || {};
+
+    if (body?.error) {
+      toast.error(body.error);
+      return;
+    }
+
     toast.success("Task marked complete");
     setFocusTask(null);
     setRemaining(0);

@@ -164,8 +164,11 @@ type DeferredTask = {
   task_id: string;
   title: string;
   duration?: number;
+  scheduled_minutes?: number;
+  remaining_minutes?: number;
   priority?: number | null;
   status?: string;
+  reason?: string;
 };
 
 type Payload = {
@@ -248,11 +251,7 @@ function normalizeBlocks(
         }
       );
 
-  const result: ScheduleBlock[] =
-    [];
-
-  const seenTaskIds =
-    new Set<string>();
+  const result: ScheduleBlock[] = [];
 
   for (const block of sorted) {
     const start =
@@ -272,28 +271,9 @@ function normalizeBlocks(
     }
 
     /*
-     * A task can only appear once.
-     *
-     * Breaks are also uniquely identified by
-     * their task_id.
+     * A flexible task may appear in multiple non-overlapping
+     * segments. Do not remove repeated task IDs here.
      */
-    if (
-      block.kind ===
-      "task"
-    ) {
-      if (
-        seenTaskIds.has(
-          block.task_id
-        )
-      ) {
-        continue;
-      }
-
-      seenTaskIds.add(
-        block.task_id
-      );
-    }
-
     const previous =
       result.length > 0
         ? result[
@@ -1193,6 +1173,12 @@ export default function Schedule() {
             </div>
           </div>
         )}
+
+        {blocks.some((b) => b.kind === "task") && (
+          <p className="text-xs text-muted-foreground">
+            Long tasks may be split across available work periods. Fixed breaks and existing constraints are kept in place.
+          </p>
+        )}
       </section>
 
       {/* ===================================================
@@ -1202,7 +1188,7 @@ export default function Schedule() {
       <section className="space-y-2">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Unscheduled Tasks
+            Tasks Considered by Scheduler
           </h2>
 
           {!loadingTasks &&
@@ -1364,8 +1350,19 @@ export default function Schedule() {
                         <TableCell className="text-xs text-muted-foreground">
                           {item.priority == null ? "—" : statusLabel(item.status || "")}
                         </TableCell>
-                        <TableCell className="text-xs text-warning">
-                          Needs another valid time slot
+                        <TableCell className="text-xs">
+                          <div className="flex flex-col gap-0.5">
+                            <span className={item.status === "partially_scheduled" ? "text-warning" : "text-destructive"}>
+                              {item.status === "partially_scheduled"
+                                ? "Partially scheduled"
+                                : "No valid slot"}
+                            </span>
+                            {item.reason && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {item.reason}
+                              </span>
+                            )}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -1375,7 +1372,7 @@ export default function Schedule() {
             </CardContent>
           </Card>
           <p className="text-xs text-muted-foreground">
-            These active tasks were retrieved by the scheduler but could not fit the available schedule window. They remain in your task list.
+            Long tasks can now use multiple valid work periods. Only the remaining work is shown here when the available schedule time is still insufficient.
           </p>
         </section>
       )}

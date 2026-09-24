@@ -43,6 +43,104 @@ function formatHourRange(h: number): string {
   return `${fmt(start)}–${fmt(end)} `;
 }
 
+function toHHMM(min: number): string {
+  const safe = Math.max(0, Math.min(1439, Math.round(min)));
+  const h = Math.floor(safe / 60);
+  const m = safe % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+
+type BehavioralProfile = {
+  peakStartMin: number;
+  peakEndMin: number;
+  avgActualMinutes: number;
+  completionRate: number;
+  actualMinutes: number;
+  completedSessions: number;
+  evidenceLevel: "limited" | "learning";
+};
+
+function localHourMinute(iso: string, timeZone: string): { hour: number; minute: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(iso));
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? NaN);
+    const hour = get("hour"), minute = get("minute");
+    return Number.isFinite(hour) && Number.isFinite(minute) ? { hour, minute } : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildBehavioralProfile(
+  timeEntries: any[],
+  completedTasks: any[],
+  timeZone: string,
+  fallbackStart: number,
+  fallbackEnd: number,
+  totalTaskCount?: number,
+): BehavioralProfile {
+  const histogram = new Array(24).fill(0);
+  let actualMinutes = 0;
+  let completedSessions = 0;
+
+  for (const e of timeEntries || []) {
+    const mins = Number(e.duration) || (e.start_time
+      ? Math.max(0, Math.round(((e.end_time ? new Date(e.end_time).getTime() : Date.now()) - new Date(e.start_time).getTime()) / 60000))
+      : 0);
+    if (!e.start_time || mins <= 0) continue;
+    const hm = localHourMinute(e.start_time, timeZone);
+    if (!hm) continue;
+    histogram[hm.hour] += Math.min(180, mins);
+    actualMinutes += mins;
+    completedSessions += 1;
+  }
+
+  for (const t of completedTasks || []) {
+    const when = t.completed_at || t.updated_at;
+    if (!when) continue;
+    const hm = localHourMinute(when, timeZone);
+    if (!hm) continue;
+    // A completed task is a stronger success signal than mere activity.
+    histogram[hm.hour] += 45;
+  }
+
+  const sampleCount = completedSessions + (completedTasks || []).length;
+  const enoughEvidence = completedSessions >= 2 || actualMinutes >= 90 || (completedTasks || []).length >= 2;
+
+  let bestHour = Math.floor(fallbackStart / 60);
+  let bestScore = -1;
+  for (let h = 0; h < 24; h++) {
+    const score = histogram[h] + histogram[(h + 1) % 24] * 0.65;
+    if (score > bestScore) {
+      bestScore = score;
+      bestHour = h;
+    }
+  }
+
+  const avgActualMinutes = timeEntries?.length
+    ? Math.round(actualMinutes / Math.max(1, completedSessions))
+    : 0;
+
+  const total = Math.max(0, Number(totalTaskCount ?? (completedTasks || []).length));
+  const completionRate = total > 0 ? Math.min(1, (completedTasks || []).length / total) : 0;
+
+  return {
+    peakStartMin: enoughEvidence ? bestHour * 60 : fallbackStart,
+    peakEndMin: enoughEvidence ? Math.min(bestHour * 60 + 120, 24 * 60) : fallbackEnd,
+    avgActualMinutes,
+    completionRate,
+    actualMinutes,
+    completedSessions: sampleCount,
+    evidenceLevel: enoughEvidence ? "learning" : "limited",
+  };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -61,10 +159,11 @@ serve(async (req) => {
     const rangeDays: number = Number(body?.rangeDays) || 30;
     const sinceISO = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000).toISOString();
 
-    const [{ data: allTasks }, { data: timeEntries }, { data: profile }] = await Promise.all([
-      supabase.from("tasks").select("*").eq("user_id", user.id).or("archived.eq.false,archived.is.null").gte("created_at", sinceISO),
+    const [{ data: pendingTasks }, { data: completedTasksInRange }, { data: timeEntries }, { data: profile }] = await Promise.all([
+      supabase.from("tasks").select("*").eq("user_id", user.id).or("archived.eq.false,archived.is.null").neq("status", "done"),
+      supabase.from("tasks").select("*").eq("user_id", user.id).or("archived.eq.false,archived.is.null").eq("status", "done").gte("completed_at", sinceISO),
       supabase.from("time_entries").select("*").eq("user_id", user.id).gte("start_time", sinceISO),
-      supabase.from("profiles").select("timezone").eq("id", user.id).single(),
+      supabase.from("profiles").select("timezone, peak_start, peak_end").eq("id", user.id).single(),
     ]);
     const userTz = profile?.timezone || "UTC";
     const hourInTz = (iso: string) => {
@@ -76,9 +175,9 @@ serve(async (req) => {
       }
     };
 
-    const tasks = allTasks || [];
-    const completedTasks = tasks.filter((t: any) => t.status === "done");
-    const pendingTasks = tasks.filter((t: any) => t.status !== "done");
+    const completedTasks = completedTasksInRange || [];
+    const pending = pendingTasks || [];
+    const tasks = [...completedTasks, ...pending];
 
     // ---- Deadline risk (deterministic) ----
     const now = Date.now();
@@ -119,6 +218,17 @@ serve(async (req) => {
       const weight = e.duration && e.duration > 0 ? Math.min(2, e.duration / 30) : 0.5;
       hourHistogram[hourInTz(e.start_time)] += weight;
     }
+    const fallbackStart = (() => {
+      const raw = profile?.peak_start || "09:00";
+      const [h, m] = raw.split(":").map(Number);
+      return (Number.isFinite(h) ? h : 9) * 60 + (Number.isFinite(m) ? m : 0);
+    })();
+    const fallbackEnd = (() => {
+      const raw = profile?.peak_end || "12:00";
+      const [h, m] = raw.split(":").map(Number);
+      return (Number.isFinite(h) ? h : 12) * 60 + (Number.isFinite(m) ? m : 0);
+    })();
+    const behavior = buildBehavioralProfile(timeEntries || [], completedTasks || [], userTz, fallbackStart, fallbackEnd, tasks.length);
     const peak = psoPeakHour(hourHistogram);
 
     // ---- Aggregates: prefer actual time_entry durations over estimates ----
@@ -157,8 +267,10 @@ serve(async (req) => {
         : `Low risk: deadlines are well-managed (${Math.round(lateRate * 100)}% historical late rate).`;
 
     return new Response(JSON.stringify({
-      peak_hours: formatHourRange(peak.hour) + ` (${userTz})`,
-      peak_label: usedActualTime ? "Most active time (from recorded work)" : "Most active time (limited data)",
+      peak_hours: formatHourRange(Math.floor(behavior.peakStartMin / 60)) + ` (${userTz})`,
+      peak_label: behavior.evidenceLevel === "learning"
+        ? "Learned productive window (from actual work and completed tasks)"
+        : "Personalized window (limited behavior data)",
       actual_time_available: usedActualTime,
       avg_task_duration: avgDuration,
       preferred_categories: preferredCategories,
@@ -178,8 +290,16 @@ serve(async (req) => {
       task_count: tasks.length,
       task_ids: tasks.map((t: any) => t.id),
       totals: { completed: completedTasks.length, pending: pendingTasks.length, total: tasks.length },
+      behavior_profile: {
+        evidence_level: behavior.evidenceLevel,
+        actual_minutes: behavior.actualMinutes,
+        average_actual_minutes: behavior.avgActualMinutes,
+        completed_sessions: behavior.completedSessions,
+        learned_peak_start: toHHMM(behavior.peakStartMin),
+        learned_peak_end: toHHMM(behavior.peakEndMin),
+      },
       pso: { peak_hour: peak.hour, peak_score: peak.score, iterations: 40, swarm_size: 15 },
-      algorithm: "deterministic-stats + pso-peak-hour",
+      algorithm: "behavior-profile + deterministic-stats + pso-peak-hour",
       timestamp: new Date().toISOString(),
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {

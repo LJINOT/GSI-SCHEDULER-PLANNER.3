@@ -71,14 +71,60 @@ function pickFocusTask(rows: FocusTask[]): FocusTask | null {
   };
   const overdue = (t: FocusTask) =>
     !!t.due_date && new Date(t.due_date).getTime() < Date.now();
+  const durationMinutes = (t: FocusTask) =>
+    Math.max(5, Number(t.estimated_duration) || 25);
+
+  const highTasks = rows.filter((t) => tier(t) === 3);
+  const highOverdue = highTasks
+    .filter(overdue)
+    .sort((a, b) => durationMinutes(a) - durationMinutes(b));
+  const highCurrent = highTasks
+    .filter((t) => !overdue(t))
+    .sort((a, b) => {
+      const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
+      const bd = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+      if (ad !== bd) return ad - bd;
+      return score(b) - score(a);
+    });
 
   /*
-   * Focus Mode is priority-first. It no longer switches to the next task
-   * merely because that task has an earlier scheduled start time.
+   * Improved Focus Mode priority rule:
    *
-   * HIGH current > HIGH overdue > MEDIUM current > MEDIUM overdue > LOW.
-   * Within the same group, the earlier deadline wins.
+   * 1. Look for a HIGH overdue task.
+   * 2. Find the most urgent upcoming HIGH task.
+   * 3. If that upcoming HIGH task has enough deadline room, a reasonably
+   *    short HIGH overdue task can be completed first to reduce backlog.
+   * 4. If the upcoming HIGH task is close to its deadline, protect it first.
+   * 5. If no HIGH overdue task qualifies, continue with MEDIUM/LOW urgency.
+   *
+   * Deadline room means the upcoming HIGH task has at least one full day
+   * plus its estimated duration remaining. A task without a due date has
+   * no deadline pressure, so it has enough room for this decision.
+   * A short overdue task is currently defined as <= 60 minutes.
+   * Once a focus session starts, the current task is not changed mid-session.
    */
+  const urgentUpcomingHigh = highCurrent[0];
+  const shortOverdueHigh = highOverdue[0];
+
+  if (shortOverdueHigh) {
+    const upcomingHasEnoughRoom = !urgentUpcomingHigh || (() => {
+      if (!urgentUpcomingHigh.due_date) return true;
+      const remainingHours =
+        (new Date(urgentUpcomingHigh.due_date).getTime() - Date.now()) /
+        3_600_000;
+      const requiredHours = durationMinutes(urgentUpcomingHigh) / 60 + 24;
+      return remainingHours >= requiredHours;
+    })();
+
+    if (durationMinutes(shortOverdueHigh) <= 60 && upcomingHasEnoughRoom) {
+      return shortOverdueHigh;
+    }
+
+    if (urgentUpcomingHigh) return urgentUpcomingHigh;
+  }
+
+  // Normal fallback: priority tier first, then current before overdue,
+  // then the earlier deadline and finally the higher priority score.
   return [...rows].sort((a, b) => {
     const tierDiff = tier(b) - tier(a);
     if (tierDiff !== 0) return tierDiff;

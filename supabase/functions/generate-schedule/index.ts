@@ -43,6 +43,7 @@ type BreakBlock = {
 type CSPResult = {
   blocks: Block[];
   scheduledTaskIds: string[];
+  scheduledMinutes: Record<string, number>;
 };
 
 type PSOResult = {
@@ -61,96 +62,48 @@ function parseHHMM(value: string): number {
 
 function toHHMM(minutes: number): string {
   const safe = Math.max(0, Math.round(minutes));
-
   const hours = Math.floor(safe / 60);
   const mins = safe % 60;
-
-  return `${String(hours).padStart(2, "0")}:${String(
-    mins
-  ).padStart(2, "0")}`;
+  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
 }
 
 function durationOf(task: Task): number {
-  return Math.max(
-    5,
-    Math.min(
-      480,
-      Number(task.estimated_duration) || 30
-    )
-  );
+  return Math.max(5, Math.min(480, Number(task.estimated_duration) || 30));
 }
 
 /* =========================================================
    BREAK STYLE
    ========================================================= */
 
-const BREAK_STYLES: Record<
-  BreakStyle,
-  BreakBlock[]
-> = {
+const BREAK_STYLES: Record<BreakStyle, BreakBlock[]> = {
   pomodoro: [
-    {
-      start: 9 * 60,
-      dur: 15,
-      title: "Morning Break (Snack)",
-    },
-    {
-      start: 12 * 60,
-      dur: 60,
-      title: "Lunch Break",
-    },
-    {
-      start: 15 * 60,
-      dur: 15,
-      title: "Afternoon Break (Snack)",
-    },
+    { start: 9 * 60, dur: 15, title: "Morning Break (Snack)" },
+    { start: 12 * 60, dur: 60, title: "Lunch Break" },
+    { start: 15 * 60, dur: 15, title: "Afternoon Break (Snack)" },
   ],
-
   "long-focus": [
-    {
-      start: 12 * 60,
-      dur: 60,
-      title: "Lunch Break",
-    },
+    { start: 12 * 60, dur: 60, title: "Lunch Break" },
   ],
-
   flexible: [
-    {
-      start: 12 * 60,
-      dur: 45,
-      title: "Lunch Break",
-    },
+    { start: 12 * 60, dur: 45, title: "Lunch Break" },
   ],
 };
 
-function getBreakBlocks(
-  breakStyle?: string
-): BreakBlock[] {
-  const style =
-    (breakStyle || "pomodoro") as BreakStyle;
-
-  return BREAK_STYLES[style] ??
-    BREAK_STYLES.pomodoro;
+function getBreakBlocks(breakStyle?: string): BreakBlock[] {
+  const style = (breakStyle || "pomodoro") as BreakStyle;
+  return BREAK_STYLES[style] ?? BREAK_STYLES.pomodoro;
 }
 
 /* =========================================================
    TASK CLEANUP
    ========================================================= */
 
-/*
- * A task should enter PSO/CSP only once.
- */
 function uniqueTasks(tasks: Task[]): Task[] {
   const seen = new Set<string>();
   const result: Task[] = [];
 
   for (const task of tasks) {
-    if (!task?.id) continue;
-
-    if (seen.has(task.id)) {
-      continue;
-    }
-
+    if (!task?.id || seen.has(task.id)) continue;
     seen.add(task.id);
     result.push(task);
   }
@@ -159,323 +112,149 @@ function uniqueTasks(tasks: Task[]): Task[] {
 }
 
 /* =========================================================
-   CSP
+   CSP — SPLIT-FRIENDLY PLACEMENT
    ========================================================= */
 
+/**
+ * CSP treats work time as a collection of valid intervals.
+ * A task may use more than one interval, so a long task can
+ * continue after a fixed break instead of being deferred just
+ * because no single continuous block is long enough.
+ */
 function csp(
   tasks: Task[],
   startMin: number,
   endMin: number,
-  breakStyle: string
+  breakStyle: string,
 ): CSPResult {
   const blocks: Block[] = [];
   const scheduledTaskIds: string[] = [];
-
+  const scheduledMinutes: Record<string, number> = {};
   const unique = uniqueTasks(tasks);
 
   const breaks = getBreakBlocks(breakStyle)
-    .filter(
-      (breakBlock) =>
-        breakBlock.start >= startMin &&
-        breakBlock.start + breakBlock.dur <=
-          endMin
-    )
-    .sort(
-      (a, b) => a.start - b.start
-    );
+    .filter((b) => b.start >= startMin && b.start + b.dur <= endMin)
+    .sort((a, b) => a.start - b.start);
 
   let cursor = startMin;
   let breakIndex = 0;
-
-  const usedTaskIds = new Set<string>();
   const usedBreakIds = new Set<string>();
 
-  /*
-   * Adds a break exactly once.
-   */
-  const addBreak = (
-    breakBlock: BreakBlock
-  ) => {
-    const id = `break-${breakBlock.start}`;
-
-    if (usedBreakIds.has(id)) {
-      return;
-    }
-
+  const addBreak = (b: BreakBlock) => {
+    const id = `break-${b.start}`;
+    if (usedBreakIds.has(id)) return;
     blocks.push({
       task_id: id,
-      title: breakBlock.title,
-      start: toHHMM(
-        breakBlock.start
-      ),
-      end: toHHMM(
-        breakBlock.start +
-          breakBlock.dur
-      ),
+      title: b.title,
+      start: toHHMM(b.start),
+      end: toHHMM(b.start + b.dur),
       category: "Break",
       kind: "break",
     });
-
     usedBreakIds.add(id);
   };
 
-  /*
-   * Move cursor through breaks that have
-   * already been reached.
-   */
-  const movePastReachedBreaks = () => {
-    while (
-      breakIndex < breaks.length
-    ) {
-      const current =
-        breaks[breakIndex];
-
-      /*
-       * Break is completely before cursor.
-       */
-      if (
-        cursor >=
-        current.start +
-          current.dur
-      ) {
+  const movePastBreaks = () => {
+    while (breakIndex < breaks.length) {
+      const b = breaks[breakIndex];
+      if (cursor >= b.start + b.dur) {
         breakIndex++;
         continue;
       }
-
-      /*
-       * Cursor is inside a break.
-       */
-      if (
-        cursor >= current.start &&
-        cursor <
-          current.start +
-            current.dur
-      ) {
-        addBreak(current);
-
-        cursor =
-          current.start +
-          current.dur;
-
+      if (cursor >= b.start) {
+        addBreak(b);
+        cursor = b.start + b.dur;
         breakIndex++;
         continue;
       }
-
       break;
     }
   };
 
   for (const task of unique) {
-    if (usedTaskIds.has(task.id)) {
-      continue;
+    let remaining = durationOf(task);
+    let placedMinutes = 0;
+
+    while (remaining > 0 && cursor < endMin) {
+      movePastBreaks();
+      if (cursor >= endMin) break;
+
+      const nextBreak = breakIndex < breaks.length ? breaks[breakIndex] : null;
+      const segmentEnd = Math.min(endMin, nextBreak ? nextBreak.start : endMin);
+      const available = Math.max(0, segmentEnd - cursor);
+
+      if (available <= 0) {
+        if (nextBreak) {
+          addBreak(nextBreak);
+          cursor = nextBreak.start + nextBreak.dur;
+          breakIndex++;
+          continue;
+        }
+        break;
+      }
+
+      const chunk = Math.min(remaining, available);
+      if (chunk < 5) {
+        if (nextBreak) {
+          addBreak(nextBreak);
+          cursor = nextBreak.start + nextBreak.dur;
+          breakIndex++;
+          continue;
+        }
+        break;
+      }
+
+      blocks.push({
+        task_id: task.id,
+        title: task.title,
+        start: toHHMM(cursor),
+        end: toHHMM(cursor + chunk),
+        category: task.category || "General",
+        kind: "task",
+      });
+
+      placedMinutes += chunk;
+      remaining -= chunk;
+      cursor += chunk;
+
+      // If the task continues into another valid interval, the loop
+      // crosses the next break and keeps placing the remaining minutes.
+      if (remaining > 0 && nextBreak && cursor >= nextBreak.start) {
+        addBreak(nextBreak);
+        cursor = nextBreak.start + nextBreak.dur;
+        breakIndex++;
+      }
     }
 
-    const duration =
-      durationOf(task);
-
-    /*
-     * Move past breaks that have already
-     * been reached.
-     */
-    movePastReachedBreaks();
-
-    /*
-     * Repeatedly move the task after any
-     * break that it would cross.
-     */
-    let placed = false;
-
-    while (!placed) {
-      movePastReachedBreaks();
-
-      const nextBreak =
-        breakIndex < breaks.length
-          ? breaks[breakIndex]
-          : null;
-
-      /*
-       * No remaining break.
-       */
-      if (!nextBreak) {
-        if (
-          cursor + duration <=
-          endMin
-        ) {
-          blocks.push({
-            task_id: task.id,
-            title: task.title,
-            start: toHHMM(cursor),
-            end: toHHMM(
-              cursor + duration
-            ),
-            category:
-              task.category ||
-              "General",
-            kind: "task",
-          });
-
-          usedTaskIds.add(
-            task.id
-          );
-
-          scheduledTaskIds.push(
-            task.id
-          );
-
-          cursor += duration;
-          placed = true;
-        }
-
-        /*
-         * No room left.
-         */
-        break;
-      }
-
-      /*
-       * There is enough room before the break.
-       */
-      if (
-        cursor <
-          nextBreak.start &&
-        cursor + duration <=
-          nextBreak.start
-      ) {
-        blocks.push({
-          task_id: task.id,
-          title: task.title,
-          start: toHHMM(cursor),
-          end: toHHMM(
-            cursor + duration
-          ),
-          category:
-            task.category ||
-            "General",
-          kind: "task",
-        });
-
-        usedTaskIds.add(
-          task.id
-        );
-
-        scheduledTaskIds.push(
-          task.id
-        );
-
-        cursor += duration;
-        placed = true;
-        break;
-      }
-
-      /*
-       * The task would cross the break.
-       *
-       * Move the task after the break.
-       */
-      addBreak(nextBreak);
-
-      cursor =
-        nextBreak.start +
-        nextBreak.dur;
-
-      breakIndex++;
-
-      /*
-       * Loop again and check the next break.
-       */
+    scheduledMinutes[task.id] = placedMinutes;
+    if (remaining <= 0) {
+      scheduledTaskIds.push(task.id);
     }
   }
 
-  /*
-   * Chronological ordering.
-   */
+  // Fixed breaks are part of the schedule even when no task reaches them.
+  // This keeps the user's configured break pattern visible and reserved.
+  for (const b of breaks) addBreak(b);
+
   blocks.sort((a, b) => {
-    const startDiff =
-      parseHHMM(a.start) -
-      parseHHMM(b.start);
-
-    if (startDiff !== 0) {
-      return startDiff;
-    }
-
-    return (
-      parseHHMM(a.end) -
-      parseHHMM(b.end)
-    );
+    const startDiff = parseHHMM(a.start) - parseHHMM(b.start);
+    if (startDiff !== 0) return startDiff;
+    return parseHHMM(a.end) - parseHHMM(b.end);
   });
 
-  /*
-   * FINAL SAFETY VALIDATION
-   *
-   * Never return overlapping blocks.
-   */
+  // Safety: never return overlapping blocks.
   const validBlocks: Block[] = [];
-  const validTaskIds: string[] = [];
-
   for (const block of blocks) {
-    const start =
-      parseHHMM(block.start);
+    const start = parseHHMM(block.start);
+    const end = parseHHMM(block.end);
+    if (start < startMin || end > endMin || end <= start) continue;
 
-    const end =
-      parseHHMM(block.end);
-
-    if (
-      start < startMin ||
-      end > endMin ||
-      end <= start
-    ) {
-      continue;
-    }
-
-    const duplicateTask =
-      block.kind === "task" &&
-      validTaskIds.includes(
-        block.task_id
-      );
-
-    if (duplicateTask) {
-      continue;
-    }
-
-    const previous =
-      validBlocks.length > 0
-        ? validBlocks[
-            validBlocks.length - 1
-          ]
-        : null;
-
-    if (previous) {
-      const previousEnd =
-        parseHHMM(
-          previous.end
-        );
-
-      if (
-        start <
-        previousEnd
-      ) {
-        continue;
-      }
-    }
-
-    validBlocks.push(
-      block
-    );
-
-    if (
-      block.kind === "task"
-    ) {
-      validTaskIds.push(
-        block.task_id
-      );
-    }
+    const previous = validBlocks.length ? validBlocks[validBlocks.length - 1] : null;
+    if (previous && start < parseHHMM(previous.end)) continue;
+    validBlocks.push(block);
   }
 
-  return {
-    blocks: validBlocks,
-    scheduledTaskIds:
-      validTaskIds,
-  };
+  return { blocks: validBlocks, scheduledTaskIds, scheduledMinutes };
 }
 
 /* =========================================================
@@ -502,11 +281,14 @@ function fitness(
    * Strong penalty for every task
    * that was not scheduled.
    */
-  let score =
-    (tasks.length -
-      result.scheduledTaskIds
-        .length) *
-    1000;
+  let score = 0;
+  for (const task of tasks) {
+    const required = durationOf(task);
+    const placed = result.scheduledMinutes[task.id] || 0;
+    const remaining = Math.max(0, required - placed);
+    // Full task = no penalty. Partial task = proportional penalty.
+    score += (remaining / required) * 1000;
+  }
 
   const taskMap = new Map(
     tasks.map((task) => [
@@ -980,31 +762,26 @@ async function persistSchedule(
   /*
    * Save the new task start times.
    */
-  for (
-    const block of taskBlocks
-  ) {
-    const startTime =
-      `${scheduleDate}T${block.start}:00`;
+  const firstStartByTask = new Map<string, string>();
+  for (const block of taskBlocks) {
+    const current = firstStartByTask.get(block.task_id);
+    if (!current || parseHHMM(block.start) < parseHHMM(current)) {
+      firstStartByTask.set(block.task_id, block.start);
+    }
+  }
 
-    const { error } =
-      await supabase
-        .from("tasks")
-        .update({
-          start_time:
-            startTime,
-        })
-        .eq(
-          "id",
-          block.task_id
-        )
-        .eq(
-          "user_id",
-          userId
-        );
+  for (const [taskId, firstStart] of firstStartByTask) {
+    const startTime = `${scheduleDate}T${firstStart}:00`;
+    const task = tasks.find((t) => t.id === taskId);
+    const { error } = await supabase
+      .from("tasks")
+      .update({ start_time: startTime })
+      .eq("id", taskId)
+      .eq("user_id", userId);
 
     if (error) {
       throw new Error(
-        `Failed to save schedule for ${block.title}: ${error.message}`
+        `Failed to save schedule for ${task?.title || taskId}: ${error.message}`
       );
     }
   }
@@ -1112,8 +889,6 @@ function validateBlocks(
   );
 
   const result: Block[] = [];
-  const seenTaskIds =
-    new Set<string>();
 
   for (const block of sorted) {
     const start =
@@ -1132,23 +907,9 @@ function validateBlocks(
       );
     }
 
-    if (
-      block.kind === "task"
-    ) {
-      if (
-        seenTaskIds.has(
-          block.task_id
-        )
-      ) {
-        throw new Error(
-          `Duplicate task in generated schedule: ${block.title}`
-        );
-      }
-
-      seenTaskIds.add(
-        block.task_id
-      );
-    }
+    // The same task may legitimately appear in multiple non-overlapping
+    // segments when its work is split around breaks or other constraints.
+    // Keep overlap validation, but do not reject repeated task IDs.
 
     const previous =
       result.length > 0
@@ -1997,13 +1758,11 @@ serve(async (req) => {
           )
       );
 
-    const deferred =
-      ordered.filter(
-        (task) =>
-          !scheduledIds.has(
-            task.id
-          )
-      );
+    const deferred = ordered.filter(
+      (task) => !scheduledIds.has(task.id)
+    );
+
+    const scheduledMinutes = cspResult.scheduledMinutes || {};
 
     /* =====================================================
        SAVE
@@ -2026,23 +1785,24 @@ serve(async (req) => {
         blocks:
           validatedBlocks,
 
-        deferred:
-          deferred.map(
-            (task) => ({
-              task_id:
-                task.id,
-              title:
-                task.title,
-              duration:
-                durationOf(task),
-              priority:
-                task.priority_score ??
-                null,
-              status:
-                task.status ||
-                "todo",
-            })
-          ),
+        deferred: deferred.map((task) => {
+          const required = durationOf(task);
+          const placed = scheduledMinutes[task.id] || 0;
+          const remaining = Math.max(0, required - placed);
+          return {
+            task_id: task.id,
+            title: task.title,
+            duration: required,
+            remaining_minutes: remaining,
+            scheduled_minutes: placed,
+            priority: task.priority_score ?? null,
+            status: placed > 0 ? "partially_scheduled" : "no_valid_slot",
+            reason:
+              placed > 0
+                ? `Only ${placed} of ${required} minutes fit in the available work periods.`
+                : "No valid work period was available for this task in the selected schedule window.",
+          };
+        }),
 
         pso: {
           fitness:
@@ -2074,6 +1834,8 @@ serve(async (req) => {
 
         scheduled_count:
           scheduledIds.size,
+        scheduled_minutes:
+          scheduledMinutes,
 
         deferred_count:
           deferred.length,

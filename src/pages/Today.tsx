@@ -77,7 +77,7 @@ function aiLabelClass(label: string): string {
 }
 
 export default function Today() {
-  const [payload, setPayload] = useState<Payload | null>(() => loadCache<Payload>(CACHE_KEY));
+  const [payload, setPayload] = useState<Payload | null>(null);
   const [prevPayload, setPrevPayload] = useState<Payload | null>(() => loadCache<Payload>(PREV_CACHE_KEY));
   const [taskMap, setTaskMap] = useState<Record<string, TaskRow>>({});
   const [loading, setLoading] = useState(false);
@@ -104,7 +104,7 @@ export default function Today() {
           .from("tasks")
           .select("id, title, status, due_date, start_time, estimated_duration, priority_score, category")
           .eq("user_id", u.id)
-          .eq("archived", false)
+          .or("archived.eq.false,archived.is.null")
           .neq("status", "done"),
         supabase
           .from("time_entries")
@@ -242,9 +242,10 @@ export default function Today() {
     setLoading(false);
   };
 
-  // Load recommendations for this user when page opens empty
+  // Always load fresh recommendations for the currently authenticated user.
+  // Browser cache is history only, never the source of truth.
   useEffect(() => {
-    if (!payload?.picks?.length) void getSmartPicks();
+    void getSmartPicks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

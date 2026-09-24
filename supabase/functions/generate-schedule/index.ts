@@ -70,6 +70,72 @@ function toHHMM(minutes: number): string {
   ).padStart(2, "0")}`;
 }
 
+
+function getLocalParts(
+  iso: string | Date,
+  timeZone: string,
+): { date: string; minutes: number } {
+  const date = iso instanceof Date ? iso : new Date(iso);
+  if (!Number.isFinite(date.getTime())) {
+    return { date: "", minutes: 0 };
+  }
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+
+  const values: Record<string, string> = {};
+  for (const p of parts) values[p.type] = p.value;
+
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    minutes:
+      Number(values.hour || 0) * 60 +
+      Number(values.minute || 0),
+  };
+}
+
+function localDateString(timeZone: string, date = new Date()): string {
+  return getLocalParts(date, timeZone).date;
+}
+
+function addCalendarDays(dateString: string, days: number): string {
+  const [y, m, d] = dateString.split("-").map(Number);
+  const value = new Date(Date.UTC(y, m - 1, d));
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+/**
+ * Convert a calendar date + local clock time in the user's timezone
+ * into an absolute ISO timestamp. This avoids treating "09:00" as UTC.
+ */
+function localDateTimeToIso(
+  dateString: string,
+  hhmm: string,
+  timeZone: string,
+): string {
+  const [y, m, d] = dateString.split("-").map(Number);
+  const [hh, mm] = hhmm.split(":").map(Number);
+
+  let guess = new Date(Date.UTC(y, m - 1, d, hh, mm, 0));
+  for (let i = 0; i < 2; i++) {
+    const actual = getLocalParts(guess, timeZone);
+    const [ay, am, ad] = actual.date.split("-").map(Number);
+    const actualUtc = Date.UTC(ay, am - 1, ad, Math.floor(actual.minutes / 60), actual.minutes % 60);
+    const desiredUtc = Date.UTC(y, m - 1, d, hh, mm);
+    guess = new Date(guess.getTime() + (desiredUtc - actualUtc));
+  }
+
+  return guess.toISOString();
+}
+
 function durationOf(task: Task): number {
   return Math.max(
     5,
@@ -918,7 +984,8 @@ async function persistSchedule(
   userId: string,
   tasks: Task[],
   blocks: Block[],
-  scheduleDate: string
+  scheduleDate: string,
+  timeZone = "Asia/Manila",
 ) {
   /*
    * Only task blocks are persisted to
@@ -945,9 +1012,7 @@ async function persistSchedule(
       }
 
       return (
-        String(
-          task.start_time
-        ).slice(0, 10) ===
+        getLocalParts(task.start_time, timeZone).date ===
         scheduleDate
       );
     });
@@ -983,8 +1048,11 @@ async function persistSchedule(
   for (
     const block of taskBlocks
   ) {
-    const startTime =
-      `${scheduleDate}T${block.start}:00`;
+    const startTime = localDateTimeToIso(
+      scheduleDate,
+      block.start,
+      timeZone,
+    );
 
     const { error } =
       await supabase
@@ -1506,16 +1574,14 @@ serve(async (req) => {
       body = {};
     }
 
-    const scheduleDate =
+    const requestedScheduleDate =
       typeof body?.schedule_date ===
         "string" &&
       /^\d{4}-\d{2}-\d{2}$/.test(
         body.schedule_date
       )
         ? body.schedule_date
-        : new Date()
-            .toISOString()
-            .slice(0, 10);
+        : null;
 
     /* =====================================================
        TASKS
@@ -1592,7 +1658,7 @@ serve(async (req) => {
       await supabase
         .from("profiles")
         .select(
-          "work_start, work_end, peak_start, peak_end, break_style"
+          "work_start, work_end, peak_start, peak_end, break_style, timezone"
         )
         .eq(
           "id",
@@ -1619,6 +1685,14 @@ serve(async (req) => {
     const breakStyle =
       profile?.break_style ||
       "pomodoro";
+
+    const timeZone =
+      profile?.timezone ||
+      "Asia/Manila";
+
+    const scheduleDate =
+      requestedScheduleDate ||
+      localDateString(timeZone);
 
     const startMin =
       parseHHMM(
@@ -1652,136 +1726,691 @@ serve(async (req) => {
     const isAdaptive = body?.adaptive === true;
 
     /* =====================================================
-       ADAPTIVE: remaining duration + local reschedule
+       ADAPTIVE: unfinished detection + multi-day repair
        ===================================================== */
 
-    let adaptiveMoves: AdaptiveMove[] = [];
+type AdaptiveMove = {
+  task_id: string;
+  title: string;
+  original_start: string | null;
+  original_end: string | null;
+  completed_minutes: number;
+  remaining_minutes: number;
+  new_start: string | null;
+  new_end: string | null;
+  new_date: string | null;
+  status: "rescheduled" | "needs_rescheduling" | "completed";
+  reason: string;
+};
+
+type Occupied = {
+  start: number;
+  end: number;
+  taskId?: string;
+};
+
+function buildDayOccupied(
+  tasks: Task[],
+  scheduleDate: string,
+  excludeIds: Set<string>,
+  breakStyle: string,
+  startMin: number,
+  endMin: number,
+  timeZone: string,
+): Occupied[] {
+  const occupied: Occupied[] = [];
+
+  for (const b of getBreakBlocks(breakStyle)) {
+    if (
+      b.start >= startMin &&
+      b.start + b.dur <= endMin
+    ) {
+      occupied.push({
+        start: b.start,
+        end: b.start + b.dur,
+      });
+    }
+  }
+
+  for (const task of tasks) {
+    if (excludeIds.has(task.id) || !task.start_time) continue;
+
+    const local = getLocalParts(task.start_time, timeZone);
+    if (local.date !== scheduleDate) continue;
+
+    const duration = durationOf(task);
+    if (duration <= 0) continue;
+
+    occupied.push({
+      start: local.minutes,
+      end: local.minutes + duration,
+      taskId: task.id,
+    });
+  }
+
+  return occupied.sort((a, b) => a.start - b.start);
+}
+
+function findFreeSlot(
+  duration: number,
+  occupied: Occupied[],
+  workStart: number,
+  workEnd: number,
+  notBefore: number,
+): { start: number; end: number } | null {
+  if (duration <= 0) return null;
+
+  const blocked = [...occupied].sort(
+    (a, b) => a.start - b.start,
+  );
+
+  let cursor = Math.max(workStart, notBefore);
+
+  for (const block of blocked) {
+    if (cursor + duration <= block.start) {
+      return {
+        start: cursor,
+        end: cursor + duration,
+      };
+    }
+
+    if (
+      cursor < block.end &&
+      cursor + duration > block.start
+    ) {
+      cursor = Math.max(cursor, block.end);
+    }
+
+    if (cursor + duration > workEnd) {
+      return null;
+    }
+  }
+
+  return cursor + duration <= workEnd
+    ? { start: cursor, end: cursor + duration }
+    : null;
+}
+
+function taskBlock(
+  task: Task,
+  start: number,
+): Block {
+  const end = start + durationOf(task);
+
+  return {
+    task_id: task.id,
+    title: task.title,
+    start: toHHMM(start),
+    end: toHHMM(end),
+    category: task.category || "General",
+    kind: "task",
+  };
+}
+
+function breakBlocksForDay(
+  startMin: number,
+  endMin: number,
+  breakStyle: string,
+): Block[] {
+  return getBreakBlocks(breakStyle)
+    .filter(
+      (b) =>
+        b.start >= startMin &&
+        b.start + b.dur <= endMin,
+    )
+    .map((b) => ({
+      task_id: `break-${b.start}`,
+      title: b.title,
+      start: toHHMM(b.start),
+      end: toHHMM(b.start + b.dur),
+      category: "Break",
+      kind: "break" as const,
+    }));
+}
+
+function sortAdaptiveTasks(
+  tasks: Task[],
+): Task[] {
+  return [...tasks].sort((a, b) => {
+    const ad = a.due_date
+      ? a.due_date
+      : "9999-12-31";
+    const bd = b.due_date
+      ? b.due_date
+      : "9999-12-31";
+
+    if (ad !== bd) {
+      return ad.localeCompare(bd);
+    }
+
+    return (
+      Number(b.priority_score || 0) -
+      Number(a.priority_score || 0)
+    );
+  });
+}
+
+function buildBlocksForDay(
+  tasks: Task[],
+  scheduleDate: string,
+  breakStyle: string,
+  startMin: number,
+  endMin: number,
+  timeZone: string,
+): Block[] {
+  const blocks = breakBlocksForDay(
+    startMin,
+    endMin,
+    breakStyle,
+  );
+
+  for (const task of tasks) {
+    if (!task.start_time) continue;
+
+    const local = getLocalParts(task.start_time, timeZone);
+    if (local.date !== scheduleDate) continue;
+
+    blocks.push(taskBlock(task, local.minutes));
+  }
+
+  return blocks.sort((a, b) => {
+    const startDiff =
+      parseHHMM(a.start) - parseHHMM(b.start);
+
+    return startDiff !== 0
+      ? startDiff
+      : parseHHMM(a.end) - parseHHMM(b.end);
+  });
+}
+
+async function adaptiveReschedule(
+  supabase: any,
+  userId: string,
+  tasks: Task[],
+  completedByTask: Map<string, number>,
+  startDate: string,
+  now: Date,
+  startMin: number,
+  endMin: number,
+  breakStyle: string,
+  timeZone: string,
+): Promise<{
+  blocks: Block[];
+  moves: AdaptiveMove[];
+  deferred: Task[];
+  touchedDates: string[];
+}> {
+  const today = localDateString(timeZone, now);
+  const nowLocal = getLocalParts(now, timeZone);
+
+  /*
+   * Tasks that are already scheduled in the future remain fixed.
+   * Tasks whose scheduled period has already passed, plus unscheduled
+   * tasks, become candidates for adaptive placement.
+   */
+  const candidates: Task[] = [];
+  const fixed: Task[] = [];
+  const moves: AdaptiveMove[] = [];
+  const oldDates = new Set<string>();
+
+  for (const original of tasks) {
+    const worked = Math.max(
+      0,
+      Number(completedByTask.get(original.id) || 0),
+    );
+
+    const estimated = durationOf(original);
+    const remaining = Math.max(0, estimated - worked);
+
+    if (remaining <= 0) {
+      moves.push({
+        task_id: original.id,
+        title: original.title,
+        original_start: original.start_time,
+        original_end: null,
+        completed_minutes: worked,
+        remaining_minutes: 0,
+        new_start: null,
+        new_end: null,
+        new_date: null,
+        status: "completed",
+        reason:
+          "Actual recorded work reached the estimated task duration.",
+      });
+      continue;
+    }
+
+    const task = {
+      ...original,
+      estimated_duration: remaining,
+    };
+
+    if (original.start_time) {
+      const local = getLocalParts(
+        original.start_time,
+        timeZone,
+      );
+      oldDates.add(local.date);
+
+      const plannedEnd = local.minutes + estimated;
+      const isPast =
+        local.date < today ||
+        (
+          local.date === today &&
+          plannedEnd <= nowLocal.minutes
+        );
+
+      if (!isPast) {
+        fixed.push(task);
+        continue;
+      }
+
+      candidates.push(task);
+
+      moves.push({
+        task_id: task.id,
+        title: task.title,
+        original_start: `${local.date} ${toHHMM(local.minutes)}`,
+        original_end: `${local.date} ${toHHMM(plannedEnd)}`,
+        completed_minutes: worked,
+        remaining_minutes: remaining,
+        new_start: null,
+        new_end: null,
+        new_date: null,
+        status: "needs_rescheduling",
+        reason:
+          "The task was not completed during its scheduled period, so only its remaining work was moved.",
+      });
+      continue;
+    }
+
+    candidates.push(task);
+
+    moves.push({
+      task_id: task.id,
+      title: task.title,
+      original_start: null,
+      original_end: null,
+      completed_minutes: worked,
+      remaining_minutes: remaining,
+      new_start: null,
+      new_end: null,
+      new_date: null,
+      status: "needs_rescheduling",
+      reason:
+        "The task did not have a valid scheduled start time and was placed into the next available slot.",
+    });
+  }
+
+  /*
+   * Clear candidate start times first. This prevents the old schedule
+   * from blocking the very task we are trying to move.
+   */
+  for (const task of candidates) {
+    const { error } = await supabase
+      .from("tasks")
+      .update({ start_time: null })
+      .eq("id", task.id)
+      .eq("user_id", userId);
+
+    if (error) throw error;
+  }
+
+  /*
+   * Rebuild the task objects with cleared start times.
+   */
+  const workingTasks = [
+    ...fixed.map((t) => ({ ...t })),
+    ...candidates.map((t) => ({
+      ...t,
+      start_time: null,
+    })),
+  ];
+
+  const maxDue = candidates.reduce(
+    (max, task) => {
+      if (!task.due_date) return max;
+      return task.due_date > max
+        ? task.due_date
+        : max;
+    },
+    today,
+  );
+
+  /*
+   * A task without a deadline gets a short planning horizon.
+   * A task with a deadline can use every working day up to that date.
+   */
+  const horizonEnd = candidates.some((t) => t.due_date)
+    ? maxDue
+    : addCalendarDays(today, 7);
+
+  const orderedCandidates = sortAdaptiveTasks(candidates);
+  const placedIds = new Set<string>();
+  const touchedDates = new Set<string>(oldDates);
+
+  for (
+    let dayIndex = 0;
+    dayIndex <= 31;
+    dayIndex++
+  ) {
+    const day = addCalendarDays(today, dayIndex);
+
+    if (day > horizonEnd) break;
+
+    const isToday = day === today;
+    const notBefore = isToday
+      ? Math.max(startMin, nowLocal.minutes)
+      : startMin;
+
+    const occupied = buildDayOccupied(
+      workingTasks,
+      day,
+      new Set(orderedCandidates.map((t) => t.id)),
+      breakStyle,
+      startMin,
+      endMin,
+      timeZone,
+    );
+
+    for (const task of orderedCandidates) {
+      if (placedIds.has(task.id)) continue;
+
+      if (
+        task.due_date &&
+        day > task.due_date
+      ) {
+        continue;
+      }
+
+      const slot = findFreeSlot(
+        durationOf(task),
+        occupied,
+        startMin,
+        endMin,
+        notBefore,
+      );
+
+      if (!slot) continue;
+
+      /*
+       * Prevent a task from ending after its due date.
+       * DATE deadlines are treated as the end of that calendar day,
+       * so any slot on the due date is allowed.
+       */
+      if (
+        task.due_date &&
+        day > task.due_date
+      ) {
+        continue;
+      }
+
+      task.start_time = localDateTimeToIso(
+        day,
+        toHHMM(slot.start),
+        timeZone,
+      );
+
+      occupied.push({
+        start: slot.start,
+        end: slot.end,
+        taskId: task.id,
+      });
+      occupied.sort((a, b) => a.start - b.start);
+
+      placedIds.add(task.id);
+      touchedDates.add(day);
+
+      const move = moves.find(
+        (m) => m.task_id === task.id,
+      );
+
+      if (move) {
+        move.new_start = toHHMM(slot.start);
+        move.new_end = toHHMM(slot.end);
+        move.new_date = day;
+        move.status = "rescheduled";
+        move.reason =
+          day === today
+            ? "The unfinished task was moved to the next valid free time today while preserving the other scheduled tasks."
+            : "The unfinished task was moved to the earliest valid future working slot before its deadline.";
+      }
+    }
+  }
+
+  const deferred = orderedCandidates.filter(
+    (task) => !placedIds.has(task.id),
+  );
+
+  for (const task of deferred) {
+    const move = moves.find(
+      (m) => m.task_id === task.id,
+    );
+
+    if (move) {
+      move.status = "needs_rescheduling";
+      move.reason = task.due_date
+        ? `No valid free work slot was available before ${task.due_date}.`
+        : "No valid free work slot was available in the adaptive planning window.";
+    }
+  }
+
+  /*
+   * Persist every date touched by the old or new placement.
+   * This removes the completed/expired task from old timeline rows
+   * and writes the repaired timeline for future days.
+   */
+  const allDays = [...touchedDates].sort();
+  for (const day of allDays) {
+    const dayTasks = workingTasks.filter((task) => {
+      if (!task.start_time) return false;
+      return getLocalParts(task.start_time, timeZone).date === day;
+    });
+
+    const blocks = buildBlocksForDay(
+      dayTasks,
+      day,
+      breakStyle,
+      startMin,
+      endMin,
+      timeZone,
+    );
+
+    const validated = validateBlocks(
+      blocks,
+      startMin,
+      endMin,
+    );
+
+    await persistSchedule(
+      supabase,
+      userId,
+      workingTasks,
+      validated,
+      day,
+      timeZone,
+    );
+  }
+
+  const todayBlocks = buildBlocksForDay(
+    workingTasks,
+    today,
+    breakStyle,
+    startMin,
+    endMin,
+    timeZone,
+  );
+
+  return {
+    blocks: validateBlocks(
+      todayBlocks,
+      startMin,
+      endMin,
+    ),
+    moves,
+    deferred,
+    touchedDates: allDays,
+  };
+}
+
+
+let adaptiveMoves: AdaptiveMove[] = [];
 
     if (isAdaptive) {
-      // Actual work from time_entries (user-scoped)
-      const { data: entries } = await supabase
-        .from("time_entries")
-        .select("task_id, duration, start_time, end_time")
-        .eq("user_id", user.id);
+      /*
+       * Actual work is user-scoped. The duration trigger already stores
+       * duration when a time entry is closed; the fallback below also
+       * handles older entries without duration.
+       */
+      const { data: entries, error: entriesError } =
+        await supabase
+          .from("time_entries")
+          .select("task_id, duration, start_time, end_time")
+          .eq("user_id", user.id);
+
+      if (entriesError) throw entriesError;
 
       const completedByTask = new Map<string, number>();
-      for (const e of entries || []) {
-        if (!e.task_id) continue;
-        let mins = Number(e.duration) || 0;
-        if (mins <= 0 && e.start_time && e.end_time) {
-          mins = Math.max(
+
+      for (const entry of entries || []) {
+        if (!entry.task_id) continue;
+
+        let minutes = Number(entry.duration) || 0;
+
+        if (
+          minutes <= 0 &&
+          entry.start_time &&
+          entry.end_time
+        ) {
+          minutes = Math.max(
             0,
             Math.round(
-              (new Date(e.end_time).getTime() - new Date(e.start_time).getTime()) /
-                60000,
+              (
+                new Date(entry.end_time).getTime() -
+                new Date(entry.start_time).getTime()
+              ) / 60000,
             ),
           );
         }
+
         completedByTask.set(
-          e.task_id,
-          (completedByTask.get(e.task_id) || 0) + mins,
+          entry.task_id,
+          (completedByTask.get(entry.task_id) || 0) +
+            Math.max(0, minutes),
         );
       }
 
-      const applied = applyRemainingDurations(
+      const adaptive = await adaptiveReschedule(
+        supabase,
+        user.id,
         tasks,
         completedByTask,
         scheduleDate,
         new Date(),
+        startMin,
+        endMin,
+        breakStyle,
+        timeZone,
       );
-      // Replace tasks with remaining-duration versions
-      tasks = applied.tasks;
-      adaptiveMoves = applied.movesSeed;
 
-      if (applied.unfinishedIds.length > 0) {
-        const local = localRescheduleUnfinished(
-          tasks,
-          applied.unfinishedIds,
-          scheduleDate,
-          startMin,
-          endMin,
-          breakStyle,
-          adaptiveMoves,
-        );
-        adaptiveMoves = local.moves;
+      adaptiveMoves = adaptive.moves;
 
-        if (local.allPlaced) {
-          const validatedBlocks = validateBlocks(
-            local.blocks,
-            startMin,
-            endMin,
-          );
-          await persistSchedule(
-            supabase,
-            user.id,
-            tasks,
-            validatedBlocks,
-            scheduleDate,
-          );
-
-          // Task history notes (best-effort)
-          for (const m of adaptiveMoves) {
-            if (m.status !== "rescheduled") continue;
-            try {
-              await supabase.from("task_history").insert({
-                task_id: m.task_id,
-                user_id: user.id,
-                note: m.reason,
-                changes: {
-                  type: "adaptive_reschedule",
-                  completed_minutes: m.completed_minutes,
-                  remaining_minutes: m.remaining_minutes,
-                  new_start: m.new_start,
-                  new_end: m.new_end,
-                },
-              });
-            } catch {
-              /* optional table */
-            }
-          }
-
-          return new Response(
-            JSON.stringify({
-              blocks: validatedBlocks,
-              deferred: adaptiveMoves
-                .filter((m) => m.status === "needs_rescheduling")
-                .map((m) => ({
-                  task_id: m.task_id,
-                  title: m.title,
-                  duration: m.remaining_minutes,
-                  status: "needs_rescheduling",
-                })),
-              adaptive_moves: adaptiveMoves,
-              adaptive: true,
-              pso: null,
-              window: {
-                start: workStart,
-                end: workEnd,
-                peak_start: peakStart,
-                peak_end: peakEnd,
-                break_style: breakStyle,
-                schedule_date: scheduleDate,
-              },
-              scheduled_count: validatedBlocks.filter((b) => b.kind === "task")
-                .length,
-              deferred_count: adaptiveMoves.filter(
-                (m) => m.status === "needs_rescheduling",
-              ).length,
-              algorithm: "adaptive-local + csp-validate",
-              timestamp: new Date().toISOString(),
-              note:
-                "Local adaptive reschedule used remaining duration from time entries; other tasks kept in place.",
-            }),
-            {
-              headers: {
-                ...corsHeaders,
-                "Content-Type": "application/json",
-              },
-            },
-          );
+      /*
+       * Record every actual adaptive move. RLS keeps history scoped
+       * to the authenticated user.
+       */
+      for (const move of adaptiveMoves) {
+        if (
+          move.status !== "rescheduled" &&
+          move.status !== "needs_rescheduling"
+        ) {
+          continue;
         }
-        // else fall through to full PSO+CSP with remaining durations
+
+        try {
+          await supabase
+            .from("task_history")
+            .insert({
+              task_id: move.task_id,
+              user_id: user.id,
+              note: move.reason,
+              changes: {
+                type: "adaptive_reschedule",
+                completed_minutes:
+                  move.completed_minutes,
+                remaining_minutes:
+                  move.remaining_minutes,
+                original_start:
+                  move.original_start,
+                original_end:
+                  move.original_end,
+                new_date:
+                  move.new_date,
+                new_start:
+                  move.new_start,
+                new_end:
+                  move.new_end,
+                status:
+                  move.status,
+              },
+            });
+        } catch {
+          /*
+           * History is audit information. A history insert must not
+           * prevent the repaired schedule from being saved.
+           */
+        }
       }
+
+      return new Response(
+        JSON.stringify({
+          blocks: adaptive.blocks,
+          deferred: adaptive.deferred.map(
+            (task) => ({
+              task_id: task.id,
+              title: task.title,
+              duration: durationOf(task),
+              priority:
+                task.priority_score ?? null,
+              status: "needs_rescheduling",
+              due_date:
+                task.due_date ?? null,
+            }),
+          ),
+          adaptive_moves: adaptiveMoves,
+          adaptive: true,
+          pso: null,
+          window: {
+            start: workStart,
+            end: workEnd,
+            peak_start: peakStart,
+            peak_end: peakEnd,
+            break_style: breakStyle,
+            schedule_date: scheduleDate,
+            timezone: timeZone,
+          },
+          scheduled_count:
+            adaptive.blocks.filter(
+              (block) => block.kind === "task",
+            ).length,
+          deferred_count:
+            adaptive.deferred.length,
+          total_task_count:
+            tasks.length,
+          algorithm:
+            "adaptive-local-repair + csp-validation",
+          timestamp:
+            new Date().toISOString(),
+          touched_dates:
+            adaptive.touchedDates,
+        }),
+        {
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+          },
+        },
+      );
     }
 
     /* =====================================================
@@ -1899,7 +2528,8 @@ serve(async (req) => {
       user.id,
       tasks,
       validatedBlocks,
-      scheduleDate
+      scheduleDate,
+      timeZone,
     );
 
     /* =====================================================

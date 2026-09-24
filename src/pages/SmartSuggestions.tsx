@@ -177,7 +177,7 @@ function levelFromCount(count: number, max: number): "High" | "Medium" | "Low" {
 }
 
 export default function SmartSuggestions() {
-  const [payload, setPayload] = useState<Payload | null>(() => loadCache<Payload>(CACHE_KEY));
+  const [payload, setPayload] = useState<Payload | null>(null);
   const [prevPayload, setPrevPayload] = useState<Payload | null>(() => loadCache<Payload>(PREV_CACHE_KEY));
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -216,7 +216,7 @@ export default function SmartSuggestions() {
           .from("tasks")
           .select("id, title, estimated_duration, status, category")
           .eq("user_id", user.id)
-          .eq("archived", false),
+          .or("archived.eq.false,archived.is.null"),
         supabase
           .from("recommendation_history")
           .select("created_at")

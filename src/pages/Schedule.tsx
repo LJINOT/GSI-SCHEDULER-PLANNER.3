@@ -158,23 +158,36 @@ type ScheduleBlock = {
   end: string;
   category: string;
   kind?: "task" | "break";
+  priority?: "High" | "Medium" | "Low";
 };
 
 type DeferredTask = {
   task_id: string;
   title: string;
   duration?: number;
-  scheduled_minutes?: number;
-  remaining_minutes?: number;
   priority?: number | null;
   status?: string;
-  reason?: string;
+};
+
+type TaskSummary = {
+  task_id: string;
+  title: string;
+  duration: number;
+  scheduled_minutes: number;
+  remaining_minutes: number;
+  priority: number | null;
+  priority_label: "High" | "Medium" | "Low";
+  due_date?: string | null;
+  overdue: boolean;
+  status: "scheduled" | "partially_scheduled" | "deferred";
 };
 
 type Payload = {
   blocks: ScheduleBlock[];
 
   deferred?: DeferredTask[];
+  task_summary?: TaskSummary[];
+  partial_count?: number;
 
   pso?: {
     fitness: number;
@@ -251,7 +264,8 @@ function normalizeBlocks(
         }
       );
 
-  const result: ScheduleBlock[] = [];
+  const result: ScheduleBlock[] =
+    [];
 
   for (const block of sorted) {
     const start =
@@ -271,8 +285,8 @@ function normalizeBlocks(
     }
 
     /*
-     * A flexible task may appear in multiple non-overlapping
-     * segments. Do not remove repeated task IDs here.
+     * The same task may intentionally appear in multiple non-overlapping
+     * segments when its duration is longer than one available work period.
      */
     const previous =
       result.length > 0
@@ -580,9 +594,8 @@ export default function Schedule() {
             "user_id",
             user.id
           )
-          .eq(
-            "archived",
-            false
+          .or(
+            "archived.eq.false,archived.is.null"
           )
           .neq(
             "status",
@@ -1146,6 +1159,12 @@ export default function Schedule() {
                                   block.title
                                 }
 
+                                {!isBreak && block.segment_total && block.segment_total > 1 && (
+                                  <span className="ml-2 text-[10px] text-muted-foreground">
+                                    (Part {block.segment_index}/{block.segment_total})
+                                  </span>
+                                )}
+
                                 {isBreak && (
                                   <span className="ml-2 text-[10px] text-muted-foreground">
                                     (break)
@@ -1153,8 +1172,8 @@ export default function Schedule() {
                                 )}
                               </TableCell>
 
-                              <TableCell className="py-2 text-xs text-muted-foreground">
-                                —
+                              <TableCell className="py-2 text-xs">
+                                {isBreak ? "—" : block.priority || "—"}
                               </TableCell>
 
                               <TableCell className="py-2 text-xs text-muted-foreground">
@@ -1173,12 +1192,73 @@ export default function Schedule() {
             </div>
           </div>
         )}
+      </section>
 
-        {blocks.some((b) => b.kind === "task") && (
-          <p className="text-xs text-muted-foreground">
-            Long tasks may be split across available work periods. Fixed breaks and existing constraints are kept in place.
-          </p>
-        )}
+      {/* ===================================================
+          SCHEDULING SUMMARY — ALL INPUT TASKS
+          =================================================== */}
+
+      <section className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              Scheduling Summary
+            </h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              Every active task is shown, including tasks split across time slots or deferred.
+            </p>
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {(payload?.task_summary || unscheduled).length} tasks
+          </span>
+        </div>
+
+        <div className="rounded-lg border overflow-hidden">
+          <div className="max-h-[420px] overflow-y-auto overflow-x-auto">
+            <Table>
+              <TableHeader className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
+                <TableRow className="bg-muted/40">
+                  <TableHead className="text-xs">Task</TableHead>
+                  <TableHead className="text-xs w-24">Priority</TableHead>
+                  <TableHead className="text-xs w-32">Deadline</TableHead>
+                  <TableHead className="text-xs w-24">Duration</TableHead>
+                  <TableHead className="text-xs w-28">Scheduled</TableHead>
+                  <TableHead className="text-xs w-28">Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(payload?.task_summary || unscheduled.map((t) => ({
+                  task_id: t.id,
+                  title: t.title,
+                  duration: Number(t.estimated_duration) || 30,
+                  scheduled_minutes: t.start_time ? Number(t.estimated_duration) || 30 : 0,
+                  remaining_minutes: t.start_time ? 0 : Number(t.estimated_duration) || 30,
+                  priority: t.priority_score,
+                  priority_label: priorityFromScore(t.priority_score).replace(/^./, (c) => c.toUpperCase()) as "High" | "Medium" | "Low",
+                  due_date: t.due_date,
+                  overdue: !!t.due_date && new Date(t.due_date).getTime() < Date.now(),
+                  status: t.start_time ? "scheduled" : "deferred",
+                }))).map((item) => (
+                  <TableRow key={item.task_id} className="text-sm">
+                    <TableCell className="font-medium py-2 max-w-[240px] truncate">{item.title}</TableCell>
+                    <TableCell className="py-2">
+                      <Badge variant="outline" className="text-[10px]">{item.priority_label}</Badge>
+                      {item.overdue && <span className="ml-1 text-[10px] text-destructive">Overdue</span>}
+                    </TableCell>
+                    <TableCell className="py-2 text-xs text-muted-foreground">
+                      {item.due_date ? format(new Date(item.due_date), "MMM d, yyyy h:mm a") : "—"}
+                    </TableCell>
+                    <TableCell className="py-2 text-xs text-muted-foreground">{item.duration}m</TableCell>
+                    <TableCell className="py-2 text-xs text-muted-foreground">{item.scheduled_minutes}m</TableCell>
+                    <TableCell className="py-2 text-xs">
+                      {item.status === "scheduled" ? "Scheduled" : item.status === "partially_scheduled" ? `Partial · ${item.remaining_minutes}m left` : "Deferred"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
       </section>
 
       {/* ===================================================
@@ -1188,7 +1268,7 @@ export default function Schedule() {
       <section className="space-y-2">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Tasks Considered by Scheduler
+            Active Tasks
           </h2>
 
           {!loadingTasks &&
@@ -1215,7 +1295,7 @@ export default function Schedule() {
           0 ? (
           <Card>
             <CardContent className="py-10 text-center text-muted-foreground text-sm">
-              No unscheduled tasks available.
+              No active tasks available.
             </CardContent>
           </Card>
         ) : (
@@ -1317,65 +1397,6 @@ export default function Schedule() {
           </div>
         )}
       </section>
-
-      {payload?.deferred && payload.deferred.length > 0 && (
-        <section className="space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Not Scheduled Yet
-            </h2>
-            <span className="text-xs text-muted-foreground">
-              {payload.deferred.length} task{payload.deferred.length !== 1 ? "s" : ""}
-            </span>
-          </div>
-          <Card>
-            <CardContent className="p-0">
-              <div className="max-h-[320px] overflow-y-auto overflow-x-auto">
-                <Table>
-                  <TableHeader className="sticky top-0 z-10 bg-muted/95">
-                    <TableRow className="bg-muted/40">
-                      <TableHead className="text-xs">Task</TableHead>
-                      <TableHead className="text-xs w-24">Duration</TableHead>
-                      <TableHead className="text-xs w-28">Priority</TableHead>
-                      <TableHead className="text-xs">Schedule status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {payload.deferred.map((item) => (
-                      <TableRow key={item.task_id}>
-                        <TableCell className="font-medium text-sm">{item.title}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {item.duration ? `${item.duration}m` : "—"}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {item.priority == null ? "—" : statusLabel(item.status || "")}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          <div className="flex flex-col gap-0.5">
-                            <span className={item.status === "partially_scheduled" ? "text-warning" : "text-destructive"}>
-                              {item.status === "partially_scheduled"
-                                ? "Partially scheduled"
-                                : "No valid slot"}
-                            </span>
-                            {item.reason && (
-                              <span className="text-[10px] text-muted-foreground">
-                                {item.reason}
-                              </span>
-                            )}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-          <p className="text-xs text-muted-foreground">
-            Long tasks can now use multiple valid work periods. Only the remaining work is shown here when the available schedule time is still insufficient.
-          </p>
-        </section>
-      )}
     </motion.div>
   );
 }
@@ -1407,7 +1428,7 @@ export function ScheduleDevPanel({
       raw={payload}
     >
       <p className="text-[11px] text-muted-foreground">
-        Step 1 — active, unfinished, non-archived tasks are prepared and duplicate task IDs are removed. Step 2 — PSO searches task orderings using random-key encoding with 25 particles and 60 iterations. The fitness function penalizes tasks that cannot fit, hard tasks outside the peak window, easy tasks inside the peak window, later placement, missed deadlines, and category switching. Step 3 — CSP places the winning PSO order sequentially inside the configured work window while respecting the selected Break Style and preventing overlapping blocks.
+        Step 1 — active, unfinished, non-archived tasks are prepared and missing priority scores are calculated from the same AHP inputs used by the system. Step 2 — tasks are grouped by strict priority: HIGH current, HIGH overdue, MEDIUM current, MEDIUM overdue, LOW current, LOW overdue; PSO optimizes the order inside each group. Step 3 — CSP uses every valid work period and can split long tasks around fixed breaks while preventing overlaps and respecting deadlines. All active tasks remain visible in the scheduling summary even when today's capacity is insufficient.
       </p>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">

@@ -97,7 +97,7 @@ export default function FocusMode() {
             "id, title, description, estimated_duration, start_time, due_date, priority_score, status, project_id, projects(name, color)",
           )
           .eq("user_id", user.id)
-          .eq("archived", false)
+          .or("archived.eq.false,archived.is.null")
           .neq("status", "done")
           .order("priority_score", { ascending: false, nullsFirst: false });
 
@@ -320,25 +320,19 @@ export default function FocusMode() {
       await closeEntry(elapsed);
     }
 
-    const { data, error } = await supabase.functions.invoke("complete-task", {
-      body: { task_id: focusTask.id },
-    });
+    const { error } = await supabase
+      .from("tasks")
+      .update({
+        status: "done",
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", focusTask.id)
+      .eq("user_id", user.id);
 
     if (error) {
       toast.error(error.message);
       return;
     }
-
-    const body =
-      typeof data === "string"
-        ? JSON.parse(data)
-        : data || {};
-
-    if (body?.error) {
-      toast.error(body.error);
-      return;
-    }
-
     toast.success("Task marked complete");
     setFocusTask(null);
     setRemaining(0);

@@ -421,9 +421,8 @@ export default function Schedule() {
             "user_id",
             user.id
           )
-          .eq(
-            "archived",
-            false
+          .or(
+            "archived.eq.false,archived.is.null"
           )
           .neq(
             "status",
@@ -1335,6 +1334,50 @@ export default function Schedule() {
     </motion.div>
   );
 }
+
+/* ===================================================
+   DEFERRED / NOT PLACED TASKS
+   =================================================== */
+
+{payload?.deferred && payload.deferred.length > 0 && (
+  <section className="space-y-2">
+    <div className="flex items-center justify-between gap-2">
+      <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+        Not Scheduled Yet
+      </h2>
+      <span className="text-xs text-muted-foreground">
+        {payload.deferred.length} task{payload.deferred.length !== 1 ? "s" : ""}
+      </span>
+    </div>
+    <Card>
+      <CardContent className="p-0">
+        <div className="max-h-[320px] overflow-y-auto overflow-x-auto">
+          <Table>
+            <TableHeader className="sticky top-0 z-10 bg-muted/95">
+              <TableRow>
+                <TableHead className="text-xs">Task</TableHead>
+                <TableHead className="text-xs w-24">Duration</TableHead>
+                <TableHead className="text-xs w-40">Schedule status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {payload.deferred.map((item) => (
+                <TableRow key={item.task_id}>
+                  <TableCell className="font-medium text-sm">{item.title}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{item.duration ? `${item.duration}m` : "—"}</TableCell>
+                  <TableCell className="text-xs text-warning">Needs another valid time slot</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+    <p className="text-xs text-muted-foreground">
+      These tasks belong to the current account and were retrieved by the scheduler, but they could not fit today's configured work window.
+    </p>
+  </section>
+)}
 
 /* =========================================================
    DEVELOPER PANEL

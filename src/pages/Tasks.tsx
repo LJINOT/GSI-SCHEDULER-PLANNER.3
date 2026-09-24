@@ -161,79 +161,27 @@ export default function Tasks() {
     return () => clearInterval(interval);
   }, [checkStartTimes]);
 
-  const completeTaskWithAdaptiveReschedule = async (taskId: string) => {
-    const { data, error } = await supabase.functions.invoke("complete-task", {
-      body: { task_id: taskId },
-    });
-
-    if (error) throw error;
-
-    const body =
-      typeof data === "string"
-        ? JSON.parse(data)
-        : data || {};
-
-    if (body?.error) {
-      throw new Error(body.error);
-    }
-
-    return body;
-  };
-
-  const setStatus = async (task: Task, next: string) => {
-    if (next === task.status) return;
-
-    try {
-      if (next === "done") {
-        const result = await completeTaskWithAdaptiveReschedule(task.id);
-        const moved = Array.isArray(result?.adaptive_moves)
-          ? result.adaptive_moves.filter(
-              (m: any) => m.status === "rescheduled",
-            ).length
-          : 0;
-
-        toast.success(
-          moved > 0
-            ? `Task completed. ${moved} unfinished task${moved === 1 ? "" : "s"} rescheduled.`
-            : "Task marked complete.",
-        );
-      } else {
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-
-        if (!user) throw new Error("You are not signed in.");
-
-        const { error } = await supabase
-          .from("tasks")
-          .update({
-            status: next,
-            completed_at: null,
-          })
-          .eq("id", task.id)
-          .eq("user_id", user.id);
-
-        if (error) throw error;
-
-        toast.success("Task status updated.");
-      }
-
-      fetchAll();
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to update task status.");
-    }
-  };
-
   const toggleStatus = async (task: Task) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { toast.error("You are not signed in."); return; }
+    if (task.status === "in_progress") {
+      const { error } = await supabase.from("tasks").update({ status: "done" }).eq("id", task.id).eq("user_id", user.id);
+      if (error) toast.error(error.message); else fetchAll();
+      return;
+    }
     const next = task.status === "done" ? "todo" : "done";
-    await setStatus(task, next);
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id).eq("user_id", user.id);
+    if (error) toast.error(error.message); else fetchAll();
   };
 
   const confirmArchive = async () => {
     if (!archiveTarget) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { setArchiveTarget(null); return; }
     const { error } = await supabase.from("tasks")
       .update({ archived: true, archived_at: new Date().toISOString() })
-      .eq("id", archiveTarget.id);
+      .eq("id", archiveTarget.id)
+      .eq("user_id", user.id);
     if (error) toast.error(error.message);
     else { toast.success("Task archived — it can be restored later"); fetchAll(); }
     setArchiveTarget(null);
@@ -283,6 +231,12 @@ export default function Tasks() {
     setEditTask(null);
     setEditNote("");
     fetchAll();
+  };
+
+  const setStatus = async (task: Task, next: string) => {
+    if (next === task.status) return;
+    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id).eq("user_id", user.id);
+    if (error) toast.error(error.message); else fetchAll();
   };
 
   const q = search.trim().toLowerCase();

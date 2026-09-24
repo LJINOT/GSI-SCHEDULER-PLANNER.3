@@ -55,7 +55,7 @@ export default function Priorities() {
         .from("tasks")
         .select("id, project_id, due_date, estimated_duration, projects(name)")
         .eq("user_id", user.id)
-        .eq("archived", false)
+        .or("archived.eq.false,archived.is.null")
         .neq("status", "done");
       if (error) { console.error("Failed to load priority task metadata:", error); return; }
       const map: Record<string, TaskMeta> = {};

@@ -1373,6 +1373,7 @@ function localRescheduleUnfinished(
   movesSeed: AdaptiveMove[],
   peakStartMin: number,
   peakEndMin: number,
+  timeZone = "UTC",
 ): { blocks: Block[]; moves: AdaptiveMove[]; allPlaced: boolean } {
   const unfinishedSet = new Set(unfinishedIds);
   const occupied = buildOccupiedFromTasks(
@@ -1411,8 +1412,10 @@ function localRescheduleUnfinished(
 
   const moves: AdaptiveMove[] = movesSeed.map((m) => ({ ...m }));
   let allPlaced = true;
-  const nowMin =
-    new Date().getHours() * 60 + new Date().getMinutes();
+  const nowLocal = localHourMinute(new Date().toISOString(), timeZone);
+  const nowMin = nowLocal
+    ? nowLocal.hour * 60 + nowLocal.minute
+    : new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
 
   // Sort unfinished by priority_score desc then due date
   const unfinishedTasks = sortByPriority(
@@ -1424,9 +1427,14 @@ function localRescheduleUnfinished(
     const difficulty = String(task.difficulty || "medium").toLowerCase();
     let preferred = Math.max(startMin, nowMin);
     if (difficulty === "hard") {
+      // Difficult tasks prefer the learned/configured peak window.
       preferred = Math.max(preferred, peakStartMin);
     } else if (difficulty === "easy" && preferred < peakEndMin) {
+      // Easier tasks can be placed after the preferred peak window when possible.
       preferred = Math.max(preferred, peakEndMin);
+    } else if (preferred < peakStartMin) {
+      // Medium tasks may also use the preferred window when capacity allows.
+      preferred = peakStartMin;
     }
     // Prefer a behavior-aligned slot, then fall back to any valid slot today.
     let slot = findFreeSlot(dur, occupied, startMin, endMin, preferred);
@@ -1696,8 +1704,32 @@ serve(async (req) => {
       tasks.length + (completedTasksForBehavior || []).length,
     );
     if (behavior.evidenceLevel === "learning") {
-      peakStartMin = behavior.peakStartMin;
-      peakEndMin = behavior.peakEndMin;
+      // Learned behavior is a preferred window, not permission to work
+      // outside the user's configured working hours. Keep it inside the
+      // hard work window before using it in PSO/CSP.
+      peakStartMin = Math.max(startMin, Math.min(endMin, behavior.peakStartMin));
+      peakEndMin = Math.max(
+        peakStartMin,
+        Math.min(endMin, behavior.peakEndMin),
+      );
+
+      // If the learned window collapses, fall back to the configured
+      // preferred/peak window inside the user's working hours.
+      if (peakEndMin <= peakStartMin) {
+        peakStartMin = Math.max(startMin, Math.min(endMin, parseHHMM(peakStart)));
+        peakEndMin = Math.max(
+          peakStartMin,
+          Math.min(endMin, parseHHMM(peakEnd)),
+        );
+      }
+    } else {
+      // Configured preferred/peak hours are also advisory; working hours
+      // remain the hard boundary.
+      peakStartMin = Math.max(startMin, Math.min(endMin, peakStartMin));
+      peakEndMin = Math.max(
+        peakStartMin,
+        Math.min(endMin, peakEndMin),
+      );
     }
 
     const isAdaptive = body?.adaptive === true;
@@ -1749,6 +1781,11 @@ serve(async (req) => {
          * If an unfinished task outranks a task that currently occupies the
          * schedule, do not simply place it after that task. Rebuild the full
          * schedule so the priority rule can move the lower-priority task.
+         *
+         * Also rebuild when there are tasks with no slot on the requested day.
+         * This is important for overdue/unscheduled work: if free capacity is
+         * available, the full priority-aware pipeline gets a chance to place
+         * the task instead of leaving it outside the adaptive result.
          */
         const unfinishedTasksForPriority = tasks.filter((t) => applied.unfinishedIds.includes(t.id));
         const existingScheduled = tasks.filter(
@@ -1757,11 +1794,19 @@ serve(async (req) => {
             t.start_time &&
             String(t.start_time).slice(0, 10) === scheduleDate
         );
+        const unscheduledForDay = tasks.filter(
+          (t) =>
+            !applied.unfinishedIds.includes(t.id) &&
+            (!t.start_time || String(t.start_time).slice(0, 10) !== scheduleDate)
+        );
         const priorityConflict = unfinishedTasksForPriority.some((unfinished) =>
           existingScheduled.some((existing) => comparePriority(unfinished, existing) < 0)
         );
+        const unscheduledPriorityConflict = unscheduledForDay.some((candidate) =>
+          existingScheduled.some((existing) => comparePriority(candidate, existing) < 0)
+        );
 
-        if (!priorityConflict) {
+        if (!priorityConflict && !unscheduledPriorityConflict && unscheduledForDay.length === 0) {
           const local = localRescheduleUnfinished(
           tasks,
           applied.unfinishedIds,
@@ -1772,6 +1817,7 @@ serve(async (req) => {
           adaptiveMoves,
           peakStartMin,
           peakEndMin,
+          userTz,
         );
         adaptiveMoves = local.moves;
 

@@ -14,3 +14,6 @@ verify_jwt = false
 
 [functions.behavior-insights]
 verify_jwt = false
+
+[functions.complete-task]
+verify_jwt = false

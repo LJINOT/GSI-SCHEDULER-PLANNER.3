@@ -14,7 +14,7 @@ export default function Analytics() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       const [{ data: allTasks }, { data: entries }] = await Promise.all([
-        supabase.from("tasks").select("status, category").eq("user_id", user.id).eq("archived", false),
+        supabase.from("tasks").select("status, category").eq("user_id", user.id).or("archived.eq.false,archived.is.null"),
         supabase.from("time_entries").select("duration, start_time, end_time").eq("user_id", user.id),
       ]);
       const tasks = allTasks || [];

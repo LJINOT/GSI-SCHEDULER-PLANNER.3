@@ -150,6 +150,11 @@ export default function AddTask({
 
   const [errors, setErrors] = useState<{
     title?: string;
+    description?: string;
+    dueDate?: string;
+    dueTime?: string;
+    startDate?: string;
+    startTime?: string;
     newProject?: string;
   }>({});
 
@@ -572,55 +577,78 @@ export default function AddTask({
   ) => {
     e.preventDefault();
 
-    if (!title.trim()) {
+    // The required task details are validated here as well as in the
+    // form controls so a task cannot be created by bypassing browser
+    // validation or by submitting an incomplete form.
+    const trimmedTitle = title.trim();
+    const trimmedDescription = description.trim();
+    const validationErrors: typeof errors = {};
+
+    if (!trimmedTitle) {
+      validationErrors.title = "Task title is required.";
+    } else if (trimmedTitle.length > TITLE_MAX) {
+      validationErrors.title = `Keep the title under ${TITLE_MAX} characters.`;
+    }
+
+    if (!trimmedDescription) {
+      validationErrors.description = "Task description is required.";
+    }
+
+    if (!dueDate) {
+      validationErrors.dueDate = "Due date is required.";
+    }
+
+    if (!dueTime) {
+      validationErrors.dueTime = "Due time is required.";
+    }
+
+    // Start date/time are optional, but they must always be entered as a pair.
+    if (startDate && !startTime) {
+      validationErrors.startTime = "Start time is required when a start date is set.";
+    }
+    if (startTime && !startDate) {
+      validationErrors.startDate = "Start date is required when a start time is set.";
+    }
+
+    if (Object.keys(validationErrors).length > 0) {
+      setErrors((p) => ({ ...p, ...validationErrors }));
+      toast.error("Please complete all required task fields.");
+      setLoading(false);
+      return;
+    }
+
+    if (dueDate < todayInputDate()) {
       setErrors((p) => ({
         ...p,
-        title:
-          "Task title is required",
+        dueDate: "Due date cannot be in the past.",
       }));
+      toast.error("Due date cannot be in the past.");
       return;
     }
 
-    if (
-      title.trim().length >
-      TITLE_MAX
-    ) {
+    if (startDate && startDate < todayInputDate()) {
       setErrors((p) => ({
         ...p,
-        title: `Keep the title under ${TITLE_MAX} characters.`,
+        startDate: "Start date cannot be in the past.",
       }));
+      toast.error("Start date cannot be in the past.");
       return;
     }
 
-    if (
-      dueDate &&
-      dueDate < todayInputDate()
-    ) {
-      toast.error(
-        "Due date cannot be in the past",
-      );
+    if (!isValidYear(dueDate) || !isValidYear(startDate)) {
+      toast.error("Year cannot be greater than 9999.");
       return;
     }
 
-    if (
-      startDate &&
-      startDate < todayInputDate()
-    ) {
-      toast.error(
-        "Start date cannot be in the past",
-      );
-      return;
-    }
-
-    if (
-      !isValidYear(dueDate) ||
-      !isValidYear(startDate)
-    ) {
-      toast.error(
-        "Year cannot be greater than 9999",
-      );
-      return;
-    }
+    setErrors((p) => ({
+      ...p,
+      title: undefined,
+      description: undefined,
+      dueDate: undefined,
+      dueTime: undefined,
+      startDate: undefined,
+      startTime: undefined,
+    }));
 
     setLoading(true);
 
@@ -793,6 +821,45 @@ export default function AddTask({
     }
 
     // ------------------------------------
+    // Validate required due date/time and
+    // start date/time relationship.
+    // ------------------------------------
+
+    if (!dueDatetime) {
+      toast.error("Due date and due time are required.");
+      setLoading(false);
+      return;
+    }
+
+    const dueTimestamp = new Date(dueDatetime).getTime();
+    if (!Number.isFinite(dueTimestamp)) {
+      toast.error("Please enter a valid due date and time.");
+      setLoading(false);
+      return;
+    }
+
+    if (dueTimestamp <= Date.now()) {
+      toast.error("Due date and time must be in the future.");
+      setLoading(false);
+      return;
+    }
+
+    if (startDatetime) {
+      const startTimestamp = new Date(startDatetime).getTime();
+      if (!Number.isFinite(startTimestamp)) {
+        toast.error("Please enter a valid start date and time.");
+        setLoading(false);
+        return;
+      }
+
+      if (startTimestamp >= dueTimestamp) {
+        toast.error("Start date and time must be before the due date and time.");
+        setLoading(false);
+        return;
+      }
+    }
+
+    // ------------------------------------
     // Prevent past start time
     // ------------------------------------
 
@@ -915,9 +982,8 @@ export default function AddTask({
     } = await supabase
       .from("tasks")
       .insert({
-        title,
-        description:
-          description || null,
+        title: trimmedTitle,
+        description: trimmedDescription,
 
         due_date:
           dueDatetime,
@@ -1024,6 +1090,7 @@ export default function AddTask({
 
               <Input
                 id="title"
+                required
                 value={title}
                 onChange={(e) => {
                   setTitle(
@@ -1079,6 +1146,8 @@ export default function AddTask({
 
               <Textarea
                 id="desc"
+                required
+                aria-invalid={!!errors.description}
                 value={description}
                 onChange={(e) => {
                   setDescription(
@@ -1095,6 +1164,12 @@ export default function AddTask({
                 spellCheck
                 autoCapitalize="sentences"
               />
+
+              {errors.description && (
+                <p className="text-xs text-destructive">
+                  {errors.description}
+                </p>
+              )}
             </div>
 
             {/* PROJECT */}
@@ -1273,15 +1348,21 @@ export default function AddTask({
                 <Input
                   id="due-date"
                   type="date"
+                  required
                   min={todayInputDate()}
                   max={MAX_DATE}
                   value={dueDate}
-                  onChange={(e) =>
-                    setDueDate(
-                      e.target.value,
-                    )
-                  }
+                  onChange={(e) => {
+                    setDueDate(e.target.value);
+                    if (errors.dueDate) {
+                      setErrors((p) => ({ ...p, dueDate: undefined }));
+                    }
+                  }}
+                  aria-invalid={!!errors.dueDate}
                 />
+                {errors.dueDate && (
+                  <p className="text-xs text-destructive">{errors.dueDate}</p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -1292,13 +1373,19 @@ export default function AddTask({
                 <Input
                   id="due-time"
                   type="time"
+                  required
                   value={dueTime}
-                  onChange={(e) =>
-                    setDueTime(
-                      e.target.value,
-                    )
-                  }
+                  onChange={(e) => {
+                    setDueTime(e.target.value);
+                    if (errors.dueTime) {
+                      setErrors((p) => ({ ...p, dueTime: undefined }));
+                    }
+                  }}
+                  aria-invalid={!!errors.dueTime}
                 />
+                {errors.dueTime && (
+                  <p className="text-xs text-destructive">{errors.dueTime}</p>
+                )}
               </div>
             </div>
 
@@ -1315,12 +1402,17 @@ export default function AddTask({
                   min={todayInputDate()}
                   max={MAX_DATE}
                   value={startDate}
-                  onChange={(e) =>
-                    setStartDate(
-                      e.target.value,
-                    )
-                  }
+                  onChange={(e) => {
+                    setStartDate(e.target.value);
+                    if (errors.startDate) {
+                      setErrors((p) => ({ ...p, startDate: undefined }));
+                    }
+                  }}
+                  aria-invalid={!!errors.startDate}
                 />
+                {errors.startDate && (
+                  <p className="text-xs text-destructive">{errors.startDate}</p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -1332,12 +1424,17 @@ export default function AddTask({
                   id="start-time"
                   type="time"
                   value={startTime}
-                  onChange={(e) =>
-                    setStartTime(
-                      e.target.value,
-                    )
-                  }
+                  onChange={(e) => {
+                    setStartTime(e.target.value);
+                    if (errors.startTime) {
+                      setErrors((p) => ({ ...p, startTime: undefined }));
+                    }
+                  }}
+                  aria-invalid={!!errors.startTime}
                 />
+                {errors.startTime && (
+                  <p className="text-xs text-destructive">{errors.startTime}</p>
+                )}
               </div>
             </div>
 

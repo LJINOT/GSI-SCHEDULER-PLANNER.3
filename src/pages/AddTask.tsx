@@ -643,7 +643,7 @@ export default function AddTask({
       .from("tasks")
       .select("id, title")
       .eq("user_id", user.id)
-      .eq("archived", false);
+      .or("archived.eq.false,archived.is.null");
 
     const dup = (existingTitles || []).some(
       (row: { title?: string }) =>

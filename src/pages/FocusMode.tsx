@@ -17,6 +17,8 @@ type FocusTask = {
   start_time: string | null;
   due_date: string | null;
   priority_score: number | null;
+  difficulty: string | null;
+  category: string | null;
   status: string;
   project_id: string | null;
   projects?: { name: string; color?: string | null } | null;
@@ -35,38 +37,61 @@ function targetMinutes(task: FocusTask | null): number {
   return Math.max(5, Math.min(480, Number(task.estimated_duration) || 25));
 }
 
+const FOCUS_CATEGORY_IMPORTANCE: Record<string, number> = {
+  "Exam Review": 1, "Assignment": 0.95, "Project": 0.9, "Lab Work": 0.85,
+  "Presentation": 0.85, "Client Communication": 0.9, "Research": 0.75,
+  "Content Creation": 0.65, "Graphic Design": 0.65, "General": 0.5,
+};
+
+function focusScore(t: FocusTask): number {
+  const stored = Number(t.priority_score);
+  if (Number.isFinite(stored) && stored > 0) return stored;
+
+  const dueHours = t.due_date
+    ? (new Date(t.due_date).getTime() - Date.now()) / 3_600_000
+    : Infinity;
+  const deadline = dueHours < 0 ? 1 : dueHours < 24 ? 0.9 : dueHours < 72 ? 0.7 : dueHours < 168 ? 0.45 : dueHours < 336 ? 0.25 : 0.1;
+  const d = String(t.difficulty || "medium").toLowerCase();
+  const difficulty = d === "hard" ? 1 : d === "easy" ? 0.3 : 0.6;
+  const minutes = Number(t.estimated_duration) || 30;
+  const duration = minutes <= 15 ? 1 : minutes <= 30 ? 0.8 : minutes <= 60 ? 0.6 : minutes <= 120 ? 0.4 : 0.2;
+  const category = FOCUS_CATEGORY_IMPORTANCE[t.category || "General"] ?? 0.5;
+
+  // Same fixed AHP weights used by the system's rank-priorities function.
+  return (deadline * 0.54621903 + difficulty * 0.23230307 + duration * 0.13772461 + category * 0.08375329) * 100;
+}
+
 function pickFocusTask(rows: FocusTask[]): FocusTask | null {
   if (!rows.length) return null;
-  const now = Date.now();
-  const score = (t: FocusTask) => Number(t.priority_score) || 0;
-  const durationMs = (t: FocusTask) => targetMinutes(t) * 60_000;
 
-  const inBlock = rows.filter((t) => {
-    if (!t.start_time) return false;
-    const start = new Date(t.start_time).getTime();
-    if (!Number.isFinite(start)) return false;
-    return start <= now && now < start + durationMs(t);
-  });
-  if (inBlock.length) {
-    return [...inBlock].sort((a, b) => {
-      if (score(b) !== score(a)) return score(b) - score(a);
-      const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
-      const bd = b.due_date ? new Date(b.due_date).getTime() : Infinity;
-      return ad - bd;
-    })[0];
-  }
+  const score = (t: FocusTask) => focusScore(t);
+  const tier = (t: FocusTask) => {
+    const s = score(t);
+    return s >= 65 ? 3 : s >= 40 ? 2 : 1;
+  };
+  const overdue = (t: FocusTask) =>
+    !!t.due_date && new Date(t.due_date).getTime() < Date.now();
 
-  const upcoming = rows
-    .filter((t) => t.start_time && new Date(t.start_time).getTime() > now)
-    .sort((a, b) => {
-      const as = new Date(a.start_time!).getTime();
-      const bs = new Date(b.start_time!).getTime();
-      if (as !== bs) return as - bs;
-      return score(b) - score(a);
-    });
-  if (upcoming.length) return upcoming[0];
+  /*
+   * Focus Mode is priority-first. It no longer switches to the next task
+   * merely because that task has an earlier scheduled start time.
+   *
+   * HIGH current > HIGH overdue > MEDIUM current > MEDIUM overdue > LOW.
+   * Within the same group, the earlier deadline wins.
+   */
+  return [...rows].sort((a, b) => {
+    const tierDiff = tier(b) - tier(a);
+    if (tierDiff !== 0) return tierDiff;
 
-  return [...rows].sort((a, b) => score(b) - score(a))[0];
+    const overdueDiff = Number(overdue(a)) - Number(overdue(b));
+    if (overdueDiff !== 0) return overdueDiff;
+
+    const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
+    const bd = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+    if (ad !== bd) return ad - bd;
+
+    return score(b) - score(a);
+  })[0];
 }
 
 export default function FocusMode() {
@@ -94,12 +119,11 @@ export default function FocusMode() {
         const { data } = await supabase
           .from("tasks")
           .select(
-            "id, title, description, estimated_duration, start_time, due_date, priority_score, status, project_id, projects(name, color)",
+            "id, title, description, estimated_duration, start_time, due_date, priority_score, difficulty, category, status, project_id, projects(name, color)",
           )
           .eq("user_id", user.id)
           .or("archived.eq.false,archived.is.null")
-          .neq("status", "done")
-          .order("priority_score", { ascending: false, nullsFirst: false });
+          .neq("status", "done");
 
         const rows = (data || []) as FocusTask[];
         const chosen = pickFocusTask(rows);
@@ -141,7 +165,7 @@ export default function FocusMode() {
         const { data: t } = await supabase
           .from("tasks")
           .select(
-            "id, title, description, estimated_duration, start_time, due_date, priority_score, status, project_id, projects(name, color)",
+            "id, title, description, estimated_duration, start_time, due_date, priority_score, difficulty, category, status, project_id, projects(name, color)",
           )
           .eq("id", open.task_id)
           .eq("user_id", user.id)

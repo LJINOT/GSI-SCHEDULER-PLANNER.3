@@ -333,9 +333,61 @@ export default function Projects() {
 
   const moveTask = async (task: Task, status: string) => {
     if (task.status === status) return;
-    setTasks(prev => prev.map(t => (t.id === task.id ? { ...t, status } : t)));
-    const { error } = await supabase.from("tasks").update({ status }).eq("id", task.id);
-    if (error) { toast.error(/duplicate|unique/i.test(error.message) ? "Project name already exists. Please use a different project name." : error.message); fetchAll(); }
+
+    try {
+      if (status === "done") {
+        const { data, error } = await supabase.functions.invoke("complete-task", {
+          body: { task_id: task.id },
+        });
+
+        if (error) throw error;
+
+        const body =
+          typeof data === "string"
+            ? JSON.parse(data)
+            : data || {};
+
+        if (body?.error) throw new Error(body.error);
+
+        const moved = Array.isArray(body?.adaptive_moves)
+          ? body.adaptive_moves.filter(
+              (m: any) => m.status === "rescheduled",
+            ).length
+          : 0;
+
+        toast.success(
+          moved > 0
+            ? `Task completed. ${moved} task${moved === 1 ? "" : "s"} rescheduled.`
+            : "Task completed.",
+        );
+      } else {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) throw new Error("You are not signed in.");
+
+        const { error } = await supabase
+          .from("tasks")
+          .update({
+            status,
+            completed_at: null,
+          })
+          .eq("id", task.id)
+          .eq("user_id", user.id);
+
+        if (error) throw error;
+      }
+
+      fetchAll();
+    } catch (error: any) {
+      toast.error(
+        /duplicate|unique/i.test(error?.message || "")
+          ? "A task with this title already exists."
+          : error?.message || "Failed to update task status.",
+      );
+      fetchAll();
+    }
   };
 
   return (

@@ -18,7 +18,7 @@ import { useSearchParams, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { formatPH } from "@/lib/date-utils";
-import { STATUS_OPTIONS } from "@/lib/status";
+import { STATUS_OPTIONS, statusLabel } from "@/lib/status";
 import AddTask from "@/pages/AddTask";
 
 type Task = {
@@ -133,13 +133,39 @@ export default function Tasks() {
   const checkStartTimes = useCallback(async () => {
     const now = new Date();
     const tasksToUpdate = tasks.filter(
-      t => t.status === "todo" && t.start_time && new Date(t.start_time) <= now
+      (t) =>
+        t.status === "todo" &&
+        t.start_time &&
+        new Date(t.start_time).getTime() <= now.getTime(),
     );
+
+    if (tasksToUpdate.length === 0) return;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) return;
+
+    let changed = false;
+
     for (const task of tasksToUpdate) {
-      await supabase.from("tasks").update({ status: "in_progress" }).eq("id", task.id);
-      toast.info(`"${task.title}" is now in progress!`);
+      const { error } = await supabase
+        .from("tasks")
+        .update({ status: "in_progress" })
+        .eq("id", task.id)
+        .eq("user_id", user.id);
+
+      if (error) {
+        console.error("[Tasks] automatic status update failed", error);
+        toast.error(`Could not update "${task.title}" status.`);
+      } else {
+        changed = true;
+        toast.info(`"${task.title}" is now in progress!`);
+      }
     }
-    if (tasksToUpdate.length > 0) fetchAll();
+
+    if (changed) fetchAll();
   }, [tasks]);
 
   useEffect(() => {
@@ -235,8 +261,53 @@ export default function Tasks() {
 
   const setStatus = async (task: Task, next: string) => {
     if (next === task.status) return;
-    const { error } = await supabase.from("tasks").update({ status: next }).eq("id", task.id).eq("user_id", user.id);
-    if (error) toast.error(error.message); else fetchAll();
+
+    const allowed = STATUS_OPTIONS.some((option) => option.value === next);
+    if (!allowed) {
+      toast.error("Invalid task status.");
+      return;
+    }
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      toast.error("You are not signed in.");
+      return;
+    }
+
+    // Update the local row immediately so the dropdown always reflects the
+    // selected status, then confirm it against Supabase.
+    const previousStatus = task.status;
+    setTasks((current) =>
+      current.map((item) =>
+        item.id === task.id ? { ...item, status: next } : item,
+      ),
+    );
+
+    const { error } = await supabase
+      .from("tasks")
+      .update({ status: next })
+      .eq("id", task.id)
+      .eq("user_id", user.id);
+
+    if (error) {
+      setTasks((current) =>
+        current.map((item) =>
+          item.id === task.id
+            ? { ...item, status: previousStatus }
+            : item,
+        ),
+      );
+      console.error("[Tasks] status update failed", error);
+      toast.error(`Could not change task status: ${error.message}`);
+      return;
+    }
+
+    toast.success(`"${task.title}" changed to ${statusLabel(next)}.`);
+    await fetchAll();
   };
 
   const q = search.trim().toLowerCase();

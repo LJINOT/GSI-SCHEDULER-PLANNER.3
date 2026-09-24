@@ -357,6 +357,80 @@ export default function AdaptiveScheduling() {
         )}
       </section>
 
+      <section className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">All Active Tasks</h2>
+          <span className="text-xs text-muted-foreground">{tasks.filter((t) => t.status !== "done").length} active</span>
+        </div>
+        {loadingTasks ? (
+          <div className="flex justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
+        ) : (
+          <div className="rounded-lg border overflow-hidden">
+            <div className="max-h-[420px] overflow-y-auto overflow-x-auto">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-muted/95">
+                  <TableRow className="bg-muted/40">
+                    <TableHead className="text-xs">Task</TableHead>
+                    <TableHead className="text-xs w-24">Priority</TableHead>
+                    <TableHead className="text-xs w-28">Status</TableHead>
+                    <TableHead className="text-xs w-40">Schedule status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tasks.filter((t) => t.status !== "done").map((t) => {
+                    const scheduled = blocks.some((b) => b.kind !== "break" && b.task_id === t.id);
+                    const deferred = payload?.deferred?.some((d) => d.task_id === t.id) ?? false;
+                    const pr = priorityFromScore(t.priority_score);
+                    const style = PRIORITY_STYLES[pr];
+                    return (
+                      <TableRow key={t.id} className="text-sm">
+                        <TableCell className="font-medium max-w-[260px] truncate">{t.title}</TableCell>
+                        <TableCell><Badge variant="outline" className={`text-[10px] ${style.className}`}>{style.label}</Badge></TableCell>
+                        <TableCell className="text-xs capitalize">{statusLabel(t.status)}</TableCell>
+                        <TableCell className={`text-xs ${deferred ? "text-warning" : scheduled ? "text-success" : "text-muted-foreground"}`}>
+                          {scheduled ? "Scheduled" : deferred ? "Needs another time slot" : "Not scheduled yet"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground">This list always shows every active task for the current authenticated account, even when a task cannot fit today's schedule.</p>
+      </section>
+
+      {payload?.deferred && payload.deferred.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Needs Another Time Slot</h2>
+          <Card>
+            <CardContent className="p-0">
+              <div className="max-h-[320px] overflow-y-auto overflow-x-auto">
+                <Table>
+                  <TableHeader className="sticky top-0 z-10 bg-muted/95">
+                    <TableRow className="bg-muted/40">
+                      <TableHead className="text-xs">Task</TableHead>
+                      <TableHead className="text-xs w-24">Duration</TableHead>
+                      <TableHead className="text-xs">Reason</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {payload.deferred.map((d) => (
+                      <TableRow key={d.task_id}>
+                        <TableCell className="font-medium text-sm">{d.title}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{(d as any).duration ? `${(d as any).duration}m` : "—"}</TableCell>
+                        <TableCell className="text-xs text-warning">Not enough valid space in today's work window</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+      )}
+
       {hasChanges ? (
         <section className="space-y-2">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">

@@ -162,7 +162,7 @@ serve(async (req) => {
     }
 
     const [{ data: tasks }, { data: profile }, { data: behaviorLogs }] = await Promise.all([
-      supabase.from("tasks").select("*").neq("status", "done").eq("user_id", user.id).eq("archived", false),
+      supabase.from("tasks").select("*").neq("status", "done").eq("user_id", user.id).or("archived.eq.false,archived.is.null"),
       supabase.from("profiles").select("work_start, work_end, peak_start, peak_end, break_style, timezone").eq("id", user.id).single(),
       supabase.from("behavior_logs").select("*").eq("user_id", user.id).eq("metric_type", "peak_hour").order("recorded_at", { ascending: false }).limit(1),
     ]);

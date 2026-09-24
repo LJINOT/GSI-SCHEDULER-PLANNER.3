@@ -62,7 +62,7 @@ serve(async (req) => {
     const sinceISO = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000).toISOString();
 
     const [{ data: allTasks }, { data: timeEntries }, { data: profile }] = await Promise.all([
-      supabase.from("tasks").select("*").eq("user_id", user.id).eq("archived", false).gte("created_at", sinceISO),
+      supabase.from("tasks").select("*").eq("user_id", user.id).or("archived.eq.false,archived.is.null").gte("created_at", sinceISO),
       supabase.from("time_entries").select("*").eq("user_id", user.id).gte("start_time", sinceISO),
       supabase.from("profiles").select("timezone").eq("id", user.id).single(),
     ]);
@@ -175,6 +175,8 @@ serve(async (req) => {
         late_completion_rate: Math.round(lateRate * 100),
         risky_tasks: riskyTasks.sort((a, b) => b.risk - a.risk).slice(0, 5),
       },
+      task_count: tasks.length,
+      task_ids: tasks.map((t: any) => t.id),
       totals: { completed: completedTasks.length, pending: pendingTasks.length, total: tasks.length },
       pso: { peak_hour: peak.hour, peak_score: peak.score, iterations: 40, swarm_size: 15 },
       algorithm: "deterministic-stats + pso-peak-hour",

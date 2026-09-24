@@ -98,7 +98,7 @@ serve(async (req) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-    const { data: tasks } = await supabase.from("tasks").select("*").neq("status", "done").eq("user_id", user.id).eq("archived", false);
+    const { data: tasks } = await supabase.from("tasks").select("*").neq("status", "done").eq("user_id", user.id).or("archived.eq.false,archived.is.null");
     if (!tasks || tasks.length === 0) {
       return new Response(JSON.stringify({ tasks: [], algorithm: "ahp-saaty", timestamp: new Date().toISOString() }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -137,6 +137,8 @@ serve(async (req) => {
 
     return new Response(JSON.stringify({
       tasks: ranked,
+      task_count: ranked.length,
+      task_ids: ranked.map((t: any) => t.id),
       ahp: {
         weights: { deadline: weights[0], difficulty: weights[1], duration: weights[2], category: weights[3] },
         lambda_max: lambdaMax,

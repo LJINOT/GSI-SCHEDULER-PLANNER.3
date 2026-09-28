@@ -50,7 +50,7 @@ const smartFeatureItems: NavItem[] = [
 ];
 
 const settingsItems: NavItem[] = [
-  { title: "Profile", url: "/settings/profile", icon: User },
+  { title: "Profile Settings", url: "/settings/profile", icon: User },
   { title: "General", url: "/settings/general", icon: Settings },
   { title: "Personalization", url: "/settings/personalization", icon: Palette },
   { title: "Algorithm Insights", url: "/settings/algorithm-insights", icon: Sparkles },
@@ -296,7 +296,7 @@ export function AppSidebar() {
       <SidebarFooter className={cn("p-3", collapsed && "p-2")}>
         <Separator className="mb-3 opacity-60" />
         <NavLink
-          to="/settings/profile"
+          to="/profile"
           className={cn(
             "flex items-center gap-2.5 rounded-lg p-1.5 hover:bg-sidebar-accent transition-colors",
             collapsed && "justify-center p-1",

@@ -25,6 +25,7 @@ import FocusMode from "./pages/FocusMode";
 import DeadlineRisk from "./pages/DeadlineRisk";
 import ProductivityInsights from "./pages/ProductivityInsights";
 import ProfilePage from "./pages/ProfilePage";
+import ProfileView from "./pages/ProfileView";
 import GeneralSettings from "./pages/GeneralSettings";
 import PersonalizationPage from "./pages/PersonalizationPage";
 import HelpAbout from "./pages/HelpAbout";
@@ -65,6 +66,7 @@ const App = () => (
             <Route path="productivity-insights" element={<ProductivityInsights />} />
             <Route path="analytics" element={<Analytics />} />
             <Route path="timesheet" element={<Timesheet />} />
+            <Route path="profile" element={<ProfileView />} />
             <Route path="settings/profile" element={<ProfilePage />} />
             <Route path="settings/general" element={<GeneralSettings />} />
             <Route path="settings/personalization" element={<PersonalizationPage />} />

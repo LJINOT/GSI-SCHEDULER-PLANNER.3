@@ -1,15 +1,8 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { motion } from "framer-motion";
 import {
   Play,
@@ -18,10 +11,10 @@ import {
   Focus,
   Loader2,
   CheckCircle2,
+  Brain,
   AlertTriangle,
-  Clock3,
-  ListTodo,
-  ArrowRight,
+  Clock,
+  Lock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatPH } from "@/lib/date-utils";
@@ -39,10 +32,11 @@ type FocusTask = {
   category: string | null;
   status: string;
   project_id: string | null;
-  projects?: { name: string; color?: string | null } | null;
+  projects?: {
+    name: string;
+    color?: string | null;
+  } | null;
 };
-
-type SelectionSource = "recommended" | "manual";
 
 function mmss(totalSeconds: number) {
   const s = Math.max(0, Math.floor(totalSeconds));
@@ -54,9 +48,7 @@ function mmss(totalSeconds: number) {
 
 /**
  * Focus block duration.
- * Uses the task's estimated duration.
- * Minimum = 5 minutes.
- * Maximum = 8 hours.
+ * Uses the task's estimated duration with a safe range.
  */
 function targetMinutes(task: FocusTask | null): number {
   if (!task) return 25;
@@ -67,6 +59,9 @@ function targetMinutes(task: FocusTask | null): number {
   );
 }
 
+/**
+ * Same category importance values used by the Focus/AHP fallback.
+ */
 const FOCUS_CATEGORY_IMPORTANCE: Record<string, number> = {
   "Client Communication": 0.95,
   "Customer Support": 0.95,
@@ -90,12 +85,16 @@ const FOCUS_CATEGORY_IMPORTANCE: Record<string, number> = {
 };
 
 /**
- * Same fixed AHP weights used by the rank-priorities function.
+ * Calculates the Focus Mode score.
  *
- * Deadline       = 54.621903%
- * Difficulty     = 23.230307%
- * Duration       = 13.772461%
- * Category       =  8.375329%
+ * If the task already has an AHP priority_score,
+ * the stored value is used.
+ *
+ * Otherwise, the same AHP fallback criteria are calculated:
+ * - Deadline
+ * - Difficulty
+ * - Duration
+ * - Category importance
  */
 function focusScore(t: FocusTask): number {
   const stored = Number(t.priority_score);
@@ -121,12 +120,14 @@ function focusScore(t: FocusTask): number {
               ? 0.25
               : 0.1;
 
-  const d = String(t.difficulty || "medium").toLowerCase();
+  const difficultyValue = String(
+    t.difficulty || "medium",
+  ).toLowerCase();
 
   const difficulty =
-    d === "hard"
+    difficultyValue === "hard"
       ? 1
-      : d === "easy"
+      : difficultyValue === "easy"
         ? 0.3
         : 0.6;
 
@@ -146,6 +147,7 @@ function focusScore(t: FocusTask): number {
   const category =
     FOCUS_CATEGORY_IMPORTANCE[t.category || "General / Other"] ?? 0.5;
 
+  // Same fixed AHP weights used by the system.
   return (
     deadline * 0.54621903 +
     difficulty * 0.23230307 +
@@ -154,138 +156,75 @@ function focusScore(t: FocusTask): number {
   ) * 100;
 }
 
-function priorityTier(score: number): number {
-  if (score >= 65) return 3;
-  if (score >= 40) return 2;
-  return 1;
-}
+function priorityTier(task: FocusTask): number {
+  const score = focusScore(task);
 
-function priorityLabel(score: number): string {
-  if (score >= 65) return "High";
-  if (score >= 40) return "Medium";
-  return "Low";
+  if (score >= 65) return 3; // HIGH
+  if (score >= 40) return 2; // MEDIUM
+  return 1; // LOW
 }
 
 function isOverdue(task: FocusTask): boolean {
-  return !!task.due_date && new Date(task.due_date).getTime() < Date.now();
-}
-
-function durationMinutes(task: FocusTask): number {
-  return Math.max(5, Number(task.estimated_duration) || 25);
-}
-
-function remainingDeadlineHours(task: FocusTask): number {
-  if (!task.due_date) return Infinity;
-
   return (
-    (new Date(task.due_date).getTime() - Date.now()) /
-    3_600_000
+    !!task.due_date &&
+    new Date(task.due_date).getTime() < Date.now()
   );
 }
 
-function deadlineRisk(task: FocusTask): boolean {
-  if (!task.due_date) return false;
+function isDeadlineRisk(task: FocusTask): boolean {
+  if (!task.due_date || isOverdue(task)) return false;
 
-  const remainingHours = remainingDeadlineHours(task);
-  const requiredHours = durationMinutes(task) / 60;
+  const hours =
+    (new Date(task.due_date).getTime() - Date.now()) /
+    3_600_000;
 
-  return remainingHours >= 0 && remainingHours <= requiredHours + 2;
+  return hours <= 24;
+}
+
+function durationMinutes(task: FocusTask): number {
+  return Math.max(
+    5,
+    Number(task.estimated_duration) || 25,
+  );
 }
 
 /**
- * Returns the reason why Focus Mode selected the recommended task.
- */
-function getRecommendationReason(
-  task: FocusTask,
-  allTasks: FocusTask[],
-): string {
-  const score = focusScore(task);
-  const tier = priorityTier(score);
-
-  if (isOverdue(task) && tier === 3) {
-    if (durationMinutes(task) <= 60) {
-      return "This task is HIGH priority, overdue, and can be handled within a short focus session.";
-    }
-
-    return "This task is HIGH priority and overdue, so it requires immediate attention.";
-  }
-
-  if (deadlineRisk(task)) {
-    return "This task is close to its deadline and its estimated work time may put the deadline at risk.";
-  }
-
-  if (task.due_date) {
-    const hours = remainingDeadlineHours(task);
-
-    if (hours <= 24) {
-      return "This task has HIGH priority and its deadline is within 24 hours.";
-    }
-
-    if (hours <= 72) {
-      return "This task has a close deadline and needs attention before the deadline becomes critical.";
-    }
-  }
-
-  if (tier === 3) {
-    return "This task has the highest priority tier among the available tasks.";
-  }
-
-  if (tier === 2) {
-    return "No qualifying HIGH-priority task requires immediate focus, so this MEDIUM-priority task is the next urgent task.";
-  }
-
-  if (allTasks.length === 1) {
-    return "This is currently the only unfinished task available for Focus Mode.";
-  }
-
-  return "No higher-priority task currently requires immediate attention, so this task is selected by deadline urgency and priority.";
-}
-
-/**
- * Focus Mode decision rule.
+ * Determines which task Focus Mode recommends.
  *
- * 1. Find HIGH overdue tasks.
- * 2. Find the most urgent upcoming HIGH task.
- * 3. A short HIGH overdue task (<= 60 min) can be handled first
- *    only when the upcoming HIGH task still has enough deadline room.
- * 4. If the upcoming HIGH task is at risk, protect it first.
- * 5. If no HIGH task qualifies, use MEDIUM/LOW based on urgency,
- *    priority score, and duration.
+ * Decision hierarchy:
  *
- * Important:
- * Once a session starts, this function is NOT called again
- * to replace the active task.
+ * 1. HIGH overdue task with short/reasonable duration
+ * 2. Protect an urgent upcoming HIGH task if its deadline is close
+ * 3. HIGH overdue task if there is no immediate upcoming HIGH risk
+ * 4. Remaining HIGH tasks
+ * 5. MEDIUM tasks by urgency
+ * 6. LOW tasks by urgency
  */
 function pickFocusTask(rows: FocusTask[]): FocusTask | null {
   if (!rows.length) return null;
 
-  const tier = (t: FocusTask) => priorityTier(focusScore(t));
+  const score = (task: FocusTask) => focusScore(task);
 
-  const highTasks = rows.filter((t) => tier(t) === 3);
+  const highTasks = rows.filter(
+    (task) => priorityTier(task) === 3,
+  );
 
   const highOverdue = highTasks
     .filter(isOverdue)
     .sort((a, b) => {
-      const aRisk = deadlineRisk(a) ? 1 : 0;
-      const bRisk = deadlineRisk(b) ? 1 : 0;
+      const durationDifference =
+        durationMinutes(a) - durationMinutes(b);
 
-      if (aRisk !== bRisk) return bRisk - aRisk;
+      if (durationDifference !== 0) {
+        return durationDifference;
+      }
 
-      const scoreDiff = focusScore(b) - focusScore(a);
-
-      if (scoreDiff !== 0) return scoreDiff;
-
-      return durationMinutes(a) - durationMinutes(b);
+      return score(b) - score(a);
     });
 
-  const highCurrent = highTasks
-    .filter((t) => !isOverdue(t))
+  const highUpcoming = highTasks
+    .filter((task) => !isOverdue(task))
     .sort((a, b) => {
-      const aRisk = deadlineRisk(a) ? 1 : 0;
-      const bRisk = deadlineRisk(b) ? 1 : 0;
-
-      if (aRisk !== bRisk) return bRisk - aRisk;
-
       const ad = a.due_date
         ? new Date(a.due_date).getTime()
         : Infinity;
@@ -296,103 +235,154 @@ function pickFocusTask(rows: FocusTask[]): FocusTask | null {
 
       if (ad !== bd) return ad - bd;
 
-      return focusScore(b) - focusScore(a);
+      return score(b) - score(a);
     });
 
-  const urgentUpcomingHigh = highCurrent[0];
+  const urgentUpcomingHigh = highUpcoming[0];
+  const shortOverdueHigh = highOverdue.find(
+    (task) => durationMinutes(task) <= 60,
+  );
 
   /*
-   * HIGH overdue handling.
+   * If an overdue HIGH task is reasonably short,
+   * allow it to be completed before an upcoming HIGH task
+   * only when the upcoming HIGH task still has enough time.
    */
-  for (const overdueHigh of highOverdue) {
-    const shortEnough = durationMinutes(overdueHigh) <= 60;
+  if (shortOverdueHigh) {
+    const upcomingHasEnoughRoom =
+      !urgentUpcomingHigh ||
+      !urgentUpcomingHigh.due_date ||
+      (() => {
+        const remainingHours =
+          (new Date(
+            urgentUpcomingHigh.due_date,
+          ).getTime() - Date.now()) /
+          3_600_000;
 
-    if (!shortEnough) continue;
+        const requiredHours =
+          durationMinutes(urgentUpcomingHigh) / 60 + 24;
 
-    if (!urgentUpcomingHigh) {
-      return overdueHigh;
-    }
+        return remainingHours >= requiredHours;
+      })();
 
-    if (deadlineRisk(urgentUpcomingHigh)) {
-      return urgentUpcomingHigh;
-    }
-
-    const remainingHours =
-      remainingDeadlineHours(urgentUpcomingHigh);
-
-    const requiredHours =
-      durationMinutes(urgentUpcomingHigh) / 60 + 24;
-
-    if (
-      remainingHours === Infinity ||
-      remainingHours >= requiredHours
-    ) {
-      return overdueHigh;
+    if (upcomingHasEnoughRoom) {
+      return shortOverdueHigh;
     }
   }
 
   /*
-   * If an upcoming HIGH task is at deadline risk,
-   * protect it before lower-risk overdue work.
+   * If an upcoming HIGH task is near its deadline,
+   * protect it first.
    */
-  if (urgentUpcomingHigh) {
+  if (
+    urgentUpcomingHigh &&
+    isDeadlineRisk(urgentUpcomingHigh)
+  ) {
     return urgentUpcomingHigh;
   }
 
   /*
-   * General fallback.
+   * If there are no immediate HIGH deadline risks,
+   * handle remaining HIGH overdue work.
+   */
+  if (highOverdue.length) {
+    return highOverdue[0];
+  }
+
+  /*
+   * Normal fallback.
    *
-   * Priority tier first.
-   * Then deadline urgency.
-   * Then overdue status.
-   * Then shorter task.
-   * Then higher score.
+   * Priority tier first,
+   * then overdue,
+   * then deadline,
+   * then score.
    */
   return [...rows].sort((a, b) => {
-    const tierDiff =
-      priorityTier(focusScore(b)) -
-      priorityTier(focusScore(a));
+    const tierDifference =
+      priorityTier(b) - priorityTier(a);
 
-    if (tierDiff !== 0) return tierDiff;
+    if (tierDifference !== 0) {
+      return tierDifference;
+    }
 
-    const aDeadline = a.due_date
+    const overdueDifference =
+      Number(isOverdue(b)) - Number(isOverdue(a));
+
+    if (overdueDifference !== 0) {
+      return overdueDifference;
+    }
+
+    const ad = a.due_date
       ? new Date(a.due_date).getTime()
       : Infinity;
 
-    const bDeadline = b.due_date
+    const bd = b.due_date
       ? new Date(b.due_date).getTime()
       : Infinity;
 
-    if (aDeadline !== bDeadline) {
-      return aDeadline - bDeadline;
+    if (ad !== bd) {
+      return ad - bd;
     }
 
-    const overdueDiff =
-      Number(isOverdue(b)) - Number(isOverdue(a));
-
-    if (overdueDiff !== 0) return overdueDiff;
-
-    const durationDiff =
-      durationMinutes(a) - durationMinutes(b);
-
-    if (durationDiff !== 0) return durationDiff;
-
-    return focusScore(b) - focusScore(a);
+    return score(b) - score(a);
   })[0];
 }
 
+function getFocusReason(task: FocusTask | null): string {
+  if (!task) {
+    return "No unfinished task is currently available.";
+  }
+
+  const tier = priorityTier(task);
+
+  if (isOverdue(task) && tier === 3) {
+    return "This HIGH-priority task is overdue, so Focus Mode is prioritizing it to reduce deadline risk.";
+  }
+
+  if (isDeadlineRisk(task) && tier === 3) {
+    return "This HIGH-priority task is approaching its deadline, so it is being protected from further delay.";
+  }
+
+  if (isOverdue(task)) {
+    return `This ${tier === 2 ? "MEDIUM" : "LOW"}-priority task is overdue and is the next available urgent task.`;
+  }
+
+  if (tier === 3) {
+    return "This HIGH-priority task has the strongest current deadline and priority conditions.";
+  }
+
+  if (tier === 2) {
+    return "No qualifying HIGH-priority task requires immediate focus, so this MEDIUM-priority task is the next urgent task.";
+  }
+
+  return "No higher-priority task currently requires immediate focus, so this task is the next available task based on urgency.";
+}
+
+const TASK_SELECT =
+  "id, title, description, estimated_duration, start_time, due_date, priority_score, difficulty, category, status, project_id, projects(name, color)";
+
 export default function FocusMode() {
   const [tasks, setTasks] = useState<FocusTask[]>([]);
-  const [focusTask, setFocusTask] = useState<FocusTask | null>(null);
-  const [selectionSource, setSelectionSource] =
-    useState<SelectionSource>("recommended");
+
+  const [systemRecommendation, setSystemRecommendation] =
+    useState<FocusTask | null>(null);
+
+  const [focusTask, setFocusTask] =
+    useState<FocusTask | null>(null);
+
+  const [manualSelection, setManualSelection] =
+    useState(false);
 
   const [loading, setLoading] = useState(true);
 
-  const [totalSeconds, setTotalSeconds] = useState(25 * 60);
-  const [remaining, setRemaining] = useState(25 * 60);
+  const [totalSeconds, setTotalSeconds] =
+    useState(25 * 60);
 
-  const [running, setRunning] = useState(false);
+  const [remaining, setRemaining] =
+    useState(25 * 60);
+
+  const [running, setRunning] =
+    useState(false);
 
   const [entryId, setEntryId] =
     useState<string | null>(null);
@@ -400,81 +390,90 @@ export default function FocusMode() {
   const [sessionStartIso, setSessionStartIso] =
     useState<string | null>(null);
 
-  const [manualTaskId, setManualTaskId] =
-    useState<string>("");
-
   const finishedRef = useRef(false);
 
   const tickRef =
     useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const activeSession = !!entryId || running;
+  /**
+   * Clear timer interval.
+   */
+  const clearTick = useCallback(() => {
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+  }, []);
 
-  const fetchTasks = useCallback(async () => {
+  /**
+   * Load all unfinished tasks and select recommendation.
+   */
+  const loadTasks = useCallback(async () => {
     const {
       data: { user },
     } = await supabase.auth.getUser();
 
     if (!user) {
       setLoading(false);
-      return [];
+      return;
     }
 
     const { data, error } = await supabase
       .from("tasks")
-      .select(
-        "id, title, description, estimated_duration, start_time, due_date, priority_score, difficulty, category, status, project_id, projects(name, color)",
-      )
+      .select(TASK_SELECT)
       .eq("user_id", user.id)
       .or("archived.eq.false,archived.is.null")
       .neq("status", "done");
 
     if (error) {
-      toast.error(error.message);
+      console.error(error);
+      toast.error("Could not load Focus Mode tasks.");
       setLoading(false);
-      return [];
+      return;
     }
 
     const rows = (data || []) as FocusTask[];
 
     setTasks(rows);
 
-    return rows;
-  }, []);
+    const recommendation = pickFocusTask(rows);
 
-  /*
-   * Initial task recommendation.
-   */
-  useEffect(() => {
-    const load = async () => {
-      const rows = await fetchTasks();
+    setSystemRecommendation(recommendation);
 
-      const chosen = pickFocusTask(rows);
+    /*
+     * Do not replace the current task when the user is manually
+     * selecting a task.
+     */
+    if (!manualSelection) {
+      setFocusTask(recommendation);
 
-      setFocusTask(chosen);
-      setSelectionSource("recommended");
+      if (recommendation) {
+        const seconds =
+          targetMinutes(recommendation) * 60;
 
-      if (chosen) {
-        const secs = targetMinutes(chosen) * 60;
-
-        setTotalSeconds(secs);
-        setRemaining(secs);
+        setTotalSeconds(seconds);
+        setRemaining(seconds);
       }
+    }
 
-      setLoading(false);
-    };
+    setLoading(false);
+  }, [manualSelection]);
 
-    void load();
-  }, [fetchTasks]);
-
-  /*
-   * Restore an open time entry.
-   *
-   * This is important when the user navigates away from Focus Mode
-   * while a focus session is still running.
+  /**
+   * Initial task loading.
    */
   useEffect(() => {
-    const restore = async () => {
+    void loadTasks();
+  }, [loadTasks]);
+
+  /**
+   * Restore an open time entry after navigation/reload.
+   *
+   * This prevents the timer from resetting when the user
+   * navigates away and comes back while a focus session is active.
+   */
+  useEffect(() => {
+    const restoreOpenSession = async () => {
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -488,38 +487,44 @@ export default function FocusMode() {
         )
         .eq("user_id", user.id)
         .is("end_time", null)
-        .order("start_time", { ascending: false })
+        .order("start_time", {
+          ascending: false,
+        })
         .limit(1)
         .maybeSingle();
 
-      if (!open?.start_time) return;
+      if (!open?.start_time || !open.task_id) {
+        return;
+      }
 
       let task =
-        tasks.find((t) => t.id === open.task_id) ||
-        focusTask;
+        tasks.find(
+          (item) => item.id === open.task_id,
+        ) || null;
 
-      if (!task || task.id !== open.task_id) {
-        const { data: t } = await supabase
-          .from("tasks")
-          .select(
-            "id, title, description, estimated_duration, start_time, due_date, priority_score, difficulty, category, status, project_id, projects(name, color)",
-          )
-          .eq("id", open.task_id)
-          .eq("user_id", user.id)
-          .maybeSingle();
+      if (!task) {
+        const { data: taskData } =
+          await supabase
+            .from("tasks")
+            .select(TASK_SELECT)
+            .eq("id", open.task_id)
+            .eq("user_id", user.id)
+            .maybeSingle();
 
-        if (t) {
-          task = t as FocusTask;
-          setFocusTask(task);
+        if (taskData) {
+          task = taskData as FocusTask;
         }
       }
 
       if (!task) return;
 
-      const mins = targetMinutes(task);
-      const total = mins * 60;
+      setFocusTask(task);
 
-      setTotalSeconds(total);
+      const seconds =
+        targetMinutes(task) * 60;
+
+      setTotalSeconds(seconds);
+
       setEntryId(open.id);
       setSessionStartIso(open.start_time);
 
@@ -535,7 +540,7 @@ export default function FocusMode() {
 
       const left = Math.max(
         0,
-        total - elapsed,
+        seconds - elapsed,
       );
 
       setRemaining(left);
@@ -545,19 +550,15 @@ export default function FocusMode() {
       }
     };
 
-    void restore();
+    void restoreOpenSession();
 
-    // The initial tasks are intentionally used as a snapshot.
+    // Only restore once when the page loads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const clearTick = useCallback(() => {
-    if (tickRef.current) {
-      clearInterval(tickRef.current);
-      tickRef.current = null;
-    }
-  }, []);
-
+  /**
+   * Close current time entry.
+   */
   const closeEntry = useCallback(
     async (elapsedSeconds: number) => {
       if (!entryId) return;
@@ -588,11 +589,8 @@ export default function FocusMode() {
     [entryId],
   );
 
-  /*
-   * Timer is based on the actual start timestamp.
-   *
-   * This means navigating away from the page does not reset
-   * the countdown.
+  /**
+   * Countdown.
    */
   useEffect(() => {
     clearTick();
@@ -631,9 +629,15 @@ export default function FocusMode() {
         void (async () => {
           await closeEntry(totalSeconds);
 
-          toast.message(
-            "Focus block finished. Remaining work can be rescheduled in Adaptive Scheduling.",
+          toast.success(
+            "Focus block finished.",
           );
+
+          /*
+           * Refresh recommendations after
+           * the focus block ends.
+           */
+          await loadTasks();
         })();
       }
     }, 500);
@@ -645,120 +649,132 @@ export default function FocusMode() {
     totalSeconds,
     closeEntry,
     clearTick,
+    loadTasks,
   ]);
 
-  /*
-   * Select a different task.
+  /**
+   * Change selected task manually.
    *
-   * This is intentionally blocked while running.
+   * Disabled while the session is running so the
+   * current focus task cannot silently change.
    */
-  const selectTask = (taskId: string) => {
-    if (activeSession) {
-      toast.warning(
-        "Pause or finish the current focus session before switching tasks.",
+  const handleTaskChange = (
+    taskId: string,
+  ) => {
+    if (running) {
+      toast.message(
+        "Pause the current focus session before changing tasks.",
       );
       return;
     }
 
-    const selected = tasks.find(
-      (t) => t.id === taskId,
-    );
+    const selected =
+      tasks.find(
+        (task) => task.id === taskId,
+      ) || null;
 
     if (!selected) return;
 
     setFocusTask(selected);
-    setSelectionSource("manual");
+    setManualSelection(
+      selected.id !==
+        systemRecommendation?.id,
+    );
 
-    const secs =
+    const seconds =
       targetMinutes(selected) * 60;
 
-    setTotalSeconds(secs);
-    setRemaining(secs);
-
-    setManualTaskId(taskId);
-
-    toast.message(
-      `"${selected.title}" selected for Focus Mode.`,
-    );
+    setTotalSeconds(seconds);
+    setRemaining(seconds);
+    setEntryId(null);
+    setSessionStartIso(null);
+    finishedRef.current = false;
   };
 
-  /*
-   * Return to the system recommendation.
+  /**
+   * Return to system recommendation.
    */
   const useRecommendation = () => {
-    if (activeSession) {
-      toast.warning(
-        "Pause or finish the current focus session before changing tasks.",
+    if (running) {
+      toast.message(
+        "Pause the current focus session before changing tasks.",
       );
       return;
     }
 
-    const recommended =
-      pickFocusTask(tasks);
-
-    if (!recommended) {
-      toast.info(
-        "There are no unfinished tasks available.",
+    if (!systemRecommendation) {
+      toast.message(
+        "There is no system recommendation right now.",
       );
       return;
     }
 
-    setFocusTask(recommended);
-    setSelectionSource("recommended");
+    setFocusTask(systemRecommendation);
+    setManualSelection(false);
 
-    const secs =
-      targetMinutes(recommended) * 60;
+    const seconds =
+      targetMinutes(systemRecommendation) *
+      60;
 
-    setTotalSeconds(secs);
-    setRemaining(secs);
+    setTotalSeconds(seconds);
+    setRemaining(seconds);
+    setEntryId(null);
+    setSessionStartIso(null);
+    finishedRef.current = false;
 
-    setManualTaskId(recommended.id);
-
-    toast.message(
+    toast.success(
       "System recommendation restored.",
     );
   };
 
+  /**
+   * Start or resume.
+   *
+   * If there is no open time entry, create one.
+   */
   const startOrResume = async () => {
-    if (!focusTask || remaining <= 0) return;
+    if (!focusTask || remaining <= 0) {
+      return;
+    }
 
     const {
       data: { user },
     } = await supabase.auth.getUser();
 
     if (!user) {
-      toast.error("Not logged in");
+      toast.error("Not logged in.");
       return;
     }
 
     /*
-     * Resume the same task.
+     * Resume an existing session.
      */
     if (entryId && sessionStartIso) {
       setRunning(true);
       finishedRef.current = false;
+
+      toast.message("Focus session resumed.");
       return;
     }
 
     /*
-     * Close any other open entry for this user.
-     *
-     * This prevents duplicate active timers.
+     * Close any other open time entry.
      */
-    const { data: opens } = await supabase
-      .from("time_entries")
-      .select("id")
-      .eq("user_id", user.id)
-      .is("end_time", null);
+    const { data: opens } =
+      await supabase
+        .from("time_entries")
+        .select("id")
+        .eq("user_id", user.id)
+        .is("end_time", null);
 
-    for (const o of opens || []) {
+    for (const openEntry of opens || []) {
       await supabase
         .from("time_entries")
         .update({
           end_time: new Date().toISOString(),
           duration: 0,
         })
-        .eq("id", o.id)
+        .eq("id", openEntry.id)
         .eq("user_id", user.id);
     }
 
@@ -780,7 +796,7 @@ export default function FocusMode() {
     if (error || !created) {
       toast.error(
         error?.message ||
-          "Could not start focus session",
+          "Could not start focus session.",
       );
       return;
     }
@@ -788,10 +804,17 @@ export default function FocusMode() {
     setEntryId(created.id);
     setSessionStartIso(startIso);
     setRunning(true);
-
     finishedRef.current = false;
+
+    toast.success("Focus session started.");
   };
 
+  /**
+   * PAUSE BUTTON ACTION
+   *
+   * Saves the elapsed focus time and closes
+   * the current time entry.
+   */
   const pause = async () => {
     if (!running || !sessionStartIso) {
       return;
@@ -810,31 +833,29 @@ export default function FocusMode() {
       ),
     );
 
-    setRemaining(
-      Math.max(
-        0,
-        totalSeconds - elapsed,
-      ),
+    const newRemaining = Math.max(
+      0,
+      totalSeconds - elapsed,
     );
+
+    setRemaining(newRemaining);
 
     await closeEntry(elapsed);
 
     toast.message(
-      "Focus session paused. Your recorded work time was saved.",
+      "Focus session paused. Your saved work time was kept.",
     );
   };
 
+  /**
+   * Reset the countdown.
+   *
+   * Previously saved time entries are NOT deleted.
+   */
   const reset = async () => {
     setRunning(false);
     clearTick();
-
     finishedRef.current = false;
-
-    const secs =
-      targetMinutes(focusTask) * 60;
-
-    setTotalSeconds(secs);
-    setRemaining(secs);
 
     if (entryId && sessionStartIso) {
       const started =
@@ -850,11 +871,23 @@ export default function FocusMode() {
       await closeEntry(elapsed);
     }
 
+    const seconds =
+      targetMinutes(focusTask) * 60;
+
+    setTotalSeconds(seconds);
+    setRemaining(seconds);
+
     toast.message(
-      "Timer reset. Previously recorded focus time was kept.",
+      "Timer reset. Previously saved focus time was kept.",
     );
   };
 
+  /**
+   * Mark the current task complete.
+   *
+   * After completion, Focus Mode automatically
+   * finds the next recommended task.
+   */
   const markTaskDone = async () => {
     if (!focusTask) return;
 
@@ -862,7 +895,10 @@ export default function FocusMode() {
       data: { user },
     } = await supabase.auth.getUser();
 
-    if (!user) return;
+    if (!user) {
+      toast.error("Not logged in.");
+      return;
+    }
 
     if (running && sessionStartIso) {
       const started =
@@ -876,19 +912,21 @@ export default function FocusMode() {
       );
 
       setRunning(false);
+      clearTick();
 
       await closeEntry(elapsed);
     }
 
-    const { error } = await supabase
-      .from("tasks")
-      .update({
-        status: "done",
-        completed_at:
-          new Date().toISOString(),
-      })
-      .eq("id", focusTask.id)
-      .eq("user_id", user.id);
+    const { error } =
+      await supabase
+        .from("tasks")
+        .update({
+          status: "done",
+          completed_at:
+            new Date().toISOString(),
+        })
+        .eq("id", focusTask.id)
+        .eq("user_id", user.id);
 
     if (error) {
       toast.error(error.message);
@@ -896,75 +934,74 @@ export default function FocusMode() {
     }
 
     toast.success(
-      "Task marked complete.",
+      `"${focusTask.title}" marked complete.`,
     );
 
-    const completedId =
-      focusTask.id;
-
+    /*
+     * Remove completed task from local list.
+     */
     const remainingTasks =
       tasks.filter(
         (task) =>
-          task.id !== completedId,
+          task.id !== focusTask.id,
       );
 
     setTasks(remainingTasks);
 
     /*
-     * Automatically recommend the next task
-     * after completion.
+     * Automatically recommend the next task.
      */
-    const next =
+    const nextTask =
       pickFocusTask(remainingTasks);
 
-    setFocusTask(next);
-    setSelectionSource("recommended");
+    setSystemRecommendation(nextTask);
+    setFocusTask(nextTask);
+    setManualSelection(false);
+    setEntryId(null);
+    setSessionStartIso(null);
+    finishedRef.current = false;
 
-    if (next) {
-      const secs =
-        targetMinutes(next) * 60;
+    if (nextTask) {
+      const seconds =
+        targetMinutes(nextTask) * 60;
 
-      setTotalSeconds(secs);
-      setRemaining(secs);
-      setManualTaskId(next.id);
+      setTotalSeconds(seconds);
+      setRemaining(seconds);
+
+      toast.message(
+        `Next Focus recommendation: ${nextTask.title}`,
+      );
     } else {
       setTotalSeconds(0);
       setRemaining(0);
-      setManualTaskId("");
     }
   };
 
-  const recommendationReason = useMemo(() => {
-    if (!focusTask) return "";
+  const currentScore =
+    focusTask ? focusScore(focusTask) : 0;
 
-    return getRecommendationReason(
-      focusTask,
-      tasks,
-    );
-  }, [focusTask, tasks]);
-
-  const score = focusTask
-    ? focusScore(focusTask)
-    : 0;
-
-  const pr =
+  const currentPriority =
     focusTask
-      ? priorityLabel(score)
+      ? priorityFromScore(currentScore)
       : null;
 
-  const prStyle =
-    focusTask
-      ? PRIORITY_STYLES[
-          priorityFromScore(score)
-        ]
+  const priorityStyle =
+    currentPriority
+      ? PRIORITY_STYLES[currentPriority]
       : null;
 
   const projectName =
-    focusTask?.projects?.name ||
-    null;
+    focusTask?.projects?.name || null;
 
-  const blockMin =
-    Math.round(totalSeconds / 60);
+  const overdue =
+    focusTask
+      ? isOverdue(focusTask)
+      : false;
+
+  const deadlineRisk =
+    focusTask
+      ? isDeadlineRisk(focusTask)
+      : false;
 
   const pct =
     totalSeconds > 0
@@ -973,15 +1010,10 @@ export default function FocusMode() {
         100
       : 0;
 
-  const overdue =
+  const blockMin =
     focusTask
-      ? isOverdue(focusTask)
-      : false;
-
-  const risk =
-    focusTask
-      ? deadlineRisk(focusTask)
-      : false;
+      ? targetMinutes(focusTask)
+      : 0;
 
   if (loading) {
     return (
@@ -1003,6 +1035,7 @@ export default function FocusMode() {
       }}
       className="mx-auto max-w-2xl space-y-4"
     >
+      {/* HEADER */}
       <div className="text-center space-y-1">
         <h1 className="font-display text-3xl font-bold">
           Focus Mode
@@ -1013,139 +1046,193 @@ export default function FocusMode() {
         </p>
       </div>
 
-      {focusTask && (
-        <Card className="border-border/80 shadow-sm">
-          <CardContent className="pt-6 pb-4 px-6">
-            <div className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <Focus className="h-4 w-4 text-primary" />
-
-                  <span className="text-sm font-semibold">
-                    {selectionSource ===
-                    "recommended"
-                      ? "System Recommendation"
-                      : "Your Selected Task"}
-                  </span>
-                </div>
-
-                {selectionSource ===
-                  "manual" && (
-                  <Badge
-                    variant="secondary"
-                    className="text-xs"
-                  >
-                    Manually selected
-                  </Badge>
-                )}
+      {/* SYSTEM RECOMMENDATION */}
+      {systemRecommendation && (
+        <Card className="border-primary/20 bg-primary/[0.03]">
+          <CardContent className="p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Brain className="h-5 w-5" />
               </div>
 
-              <div className="rounded-lg border bg-muted/30 p-4">
-                <div className="flex gap-3">
-                  {overdue ? (
-                    <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
-                  ) : risk ? (
-                    <Clock3 className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
-                  ) : (
-                    <Focus className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium uppercase tracking-wide text-primary">
+                  System Recommendation
+                </p>
+
+                <h2 className="mt-1 font-semibold">
+                  {systemRecommendation.title}
+                </h2>
+
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {getFocusReason(
+                    systemRecommendation,
                   )}
-
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium">
-                      Why this task?
-                    </p>
-
-                    <p className="text-sm text-muted-foreground">
-                      {recommendationReason}
-                    </p>
-                  </div>
-                </div>
+                </p>
               </div>
+            </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    Focus task
-                  </label>
-
-                  <Select
-                    value={
-                      manualTaskId ||
-                      focusTask.id
-                    }
-                    onValueChange={
-                      selectTask
-                    }
-                    disabled={activeSession}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Choose a task" />
-                    </SelectTrigger>
-
-                    <SelectContent>
-                      {tasks.map((task) => {
-                        const taskScore =
-                          focusScore(task);
-
-                        const taskPriority =
-                          priorityLabel(
-                            taskScore,
-                          );
-
-                        return (
-                          <SelectItem
-                            key={task.id}
-                            value={task.id}
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="truncate">
-                                {task.title}
-                              </span>
-
-                              <span className="text-xs text-muted-foreground">
-                                {taskPriority}
-                              </span>
-                            </div>
-                          </SelectItem>
-                        );
-                      })}
-                    </SelectContent>
-                  </Select>
-
-                  {activeSession && (
-                    <p className="text-xs text-muted-foreground">
-                      Pause or finish the session before switching tasks.
-                    </p>
-                  )}
-                </div>
-
-                {selectionSource ===
-                  "manual" && (
-                  <div className="flex items-end">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="w-full"
-                      onClick={
-                        useRecommendation
-                      }
-                      disabled={
-                        activeSession
-                      }
-                    >
-                      <ArrowRight className="mr-2 h-4 w-4" />
-                      Use Recommendation
-                    </Button>
-                  </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge
+                variant="outline"
+                className="text-xs"
+              >
+                {priorityFromScore(
+                  focusScore(
+                    systemRecommendation,
+                  ),
                 )}
-              </div>
+              </Badge>
+
+              <Badge
+                variant="outline"
+                className="text-xs"
+              >
+                {targetMinutes(
+                  systemRecommendation,
+                )}{" "}
+                min
+              </Badge>
+
+              {isOverdue(
+                systemRecommendation,
+              ) && (
+                <Badge
+                  variant="destructive"
+                  className="text-xs"
+                >
+                  Overdue
+                </Badge>
+              )}
+
+              {isDeadlineRisk(
+                systemRecommendation,
+              ) && (
+                <Badge
+                  variant="outline"
+                  className="text-xs"
+                >
+                  Deadline Risk
+                </Badge>
+              )}
             </div>
           </CardContent>
         </Card>
       )}
 
+      {/* TASK SELECTION */}
+      {focusTask && (
+        <Card>
+          <CardContent className="p-5 space-y-4">
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Your Selected Task
+                  </p>
+
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {manualSelection
+                      ? "Manually selected"
+                      : "System recommended"}
+                  </p>
+                </div>
+
+                {running && (
+                  <Badge
+                    variant="secondary"
+                    className="text-xs"
+                  >
+                    <Lock className="mr-1 h-3 w-3" />
+                    Locked
+                  </Badge>
+                )}
+              </div>
+
+              <div className="mt-3 space-y-2">
+                <label
+                  htmlFor="focus-task"
+                  className="text-sm font-medium"
+                >
+                  Focus task
+                </label>
+
+                <select
+                  id="focus-task"
+                  value={focusTask.id}
+                  onChange={(event) =>
+                    handleTaskChange(
+                      event.target.value,
+                    )
+                  }
+                  disabled={running}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {tasks.map((task) => {
+                    const score =
+                      focusScore(task);
+
+                    const priority =
+                      priorityFromScore(
+                        score,
+                      );
+
+                    return (
+                      <option
+                        key={task.id}
+                        value={task.id}
+                      >
+                        {task.title} — {priority}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+            </div>
+
+            {/* WHY THIS TASK */}
+            <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
+              <div className="flex gap-2">
+                <Brain className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+
+                <div>
+                  <p className="text-xs font-semibold">
+                    Why this task?
+                  </p>
+
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    {getFocusReason(
+                      focusTask,
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* USE RECOMMENDATION */}
+            {manualSelection &&
+              systemRecommendation && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={
+                    useRecommendation
+                  }
+                  disabled={running}
+                  className="w-full"
+                >
+                  <Brain className="mr-2 h-4 w-4" />
+                  Use Recommendation
+                </Button>
+              )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* MAIN FOCUS CARD */}
       <Card className="border-border/80 shadow-sm">
         <CardContent className="pt-10 pb-8 px-6 space-y-6">
+          {/* TASK HEADER */}
           <div className="flex flex-col items-center text-center space-y-3">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
               <Focus className="h-7 w-7" />
@@ -1169,47 +1256,33 @@ export default function FocusMode() {
             )}
           </div>
 
+          {/* ALERTS */}
           {focusTask && (
-            <div className="flex flex-wrap justify-center gap-2">
-              {projectName && (
-                <Badge
-                  variant="secondary"
-                  className="text-xs"
-                >
-                  {projectName}
-                </Badge>
-              )}
-
-              {prStyle && (
-                <Badge
-                  variant="outline"
-                  className={`text-xs capitalize ${prStyle.className}`}
-                >
-                  {prStyle.label}
-                </Badge>
-              )}
-
-              <Badge
-                variant="outline"
-                className="text-xs"
-              >
-                {targetMinutes(
-                  focusTask,
-                )}{" "}
-                min
-              </Badge>
-
+            <div className="flex justify-center flex-wrap gap-2">
               {overdue && (
                 <Badge
                   variant="destructive"
                   className="text-xs"
                 >
+                  <AlertTriangle className="mr-1 h-3 w-3" />
                   Overdue
                 </Badge>
               )}
+
+              {!overdue &&
+                deadlineRisk && (
+                  <Badge
+                    variant="outline"
+                    className="text-xs"
+                  >
+                    <Clock className="mr-1 h-3 w-3" />
+                    Deadline Risk
+                  </Badge>
+                )}
             </div>
           )}
 
+          {/* TIMER */}
           <div className="text-center space-y-3">
             <p className="font-display text-6xl sm:text-7xl font-bold tabular-nums tracking-tight text-foreground">
               {mmss(remaining)}
@@ -1239,46 +1312,44 @@ export default function FocusMode() {
             </p>
           </div>
 
-          <div className="flex justify-center gap-3">
-            <Button
-              size="lg"
-              variant={
-                running
-                  ? "secondary"
-                  : "default"
-              }
-              onClick={() =>
-                running
-                  ? pause()
-                  : startOrResume()
-              }
-              disabled={
-                remaining === 0 ||
-                !focusTask
-              }
-              className="min-w-[120px]"
-            >
-              {running ? (
-                <>
-                  <Pause className="mr-2 h-4 w-4" />
-                  Pause
-                </>
-              ) : (
-                <>
-                  <Play className="mr-2 h-4 w-4" />
-                  {entryId
-                    ? "Resume"
-                    : "Start Focus"}
-                </>
-              )}
-            </Button>
+          {/* START / PAUSE / RESUME / RESET */}
+          <div className="flex justify-center gap-3 flex-wrap">
+            {!running ? (
+              <Button
+                size="lg"
+                variant="default"
+                onClick={
+                  startOrResume
+                }
+                disabled={
+                  remaining === 0 ||
+                  !focusTask
+                }
+                className="min-w-[150px]"
+              >
+                <Play className="mr-2 h-4 w-4" />
+
+                {entryId
+                  ? "Resume"
+                  : "Start Focus"}
+              </Button>
+            ) : (
+              <Button
+                size="lg"
+                variant="secondary"
+                onClick={pause}
+                disabled={!focusTask}
+                className="min-w-[150px]"
+              >
+                <Pause className="mr-2 h-4 w-4" />
+                Pause
+              </Button>
+            )}
 
             <Button
               size="lg"
               variant="outline"
-              onClick={() =>
-                void reset()
-              }
+              onClick={reset}
               disabled={!focusTask}
               className="min-w-[120px]"
             >
@@ -1287,25 +1358,91 @@ export default function FocusMode() {
             </Button>
           </div>
 
+          {/* TASK DETAILS */}
           {focusTask && (
             <div className="space-y-3 pt-2 border-t border-border/60">
+              <div className="flex flex-wrap justify-center gap-2">
+                {/* DAILY FOCUS BLOCKS - PRESERVED */}
+                <Badge
+                  variant="secondary"
+                  className="text-xs"
+                >
+                  Daily Focus Blocks
+                </Badge>
+
+                {projectName && (
+                  <Badge
+                    variant="secondary"
+                    className="text-xs"
+                  >
+                    {projectName}
+                  </Badge>
+                )}
+
+                {focusTask.category && (
+                  <Badge
+                    variant="outline"
+                    className="text-xs"
+                  >
+                    {focusTask.category}
+                  </Badge>
+                )}
+
+                {priorityStyle && (
+                  <Badge
+                    variant="outline"
+                    className={`text-xs capitalize ${priorityStyle.className}`}
+                  >
+                    {currentPriority}
+                  </Badge>
+                )}
+
+                <Badge
+                  variant="outline"
+                  className="text-xs"
+                >
+                  {targetMinutes(
+                    focusTask,
+                  )}{" "}
+                  min
+                </Badge>
+              </div>
+
+              {/* DEADLINE */}
               {focusTask.due_date && (
-                <p className="text-center text-xs text-muted-foreground">
-                  Deadline{" "}
-                  {formatPH(
-                    focusTask.due_date,
-                    "MMM d, yyyy · h:mm a",
+                <div className="text-center space-y-1">
+                  <p className="text-center text-xs text-muted-foreground">
+                    Deadline{" "}
+                    {formatPH(
+                      focusTask.due_date,
+                      "MMM d, yyyy · h:mm a",
+                    )}
+                  </p>
+
+                  {overdue && (
+                    <p className="text-xs font-medium text-destructive">
+                      This task is overdue.
+                    </p>
                   )}
-                </p>
+
+                  {!overdue &&
+                    deadlineRisk && (
+                      <p className="text-xs font-medium text-muted-foreground">
+                        Deadline is within 24 hours.
+                      </p>
+                    )}
+                </div>
               )}
 
+              {/* COMPLETE */}
               <div className="flex justify-center pt-1">
                 <Button
                   variant="secondary"
-                  onClick={() =>
-                    void markTaskDone()
+                  onClick={
+                    markTaskDone
                   }
                   className="min-w-[180px]"
+                  disabled={!focusTask}
                 >
                   <CheckCircle2 className="mr-2 h-4 w-4" />
                   Mark Complete
@@ -1316,30 +1453,21 @@ export default function FocusMode() {
         </CardContent>
       </Card>
 
+      {/* NO TASK STATE */}
       {!focusTask && (
-        <Card className="border-dashed">
+        <Card>
           <CardContent className="py-10 text-center">
-            <ListTodo className="mx-auto h-8 w-8 text-muted-foreground mb-3" />
+            <Focus className="mx-auto h-10 w-10 text-muted-foreground/50" />
 
-            <h2 className="font-semibold">
+            <h2 className="mt-3 font-semibold">
               No unfinished tasks
             </h2>
 
-            <p className="text-sm text-muted-foreground mt-1">
-              Create a task or finish your current work before starting another focus session.
+            <p className="mt-1 text-sm text-muted-foreground">
+              Create or schedule a task to use Focus Mode.
             </p>
           </CardContent>
         </Card>
-      )}
-
-      {focusTask && (
-        <p className="text-center text-xs text-muted-foreground px-4">
-          Focus Mode recommends a task using priority,
-          deadline urgency, overdue status, remaining
-          deadline time, and estimated duration. You can
-          choose another task when the focus session is
-          not running.
-        </p>
       )}
     </motion.div>
   );

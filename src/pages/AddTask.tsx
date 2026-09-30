@@ -27,6 +27,7 @@ import {
   PlusCircle,
 } from "lucide-react";
 import { TITLE_MAX } from "@/lib/validation";
+import { VA_CATEGORY_NAMES } from "@/lib/va-categories";
 
 import {
   todayInputDate,
@@ -50,56 +51,8 @@ type AiMeta = {
 
 const MAX_DATE = "9999-12-31";
 
-const categories = [
-  // Academic
-  "Assignment",
-  "Exam Review",
-  "Project",
-  "Research",
-  "Reading",
-  "Lab Work",
-  "Presentation",
+const categories = VA_CATEGORY_NAMES;
 
-  // Personal / lifestyle
-  "Personal",
-  "Health",
-  "Errands",
-  "Chores",
-  "Social",
-  "Finance",
-  "Fitness",
-
-  // Workplace / general
-  "Office Work",
-  "Meeting",
-  "Construction",
-  "Field Work",
-
-  // Freelance / VA
-  "Freelancing",
-  "Virtual Assistant",
-  "Client Communication",
-  "Email Management",
-  "Calendar Scheduling",
-  "Project Tracking",
-  "Social Media Management",
-  "Content Creation",
-  "Graphic Design",
-  "Video Editing",
-  "Data Entry",
-  "Research Task",
-  "Bookkeeping",
-  "Invoicing",
-  "Customer Support",
-  "Lead Generation",
-  "Transcription",
-  "Translation",
-  "SEO Optimization",
-  "Website Maintenance",
-  "Proposal Writing",
-  "Meeting Notes",
-  "Other",
-];
 
 export default function AddTask({
   embedded = false,
@@ -502,6 +455,13 @@ export default function AddTask({
       };
 
       setAiMeta(result);
+
+      // Show the AI-detected category in the form when the user did not
+      // manually choose one. A manually selected category is preserved by
+      // the Edge Function and therefore remains unchanged here.
+      if (!category) {
+        setCategory(analyzedCategory);
+      }
 
       // ------------------------------------
       // Apply corrected description

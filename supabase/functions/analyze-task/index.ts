@@ -16,6 +16,50 @@ type Analysis = {
   corrected_description: string;
 };
 
+const VA_CATEGORIES = [
+  "Client Communication",
+  "Customer Support",
+  "Email Management",
+  "Calendar & Scheduling",
+  "Administrative Tasks",
+  "Data Entry",
+  "Research",
+  "Report & Documentation",
+  "File & Document Management",
+  "Project Coordination",
+  "Lead Generation",
+  "CRM Management",
+  "Social Media Management",
+  "Content Creation",
+  "E-commerce Support",
+  "Bookkeeping & Finance",
+  "Meeting & Coordination",
+  "Personal Assistance",
+  "General / Other",
+] as const;
+
+const VA_CATEGORY_SET = new Set<string>(VA_CATEGORIES);
+
+function normalizeVACategory(value?: string): string {
+  const category = String(value || "").trim();
+  const aliases: Record<string, string> = {
+    "Calendar Scheduling": "Calendar & Scheduling",
+    "Project Tracking": "Project Coordination",
+    "Research Task": "Research",
+    "Bookkeeping": "Bookkeeping & Finance",
+    "Invoicing": "Bookkeeping & Finance",
+    "Meeting Notes": "Meeting & Coordination",
+    "Finance": "Bookkeeping & Finance",
+    "Office Work": "Administrative Tasks",
+    "Virtual Assistant": "Administrative Tasks",
+    "Freelancing": "General / Other",
+    "General": "General / Other",
+    "Other": "General / Other",
+  };
+  const normalized = aliases[category] || category;
+  return VA_CATEGORY_SET.has(normalized) ? normalized : "General / Other";
+}
+
 function jsonResponse(
   data: unknown,
   status = 200,
@@ -140,18 +184,11 @@ function normalizeAnalysis(
   // Category
   // -----------------------------
 
-  let category =
-    userCategory &&
-    userCategory.trim()
-      ? userCategory.trim()
-      : String(
-          raw.category ||
-            "General",
-        ).trim();
-
-  if (!category) {
-    category = "General";
-  }
+  const requestedCategory = userCategory?.trim() || "";
+  const aiCategory = String(raw.category || "").trim();
+  let category = normalizeVACategory(
+    requestedCategory || aiCategory || "General / Other",
+  );
 
   // -----------------------------
   // Corrected description
@@ -376,9 +413,32 @@ difficulty:
 - Judge the difficulty from the actual task.
 
 category:
-- Choose the most suitable category for the task.
-- If the user already selected a category, KEEP THAT CATEGORY.
-- Do not replace a user-selected category.
+- Choose EXACTLY ONE category from this VA category list:
+  Client Communication
+  Customer Support
+  Email Management
+  Calendar & Scheduling
+  Administrative Tasks
+  Data Entry
+  Research
+  Report & Documentation
+  File & Document Management
+  Project Coordination
+  Lead Generation
+  CRM Management
+  Social Media Management
+  Content Creation
+  E-commerce Support
+  Bookkeeping & Finance
+  Meeting & Coordination
+  Personal Assistance
+  General / Other
+- If the user already selected a category, KEEP THAT CATEGORY exactly.
+- Never invent a new category.
+- Choose the category based on the PRIMARY purpose of the task.
+- If a task could match multiple categories, choose the most specific operational purpose.
+  Example: “Schedule a meeting with the client” -> Calendar & Scheduling.
+  Example: “Respond to a customer complaint” -> Customer Support.
 
 priority:
 - Must be exactly:

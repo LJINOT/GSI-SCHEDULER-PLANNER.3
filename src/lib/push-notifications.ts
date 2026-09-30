@@ -46,12 +46,30 @@ export async function enablePushNotifications() {
   await navigator.serviceWorker.ready;
 
   let subscription = await registration.pushManager.getSubscription();
+
+  // VAPID keys are tied to a push subscription. If the project rotates its
+  // VAPID key pair, an existing browser subscription may still be bound to
+  // the previous public key and push services can reject sends with HTTP 401/403.
+  // Remember which public key this browser used and recreate the subscription
+  // when the configured key changes.
+  const vapidKeyStorage = "gsi-vapid-public-key";
+  const previousVapidKey = localStorage.getItem(vapidKeyStorage);
+  if (subscription && previousVapidKey && previousVapidKey !== VAPID_PUBLIC_KEY) {
+    try {
+      await subscription.unsubscribe();
+    } finally {
+      subscription = null;
+    }
+  }
+
   if (!subscription) {
     subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
     });
   }
+
+  localStorage.setItem(vapidKeyStorage, VAPID_PUBLIC_KEY);
 
   const json = subscription.toJSON();
   const endpoint = json.endpoint;

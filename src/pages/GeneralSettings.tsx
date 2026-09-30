@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { TIMEZONES, getTimezone, setTimezone, syncTimezoneFromProfile } from "@/lib/date-utils";
 import { exportTasksCSV, exportProjectsCSV } from "@/lib/export-data";
 import { WorldClock } from "@/components/WorldClock";
+import { enablePushNotifications, disablePushNotifications, isPushEnabled, pushSupported } from "@/lib/push-notifications";
 
 export default function GeneralSettings() {
   const [workStart, setWorkStart] = useState("09:00");
@@ -50,8 +51,8 @@ export default function GeneralSettings() {
           }
         }
       }
-      // Check notification permission
-      if ("Notification" in window && Notification.permission === "granted") {
+      // Check real Web Push subscription, not only browser permission.
+      if (await isPushEnabled()) {
         setNotifications(true);
       }
     };
@@ -65,15 +66,45 @@ export default function GeneralSettings() {
   };
 
   const toggleNotifications = async (next: boolean) => {
-    if (next && "Notification" in window) {
-      const permission = await Notification.requestPermission();
-      setNotifications(permission === "granted");
-      if (permission !== "granted") {
-        toast.error("Notification permission denied");
+    if (!pushSupported()) {
+      toast.error("This browser does not support desktop push notifications.");
+      setNotifications(false);
+      return;
+    }
+
+    try {
+      if (next) {
+        await enablePushNotifications();
+        setNotifications(true);
+        toast.success("Desktop push notifications enabled");
+      } else {
+        await disablePushNotifications();
+        setNotifications(false);
+        toast.success("Desktop push notifications disabled");
+      }
+    } catch (error: any) {
+      setNotifications(false);
+      toast.error(error?.message || "Could not update notification settings");
+    }
+  };
+
+  const sendTestNotification = async () => {
+    try {
+      if (!(await isPushEnabled())) {
+        toast.error("Enable desktop notifications first.");
         return;
       }
+      const registration = await navigator.serviceWorker.ready;
+      await registration.showNotification("GSI Schedule Planner", {
+        body: "Desktop notifications are working. You can switch to another app or website and still receive reminders.",
+        icon: "/favicon.ico",
+        badge: "/favicon.ico",
+        tag: "gsi-test-notification",
+        data: { url: "/settings/general" },
+      });
+    } catch (error: any) {
+      toast.error(error?.message || "Test notification failed");
     }
-    setNotifications(next);
   };
 
   const saveSettings = async () => {
@@ -154,12 +185,26 @@ export default function GeneralSettings() {
       </Card>
 
       <Card>
-        <CardContent className="flex items-center justify-between py-4">
-          <div>
-            <p className="font-medium">Notifications</p>
-            <p className="text-sm text-muted-foreground">Enable task reminders</p>
+        <CardContent className="space-y-4 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="font-medium">Desktop Notifications</p>
+              <p className="text-sm text-muted-foreground">Receive task reminders even while using another app or website.</p>
+            </div>
+            <Switch checked={notifications} onCheckedChange={toggleNotifications} />
           </div>
-          <Switch checked={notifications} onCheckedChange={toggleNotifications} />
+          <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+            <p className="font-medium text-foreground">What you will receive</p>
+            <ul className="mt-1 list-disc pl-5 space-y-1">
+              <li>Task starting in 15 minutes</li>
+              <li>Deadline in 24 hours</li>
+              <li>Deadline in 1 hour</li>
+              <li>Task becomes overdue</li>
+            </ul>
+          </div>
+          <Button type="button" variant="outline" onClick={sendTestNotification} disabled={!notifications}>
+            Send Test Notification
+          </Button>
         </CardContent>
       </Card>
 

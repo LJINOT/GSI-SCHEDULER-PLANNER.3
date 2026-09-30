@@ -38,9 +38,25 @@ function targetMinutes(task: FocusTask | null): number {
 }
 
 const FOCUS_CATEGORY_IMPORTANCE: Record<string, number> = {
-  "Exam Review": 1, "Assignment": 0.95, "Project": 0.9, "Lab Work": 0.85,
-  "Presentation": 0.85, "Client Communication": 0.9, "Research": 0.75,
-  "Content Creation": 0.65, "Graphic Design": 0.65, "General": 0.5,
+  "Client Communication": 0.95,
+  "Customer Support": 0.95,
+  "Email Management": 0.80,
+  "Calendar & Scheduling": 0.85,
+  "Administrative Tasks": 0.75,
+  "Data Entry": 0.65,
+  "Research": 0.80,
+  "Report & Documentation": 0.85,
+  "File & Document Management": 0.65,
+  "Project Coordination": 0.90,
+  "Lead Generation": 0.85,
+  "CRM Management": 0.80,
+  "Social Media Management": 0.75,
+  "Content Creation": 0.75,
+  "E-commerce Support": 0.80,
+  "Bookkeeping & Finance": 0.90,
+  "Meeting & Coordination": 0.80,
+  "Personal Assistance": 0.60,
+  "General / Other": 0.50,
 };
 
 function focusScore(t: FocusTask): number {
@@ -55,7 +71,7 @@ function focusScore(t: FocusTask): number {
   const difficulty = d === "hard" ? 1 : d === "easy" ? 0.3 : 0.6;
   const minutes = Number(t.estimated_duration) || 30;
   const duration = minutes <= 15 ? 1 : minutes <= 30 ? 0.8 : minutes <= 60 ? 0.6 : minutes <= 120 ? 0.4 : 0.2;
-  const category = FOCUS_CATEGORY_IMPORTANCE[t.category || "General"] ?? 0.5;
+  const category = FOCUS_CATEGORY_IMPORTANCE[t.category || "General / Other"] ?? 0.5;
 
   // Same fixed AHP weights used by the system's rank-priorities function.
   return (deadline * 0.54621903 + difficulty * 0.23230307 + duration * 0.13772461 + category * 0.08375329) * 100;

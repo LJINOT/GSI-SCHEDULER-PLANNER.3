@@ -88,82 +88,22 @@ export default function GeneralSettings() {
     }
   };
 
-const sendTestNotification = async () => {
-  try {
-    // Make sure browser push is enabled
-    if (!(await isPushEnabled())) {
-      toast.error(
-        "Enable Desktop Notifications first.",
-      );
-      return;
+  const sendTestNotification = async () => {
+    try {
+      if (!(await isPushEnabled())) {
+        toast.error("Enable desktop notifications first.");
+        return;
+      }
+      const { error } = await supabase.functions.invoke("send-test-push", {
+        method: "POST",
+        body: {},
+      });
+      if (error) throw error;
+      toast.success("Test push sent to your registered device(s)");
+    } catch (error: any) {
+      toast.error(error?.message || "Test notification failed");
     }
-
-    toast.loading(
-      "Sending test notification...",
-      {
-        id: "test-push",
-      },
-    );
-
-    // Call the REAL Supabase Edge Function
-    const { data, error } =
-      await supabase.functions.invoke(
-        "send-test-push",
-        {
-          method: "POST",
-        },
-      );
-
-    if (error) {
-      console.error(
-        "send-test-push error:",
-        error,
-      );
-
-      toast.error(
-        error.message ||
-          "The test notification could not be sent.",
-        {
-          id: "test-push",
-        },
-      );
-
-      return;
-    }
-
-    if (!data?.ok) {
-      toast.error(
-        data?.error ||
-          "Push notification failed.",
-        {
-          id: "test-push",
-        },
-      );
-
-      return;
-    }
-
-    toast.success(
-      `Test notification sent successfully. Sent to ${data.sent} browser subscription(s).`,
-      {
-        id: "test-push",
-      },
-    );
-  } catch (error: any) {
-    console.error(
-      "Test notification error:",
-      error,
-    );
-
-    toast.error(
-      error?.message ||
-        "Test notification failed.",
-      {
-        id: "test-push",
-      },
-    );
-  }
-};
+  };
 
   const saveSettings = async () => {
     setSaving(true);

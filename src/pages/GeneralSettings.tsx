@@ -88,24 +88,82 @@ export default function GeneralSettings() {
     }
   };
 
-  const sendTestNotification = async () => {
-    try {
-      if (!(await isPushEnabled())) {
-        toast.error("Enable desktop notifications first.");
-        return;
-      }
-      const registration = await navigator.serviceWorker.ready;
-      await registration.showNotification("GSI Schedule Planner", {
-        body: "Desktop notifications are working. You can switch to another app or website and still receive reminders.",
-        icon: "/favicon.ico",
-        badge: "/favicon.ico",
-        tag: "gsi-test-notification",
-        data: { url: "/settings/general" },
-      });
-    } catch (error: any) {
-      toast.error(error?.message || "Test notification failed");
+const sendTestNotification = async () => {
+  try {
+    // Make sure browser push is enabled
+    if (!(await isPushEnabled())) {
+      toast.error(
+        "Enable Desktop Notifications first.",
+      );
+      return;
     }
-  };
+
+    toast.loading(
+      "Sending test notification...",
+      {
+        id: "test-push",
+      },
+    );
+
+    // Call the REAL Supabase Edge Function
+    const { data, error } =
+      await supabase.functions.invoke(
+        "send-test-push",
+        {
+          method: "POST",
+        },
+      );
+
+    if (error) {
+      console.error(
+        "send-test-push error:",
+        error,
+      );
+
+      toast.error(
+        error.message ||
+          "The test notification could not be sent.",
+        {
+          id: "test-push",
+        },
+      );
+
+      return;
+    }
+
+    if (!data?.ok) {
+      toast.error(
+        data?.error ||
+          "Push notification failed.",
+        {
+          id: "test-push",
+        },
+      );
+
+      return;
+    }
+
+    toast.success(
+      `Test notification sent successfully. Sent to ${data.sent} browser subscription(s).`,
+      {
+        id: "test-push",
+      },
+    );
+  } catch (error: any) {
+    console.error(
+      "Test notification error:",
+      error,
+    );
+
+    toast.error(
+      error?.message ||
+        "Test notification failed.",
+      {
+        id: "test-push",
+      },
+    );
+  }
+};
 
   const saveSettings = async () => {
     setSaving(true);

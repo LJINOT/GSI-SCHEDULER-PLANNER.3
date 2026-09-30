@@ -4,87 +4,28 @@ self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim(
 
 self.addEventListener("push", (event) => {
   let data = {};
-
   try {
     data = event.data ? event.data.json() : {};
-  } catch (error) {
-    console.error("Failed to parse push payload:", error);
+  } catch {
+    data = { title: "GSI Schedule Planner", body: event.data?.text() || "You have a new reminder." };
   }
 
-  const title =
-    data.title || "GSI Schedule Planner";
-
+  const title = data.title || "GSI Schedule Planner";
   const options = {
-    body:
-      data.body ||
-      "You have a new GSI notification.",
-
-    icon:
-      data.icon ||
-      "/favicon.ico",
-
-    badge:
-      data.badge ||
-      "/favicon.ico",
-
-    tag:
-      data.tag ||
-      "gsi-notification",
-
-    requireInteraction:
-      Boolean(data.requireInteraction),
-
+    body: data.body || "You have a task reminder.",
+    icon: data.icon || "/favicon.ico",
+    badge: data.badge || "/favicon.ico",
+    tag: data.tag || "gsi-task-reminder",
+    renotify: Boolean(data.renotify),
+    requireInteraction: Boolean(data.requireInteraction),
     data: {
-      url:
-        data.url ||
-        "/",
-      taskId:
-        data.taskId || null,
+      url: data.url || "/",
+      taskId: data.taskId || null,
     },
   };
 
-  event.waitUntil(
-    self.registration.showNotification(
-      title,
-      options,
-    ),
-  );
+  event.waitUntil(self.registration.showNotification(title, options));
 });
-
-
-self.addEventListener(
-  "notificationclick",
-  (event) => {
-    event.notification.close();
-
-    const url =
-      event.notification?.data?.url ||
-      "/";
-
-    event.waitUntil(
-      clients.matchAll({
-        type: "window",
-        includeUncontrolled: true,
-      }).then((clientList) => {
-        for (const client of clientList) {
-          if ("focus" in client) {
-            client.focus();
-
-            if ("navigate" in client) {
-              client.navigate(url);
-            }
-
-            return;
-          }
-        }
-
-        if (clients.openWindow) {
-          return clients.openWindow(url);
-        }
-      }),
-    );
-  },
-);
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();

@@ -42,19 +42,26 @@ function powerIterationEigenvector(matrix: number[][], iterations = 100): { weig
   return { weights: v, lambdaMax };
 }
 
-const categoryImportance: Record<string, number> = {
-  "Exam Review": 1.0, "Assignment": 0.95, "Project": 0.9, "Lab Work": 0.85, "Presentation": 0.85,
-  "Client Communication": 0.9, "Invoicing": 0.85, "Proposal Writing": 0.85, "Customer Support": 0.8,
-  "Research": 0.75, "Research Task": 0.75, "Reading": 0.6,
-  "Finance": 0.8, "Health": 0.85,
-  "Email Management": 0.5, "Calendar Scheduling": 0.55, "Project Tracking": 0.6,
-  "Social Media Management": 0.6, "Content Creation": 0.65, "Graphic Design": 0.65,
-  "Video Editing": 0.6, "Data Entry": 0.5, "Bookkeeping": 0.65,
-  "Lead Generation": 0.65, "Transcription": 0.55, "Translation": 0.6,
-  "SEO Optimization": 0.6, "Website Maintenance": 0.6, "Meeting Notes": 0.55,
-  "Freelancing": 0.7, "Virtual Assistant": 0.6,
-  "Personal": 0.4, "Errands": 0.4, "Chores": 0.35, "Social": 0.3, "Fitness": 0.45,
-  "General": 0.5,
+const VA_CATEGORY_IMPORTANCE: Record<string, number> = {
+  "Client Communication": 0.95,
+  "Customer Support": 0.95,
+  "Email Management": 0.80,
+  "Calendar & Scheduling": 0.85,
+  "Administrative Tasks": 0.75,
+  "Data Entry": 0.65,
+  "Research": 0.80,
+  "Report & Documentation": 0.85,
+  "File & Document Management": 0.65,
+  "Project Coordination": 0.90,
+  "Lead Generation": 0.85,
+  "CRM Management": 0.80,
+  "Social Media Management": 0.75,
+  "Content Creation": 0.75,
+  "E-commerce Support": 0.80,
+  "Bookkeeping & Finance": 0.90,
+  "Meeting & Coordination": 0.80,
+  "Personal Assistance": 0.60,
+  "General / Other": 0.50,
 };
 
 function difficultyScore(d?: string): number {
@@ -113,7 +120,7 @@ serve(async (req) => {
       const c1 = deadlineScore(t.due_date);
       const c2 = difficultyScore(t.difficulty);
       const c3 = durationScore(t.estimated_duration);
-      const c4 = categoryImportance[t.category] ?? 0.5;
+      const c4 = VA_CATEGORY_IMPORTANCE[t.category] ?? VA_CATEGORY_IMPORTANCE["General / Other"];
       const score = (c1 * weights[0] + c2 * weights[1] + c3 * weights[2] + c4 * weights[3]) * 100;
       const priority = score >= 65 ? "high" : score >= 40 ? "medium" : "low";
 

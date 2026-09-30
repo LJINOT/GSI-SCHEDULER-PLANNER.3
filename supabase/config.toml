@@ -17,3 +17,6 @@ verify_jwt = false
 
 [functions.complete-task]
 verify_jwt = false
+
+[functions.send-task-reminders]
+verify_jwt = false

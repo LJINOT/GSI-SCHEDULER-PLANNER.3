@@ -6,6 +6,7 @@ const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUB
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const VAPID_PUBLIC_KEY = Deno.env.get("VAPID_PUBLIC_KEY") || "";
 const VAPID_PRIVATE_KEY = Deno.env.get("VAPID_PRIVATE_KEY") || "";
+const VAPID_SUBJECT = Deno.env.get("VAPID_SUBJECT") || "https://xwlmucvdwwwimdfnatfc.supabase.co";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -41,7 +42,7 @@ Deno.serve(async (req) => {
     }
 
     webpush.setVapidDetails(
-      "mailto:gsi-schedule-planner@localhost",
+      VAPID_SUBJECT,
       VAPID_PUBLIC_KEY,
       VAPID_PRIVATE_KEY,
     );

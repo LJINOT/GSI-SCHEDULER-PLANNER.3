@@ -97,17 +97,25 @@ const AHP_MATRIX: number[][] = [
 ];
 
 const AHP_CATEGORY_IMPORTANCE: Record<string, number> = {
-  "Exam Review": 1.0, "Assignment": 0.95, "Project": 0.9, "Lab Work": 0.85,
-  "Presentation": 0.85, "Client Communication": 0.9, "Invoicing": 0.85,
-  "Proposal Writing": 0.85, "Customer Support": 0.8, "Research": 0.75,
-  "Research Task": 0.75, "Reading": 0.6, "Finance": 0.8, "Health": 0.85,
-  "Email Management": 0.5, "Calendar Scheduling": 0.55, "Project Tracking": 0.6,
-  "Social Media Management": 0.6, "Content Creation": 0.65, "Graphic Design": 0.65,
-  "Video Editing": 0.6, "Data Entry": 0.5, "Bookkeeping": 0.65, "Lead Generation": 0.65,
-  "Transcription": 0.55, "Translation": 0.6, "SEO Optimization": 0.6,
-  "Website Maintenance": 0.6, "Meeting Notes": 0.55, "Freelancing": 0.7,
-  "Virtual Assistant": 0.6, "Personal": 0.4, "Errands": 0.4, "Chores": 0.35,
-  "Social": 0.3, "Fitness": 0.45, "General": 0.5,
+  "Client Communication": 0.95,
+  "Customer Support": 0.95,
+  "Email Management": 0.80,
+  "Calendar & Scheduling": 0.85,
+  "Administrative Tasks": 0.75,
+  "Data Entry": 0.65,
+  "Research": 0.80,
+  "Report & Documentation": 0.85,
+  "File & Document Management": 0.65,
+  "Project Coordination": 0.90,
+  "Lead Generation": 0.85,
+  "CRM Management": 0.80,
+  "Social Media Management": 0.75,
+  "Content Creation": 0.75,
+  "E-commerce Support": 0.80,
+  "Bookkeeping & Finance": 0.90,
+  "Meeting & Coordination": 0.80,
+  "Personal Assistance": 0.60,
+  "General / Other": 0.50,
 };
 
 function ahpWeights(): number[] {
@@ -150,7 +158,7 @@ function fallbackAHPScore(task: Task): number {
   const c1 = ahpDeadlineScore(task.due_date);
   const c2 = ahpDifficultyScore(task.difficulty);
   const c3 = ahpDurationScore(task.estimated_duration);
-  const c4 = AHP_CATEGORY_IMPORTANCE[task.category || "General"] ?? 0.5;
+  const c4 = AHP_CATEGORY_IMPORTANCE[task.category || "General / Other"] ?? 0.5;
   return Math.round((c1 * w[0] + c2 * w[1] + c3 * w[2] + c4 * w[3]) * 1000) / 10;
 }
 
@@ -322,7 +330,7 @@ function csp(
       title: task.title,
       start: toHHMM(start),
       end: toHHMM(end),
-      category: task.category || "General",
+      category: task.category || "General / Other",
       kind: "task",
     });
     occupied.push({ start, end, taskId: task.id });
@@ -1450,7 +1458,7 @@ function localRescheduleUnfinished(
         title: task.title,
         start: toHHMM(slot.start),
         end: toHHMM(slot.end),
-        category: task.category || "General",
+        category: task.category || "General / Other",
         kind: "task",
       });
       if (move) {

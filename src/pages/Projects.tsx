@@ -112,23 +112,22 @@ const TASK_LIST_LIMIT = 3;
 // ============================================================
 
 export default function Projects() {
-  // ----------------------------------------------------------
-  // PROJECT DATA
-  // ----------------------------------------------------------
-
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [searchParams] = useSearchParams();
-  const projectRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  const projectRefs = useRef<
+    Record<string, HTMLDivElement | null>
+  >({});
 
   const highlightId = searchParams.get("project");
 
 
-  // ----------------------------------------------------------
-  // CREATE / EDIT PROJECT
-  // ----------------------------------------------------------
+  // ==========================================================
+  // PROJECT CREATE / EDIT
+  // ==========================================================
 
   const [open, setOpen] = useState(false);
 
@@ -136,64 +135,105 @@ export default function Projects() {
     useState<Project | null>(null);
 
   const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [color, setColor] = useState(COLORS[0]);
+  const [description, setDescription] =
+    useState("");
 
-  const [nameError, setNameError] = useState("");
+  const [color, setColor] =
+    useState(COLORS[0]);
 
-
-  // ----------------------------------------------------------
-  // DELETE PROJECT
-  // ----------------------------------------------------------
-
-  const [deleteProjectTarget, setDeleteProjectTarget] =
-    useState<Project | null>(null);
+  const [nameError, setNameError] =
+    useState("");
 
 
-  // ----------------------------------------------------------
-  // TASK EDIT DIALOG
-  // ----------------------------------------------------------
+  // ==========================================================
+  // PROJECT DELETE / ARCHIVE
+  // ==========================================================
 
-  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
-
-  const [editingTask, setEditingTask] =
-    useState<Task | null>(null);
-
-  const [taskTitle, setTaskTitle] = useState("");
-  const [taskDescription, setTaskDescription] = useState("");
-  const [taskDueDate, setTaskDueDate] = useState("");
-  const [taskStartTime, setTaskStartTime] = useState("");
-  const [taskDuration, setTaskDuration] = useState("");
-  const [taskStatus, setTaskStatus] = useState("todo");
-
-  const [taskTitleError, setTaskTitleError] = useState("");
+  const [
+    deleteProjectTarget,
+    setDeleteProjectTarget,
+  ] = useState<Project | null>(null);
 
 
-  // ----------------------------------------------------------
-  // DELETE TASK
-  // ----------------------------------------------------------
+  // ==========================================================
+  // PROJECT UI
+  // ==========================================================
 
-  const [deleteTaskTarget, setDeleteTaskTarget] =
-    useState<Task | null>(null);
-
-
-  // ----------------------------------------------------------
-  // UI STATE
-  // ----------------------------------------------------------
-
-  const [expandedProjects, setExpandedProjects] =
-    useState<Record<string, boolean>>({});
+  const [
+    expandedProjects,
+    setExpandedProjects,
+  ] = useState<Record<string, boolean>>({});
 
   const [view, setView] =
     useState<"cards" | "board">("cards");
 
-  const [projectFilters, setProjectFilters] =
-    useState<
-      Record<
-        string,
-        "all" | "todo" | "in_progress" | "done"
-      >
-    >({});
+  const [
+    projectFilters,
+    setProjectFilters,
+  ] = useState<
+    Record<
+      string,
+      "all" | "todo" | "in_progress" | "done"
+    >
+  >({});
+
+
+  // ==========================================================
+  // TASK EDIT
+  // ==========================================================
+
+  const [
+    taskDialogOpen,
+    setTaskDialogOpen,
+  ] = useState(false);
+
+  const [
+    editingTask,
+    setEditingTask,
+  ] = useState<Task | null>(null);
+
+  const [taskTitle, setTaskTitle] =
+    useState("");
+
+  const [
+    taskDescription,
+    setTaskDescription,
+  ] = useState("");
+
+  const [
+    taskDueDate,
+    setTaskDueDate,
+  ] = useState("");
+
+  const [
+    taskStartTime,
+    setTaskStartTime,
+  ] = useState("");
+
+  const [
+    taskDuration,
+    setTaskDuration,
+  ] = useState("");
+
+  const [
+    taskStatus,
+    setTaskStatus,
+  ] = useState("todo");
+
+  const [
+    taskTitleError,
+    setTaskTitleError,
+  ] = useState("");
+
+
+  // ==========================================================
+  // TASK DELETE
+  // ==========================================================
+
+  const [
+    deleteTaskTarget,
+    setDeleteTaskTarget,
+  ] = useState<Task | null>(null);
 
 
   // ==========================================================
@@ -203,7 +243,9 @@ export default function Projects() {
   useEffect(() => {
     if (highlightId && !loading) {
       setTimeout(() => {
-        projectRefs.current[highlightId]?.scrollIntoView({
+        projectRefs.current[
+          highlightId
+        ]?.scrollIntoView({
           behavior: "smooth",
           block: "center",
         });
@@ -233,7 +275,9 @@ export default function Projects() {
       setLoading(false);
 
       if (!user) {
-        toast.error("Please sign in to view your projects.");
+        toast.error(
+          "Please sign in to view your projects."
+        );
       }
 
       return;
@@ -249,7 +293,9 @@ export default function Projects() {
         .from("projects")
         .select("*")
         .eq("user_id", uid)
-        .or("archived.eq.false,archived.is.null")
+        .or(
+          "archived.eq.false,archived.is.null"
+        )
         .order("created_at", {
           ascending: false,
         }),
@@ -260,16 +306,26 @@ export default function Projects() {
           "id, title, description, status, due_date, start_time, estimated_duration, project_id"
         )
         .eq("user_id", uid)
-        .or("archived.eq.false,archived.is.null"),
+        .or(
+          "archived.eq.false,archived.is.null"
+        ),
     ]);
 
     if (pErr) {
-      console.error("Failed to load projects:", pErr);
+      console.error(
+        "Failed to load projects:",
+        pErr
+      );
+
       toast.error(pErr.message);
     }
 
     if (tErr) {
-      console.error("Failed to load tasks:", tErr);
+      console.error(
+        "Failed to load tasks:",
+        tErr
+      );
+
       toast.error(tErr.message);
     }
 
@@ -288,22 +344,25 @@ export default function Projects() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event) => {
-      if (
-        event === "SIGNED_IN" ||
-        event === "TOKEN_REFRESHED" ||
-        event === "INITIAL_SESSION"
-      ) {
-        fetchAll();
-      }
+    } = supabase.auth.onAuthStateChange(
+      (event) => {
+        if (
+          event === "SIGNED_IN" ||
+          event === "TOKEN_REFRESHED" ||
+          event === "INITIAL_SESSION"
+        ) {
+          fetchAll();
+        }
 
-      if (event === "SIGNED_OUT") {
-        setProjects([]);
-        setTasks([]);
+        if (event === "SIGNED_OUT") {
+          setProjects([]);
+          setTasks([]);
+        }
       }
-    });
+    );
 
-    return () => subscription.unsubscribe();
+    return () =>
+      subscription.unsubscribe();
   }, []);
 
 
@@ -321,7 +380,7 @@ export default function Projects() {
 
 
   // ==========================================================
-  // CREATE PROJECT
+  // CREATE PROJECT DIALOG
   // ==========================================================
 
   const openCreateDialog = () => {
@@ -331,44 +390,55 @@ export default function Projects() {
 
 
   // ==========================================================
-  // EDIT PROJECT
+  // EDIT PROJECT DIALOG
   // ==========================================================
 
-  const openEditDialog = (p: Project) => {
-    setEditingProject(p);
-    setName(p.name);
-    setDescription(p.description || "");
-    setColor(p.color);
+  const openEditDialog = (
+    project: Project
+  ) => {
+    setEditingProject(project);
+
+    setName(project.name);
+
+    setDescription(
+      project.description || ""
+    );
+
+    setColor(project.color);
+
     setNameError("");
+
     setOpen(true);
   };
 
 
   // ==========================================================
   // SAVE PROJECT
-  // FIXED:
-  // - Auth user is retrieved BEFORE edit/create logic
-  // - Edit uses user_id
-  // - Create uses user_id
-  // - Duplicate checking is user-specific
+  //
+  // FIX:
+  // The authenticated user is obtained BEFORE checking
+  // editingProject.
   // ==========================================================
 
   const saveProject = async () => {
-    // ----------------------------------------------
+    // --------------------------------------------------------
     // Validate project name
-    // ----------------------------------------------
+    // --------------------------------------------------------
 
     if (!name.trim()) {
-      setNameError("Project name is required");
+      setNameError(
+        "Project name is required"
+      );
+
       return;
     }
 
     setNameError("");
 
 
-    // ----------------------------------------------
+    // --------------------------------------------------------
     // Get authenticated user FIRST
-    // ----------------------------------------------
+    // --------------------------------------------------------
 
     const {
       data: { user },
@@ -376,56 +446,65 @@ export default function Projects() {
     } = await supabase.auth.getUser();
 
     if (authErr || !user) {
-      toast.error("Please sign in to save the project.");
+      toast.error(
+        "Please sign in to save the project."
+      );
+
       return;
     }
 
 
-    // ----------------------------------------------
-    // Normalize project name
-    // ----------------------------------------------
+    // --------------------------------------------------------
+    // Normalize name
+    // --------------------------------------------------------
 
-    const norm = name.trim().toLowerCase();
+    const normalizedName =
+      name.trim().toLowerCase();
 
 
-    // ----------------------------------------------
-    // Find existing projects belonging to this user
-    // ----------------------------------------------
+    // --------------------------------------------------------
+    // Check duplicate project names
+    // --------------------------------------------------------
 
     const {
       data: existingProjects,
-      error: existingError,
+      error: duplicateCheckError,
     } = await supabase
       .from("projects")
       .select("id, name")
       .eq("user_id", user.id)
-      .or("archived.eq.false,archived.is.null");
-
-    if (existingError) {
-      console.error(
-        "Failed to check existing projects:",
-        existingError
+      .or(
+        "archived.eq.false,archived.is.null"
       );
 
-      toast.error(existingError.message);
+    if (duplicateCheckError) {
+      console.error(
+        "Project duplicate check failed:",
+        duplicateCheckError
+      );
+
+      toast.error(
+        duplicateCheckError.message
+      );
+
       return;
     }
 
 
-    // ----------------------------------------------
-    // Prevent duplicate project names
-    // ----------------------------------------------
+    const duplicate =
+      (existingProjects || []).some(
+        (project: {
+          id: string;
+          name?: string;
+        }) =>
+          project.id !==
+            editingProject?.id &&
+          String(project.name || "")
+            .trim()
+            .toLowerCase() ===
+            normalizedName
+      );
 
-    const duplicate = (existingProjects || []).some(
-      (p: {
-        id: string;
-        name?: string;
-      }) =>
-        p.id !== editingProject?.id &&
-        String(p.name || "")
-          .trim()
-          .toLowerCase() === norm
-    );
 
     if (duplicate) {
       setNameError(
@@ -436,30 +515,41 @@ export default function Projects() {
     }
 
 
-    // ==================================================
+    // ========================================================
     // EDIT EXISTING PROJECT
-    // ==================================================
+    // ========================================================
 
     if (editingProject) {
-      const { error } = await supabase
+      const {
+        error: updateError,
+      } = await supabase
         .from("projects")
         .update({
           name: name.trim(),
+
           description:
-            description.trim() || null,
+            description.trim() ||
+            null,
+
           color,
         })
-        .eq("id", editingProject.id)
-        .eq("user_id", user.id);
+        .eq(
+          "id",
+          editingProject.id
+        )
+        .eq(
+          "user_id",
+          user.id
+        );
 
-      if (error) {
+      if (updateError) {
         console.error(
           "Project update failed:",
-          error
+          updateError
         );
 
         toast.error(
-          `Failed to update project: ${error.message}`
+          `Failed to update project: ${updateError.message}`
         );
 
         return;
@@ -470,6 +560,7 @@ export default function Projects() {
       );
 
       resetProjectForm();
+
       setOpen(false);
 
       await fetchAll();
@@ -478,29 +569,36 @@ export default function Projects() {
     }
 
 
-    // ==================================================
+    // ========================================================
     // CREATE NEW PROJECT
-    // ==================================================
+    // ========================================================
 
-    const { error } = await supabase
+    const {
+      error: insertError,
+    } = await supabase
       .from("projects")
       .insert({
         user_id: user.id,
+
         name: name.trim(),
+
         description:
-          description.trim() || null,
+          description.trim() ||
+          null,
+
         color,
+
         archived: false,
       });
 
-    if (error) {
+    if (insertError) {
       console.error(
         "Project creation failed:",
-        error
+        insertError
       );
 
       toast.error(
-        `Failed to create project: ${error.message}`
+        `Failed to create project: ${insertError.message}`
       );
 
       return;
@@ -511,6 +609,7 @@ export default function Projects() {
     );
 
     resetProjectForm();
+
     setOpen(false);
 
     await fetchAll();
@@ -521,64 +620,86 @@ export default function Projects() {
   // ARCHIVE PROJECT
   // ==========================================================
 
-  const confirmDeleteProject = async () => {
-    if (!deleteProjectTarget) return;
+  const confirmDeleteProject =
+    async () => {
+      if (!deleteProjectTarget)
+        return;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
 
-    if (!user) {
-      toast.error(
-        "Please sign in to archive the project."
-      );
+      if (!user) {
+        toast.error(
+          "Please sign in to archive the project."
+        );
 
-      return;
-    }
+        return;
+      }
 
-    const { error } = await supabase
-      .from("projects")
-      .update({
-        archived: true,
-        archived_at: new Date().toISOString(),
-      })
-      .eq("id", deleteProjectTarget.id)
-      .eq("user_id", user.id);
+      const {
+        error,
+      } = await supabase
+        .from("projects")
+        .update({
+          archived: true,
+          archived_at:
+            new Date().toISOString(),
+        })
+        .eq(
+          "id",
+          deleteProjectTarget.id
+        )
+        .eq(
+          "user_id",
+          user.id
+        );
 
-    if (error) {
-      toast.error(error.message);
-    } else {
-      toast.success(
-        "Project archived — it can be restored later"
-      );
+      if (error) {
+        toast.error(error.message);
+      } else {
+        toast.success(
+          "Project archived — it can be restored later."
+        );
 
-      await fetchAll();
-    }
+        await fetchAll();
+      }
 
-    setDeleteProjectTarget(null);
-  };
+      setDeleteProjectTarget(null);
+    };
 
 
   // ==========================================================
   // PROJECT STATISTICS
   // ==========================================================
 
-  const statsFor = (projectId: string) => {
-    const t = tasks.filter(
-      (x) => x.project_id === projectId
-    );
+  const statsFor = (
+    projectId: string
+  ) => {
+    const projectTasks =
+      tasks.filter(
+        (task) =>
+          task.project_id ===
+          projectId
+      );
 
-    const done = t.filter(
-      (x) => x.status === "done"
-    ).length;
+    const done =
+      projectTasks.filter(
+        (task) =>
+          task.status === "done"
+      ).length;
 
     const pct =
-      t.length === 0
+      projectTasks.length === 0
         ? 0
-        : Math.round((done / t.length) * 100);
+        : Math.round(
+            (done /
+              projectTasks.length) *
+              100
+          );
 
     return {
-      total: t.length,
+      total: projectTasks.length,
       done,
       pct,
     };
@@ -586,17 +707,21 @@ export default function Projects() {
 
 
   // ==========================================================
-  // PROJECT TASKS
+  // GET TASKS FOR PROJECT
   // ==========================================================
 
-  const tasksFor = (projectId: string) =>
+  const tasksFor = (
+    projectId: string
+  ) =>
     tasks.filter(
-      (x) => x.project_id === projectId
+      (task) =>
+        task.project_id ===
+        projectId
     );
 
 
   // ==========================================================
-  // DATETIME FORMAT
+  // DATETIME LOCAL FORMATTER
   // ==========================================================
 
   const toDatetimeLocal = (
@@ -604,56 +729,69 @@ export default function Projects() {
   ) => {
     if (!iso) return "";
 
-    const d = new Date(iso);
+    const date = new Date(iso);
 
-    const pad = (n: number) =>
-      String(n).padStart(2, "0");
+    const pad = (value: number) =>
+      String(value).padStart(2, "0");
 
-    return `${d.getFullYear()}-${pad(
-      d.getMonth() + 1
-    )}-${pad(d.getDate())}T${pad(
-      d.getHours()
-    )}:${pad(d.getMinutes())}`;
+    return `${date.getFullYear()}-${pad(
+      date.getMonth() + 1
+    )}-${pad(
+      date.getDate()
+    )}T${pad(
+      date.getHours()
+    )}:${pad(
+      date.getMinutes()
+    )}`;
   };
 
 
   // ==========================================================
-  // OPEN TASK EDIT
+  // OPEN TASK EDIT DIALOG
   // ==========================================================
 
   const openEditTaskDialog = (
-    t: Task
+    task: Task
   ) => {
-    if (t.status === "done") {
+    if (task.status === "done") {
       toast.error(
-        "Completed tasks are read-only in Projects"
+        "Completed tasks are read-only in Projects."
       );
 
       return;
     }
 
-    setEditingTask(t);
+    setEditingTask(task);
 
-    setTaskTitle(t.title);
+    setTaskTitle(task.title);
+
     setTaskDescription(
-      t.description || ""
+      task.description || ""
     );
 
     setTaskDueDate(
-      toDatetimeLocal(t.due_date)
+      toDatetimeLocal(
+        task.due_date
+      )
     );
 
     setTaskStartTime(
-      toDatetimeLocal(t.start_time)
+      toDatetimeLocal(
+        task.start_time
+      )
     );
 
     setTaskDuration(
-      t.estimated_duration
-        ? String(t.estimated_duration)
+      task.estimated_duration
+        ? String(
+            task.estimated_duration
+          )
         : ""
     );
 
-    setTaskStatus(t.status);
+    setTaskStatus(
+      task.status
+    );
 
     setTaskTitleError("");
 
@@ -663,17 +801,9 @@ export default function Projects() {
 
   // ==========================================================
   // SAVE TASK
-  // FIXED:
-  // - Explicit user authentication
-  // - Explicit user_id filter
-  // - Better error handling
   // ==========================================================
 
   const saveTask = async () => {
-    // ----------------------------------------------
-    // Validate title
-    // ----------------------------------------------
-
     if (!taskTitle.trim()) {
       setTaskTitleError(
         "Task title is required"
@@ -687,22 +817,25 @@ export default function Projects() {
     if (!editingTask) return;
 
 
-    // ----------------------------------------------
-    // Prevent editing completed tasks
-    // ----------------------------------------------
+    // --------------------------------------------------------
+    // Completed tasks cannot be edited
+    // --------------------------------------------------------
 
-    if (editingTask.status === "done") {
+    if (
+      editingTask.status ===
+      "done"
+    ) {
       toast.error(
-        "Completed tasks cannot be edited here"
+        "Completed tasks cannot be edited here."
       );
 
       return;
     }
 
 
-    // ----------------------------------------------
-    // Validate duration
-    // ----------------------------------------------
+    // --------------------------------------------------------
+    // Duration validation
+    // --------------------------------------------------------
 
     if (
       taskDuration !== "" &&
@@ -710,16 +843,16 @@ export default function Projects() {
       !(Number(taskDuration) > 0)
     ) {
       toast.error(
-        "Duration must be greater than 0"
+        "Duration must be greater than 0."
       );
 
       return;
     }
 
 
-    // ----------------------------------------------
-    // Validate start and due date
-    // ----------------------------------------------
+    // --------------------------------------------------------
+    // Start < Due
+    // --------------------------------------------------------
 
     if (
       taskStartTime &&
@@ -728,29 +861,30 @@ export default function Projects() {
         new Date(taskDueDate)
     ) {
       toast.error(
-        "Start time must be earlier than due date/time"
+        "Start time must be earlier than due date/time."
       );
 
       return;
     }
 
 
-    // ----------------------------------------------
-    // Fixed break validation
-    // ----------------------------------------------
+    // --------------------------------------------------------
+    // Fixed breaks
+    // --------------------------------------------------------
 
     if (taskStartTime) {
-      const h = new Date(
-        taskStartTime
-      ).getHours();
+      const hour =
+        new Date(
+          taskStartTime
+        ).getHours();
 
       if (
-        h === 9 ||
-        h === 12 ||
-        h === 15
+        hour === 9 ||
+        hour === 12 ||
+        hour === 15
       ) {
         toast.error(
-          "Cannot schedule over fixed breaks (9:00 AM, 12:00 PM, 3:00 PM)"
+          "Cannot schedule over fixed breaks (9:00 AM, 12:00 PM, 3:00 PM)."
         );
 
         return;
@@ -758,54 +892,66 @@ export default function Projects() {
     }
 
 
-    // ----------------------------------------------
+    // --------------------------------------------------------
     // Overlap validation
-    // ----------------------------------------------
+    // --------------------------------------------------------
 
     if (taskStartTime) {
-      const dur = Math.max(
-        5,
-        Number(taskDuration) ||
-          editingTask.estimated_duration ||
-          30
-      );
+      const duration =
+        Math.max(
+          5,
+          Number(taskDuration) ||
+            editingTask.estimated_duration ||
+            30
+        );
 
-      const ns = new Date(
-        taskStartTime
-      ).getTime();
+      const newStart =
+        new Date(
+          taskStartTime
+        ).getTime();
 
-      const ne =
-        ns + dur * 60_000;
+      const newEnd =
+        newStart +
+        duration *
+          60_000;
 
-      const conflict = tasks.find(
-        (t) => {
-          if (
-            t.id === editingTask.id ||
-            !t.start_time ||
-            t.status === "done"
-          ) {
-            return false;
+      const conflict =
+        tasks.find(
+          (task) => {
+            if (
+              task.id ===
+                editingTask.id ||
+              !task.start_time ||
+              task.status ===
+                "done"
+            ) {
+              return false;
+            }
+
+            const start =
+              new Date(
+                task.start_time
+              ).getTime();
+
+            const end =
+              start +
+              Math.max(
+                5,
+                task.estimated_duration ||
+                  30
+              ) *
+                60_000;
+
+            return (
+              newStart < end &&
+              newEnd > start
+            );
           }
-
-          const s = new Date(
-            t.start_time
-          ).getTime();
-
-          const e =
-            s +
-            Math.max(
-              5,
-              t.estimated_duration || 30
-            ) *
-              60_000;
-
-          return ns < e && ne > s;
-        }
-      );
+        );
 
       if (conflict) {
         toast.error(
-          `Overlaps with "${conflict.title}"`
+          `Overlaps with "${conflict.title}".`
         );
 
         return;
@@ -813,14 +959,15 @@ export default function Projects() {
     }
 
 
-    // ----------------------------------------------
+    // --------------------------------------------------------
     // Get authenticated user
-    // ----------------------------------------------
+    // --------------------------------------------------------
 
     const {
       data: { user },
       error: authError,
-    } = await supabase.auth.getUser();
+    } =
+      await supabase.auth.getUser();
 
     if (authError || !user) {
       toast.error(
@@ -831,17 +978,21 @@ export default function Projects() {
     }
 
 
-    // ----------------------------------------------
+    // --------------------------------------------------------
     // Update task
-    // ----------------------------------------------
+    // --------------------------------------------------------
 
-    const { error } = await supabase
+    const {
+      error,
+    } = await supabase
       .from("tasks")
       .update({
-        title: taskTitle.trim(),
+        title:
+          taskTitle.trim(),
 
         description:
-          taskDescription.trim() || null,
+          taskDescription.trim() ||
+          null,
 
         due_date: taskDueDate
           ? new Date(
@@ -860,15 +1011,18 @@ export default function Projects() {
             ? Number(taskDuration)
             : null,
 
-        status: taskStatus,
+        status:
+          taskStatus,
       })
-      .eq("id", editingTask.id)
-      .eq("user_id", user.id);
+      .eq(
+        "id",
+        editingTask.id
+      )
+      .eq(
+        "user_id",
+        user.id
+      );
 
-
-    // ----------------------------------------------
-    // Handle update error
-    // ----------------------------------------------
 
     if (error) {
       console.error(
@@ -884,9 +1038,9 @@ export default function Projects() {
     }
 
 
-    // ----------------------------------------------
-    // Record history
-    // ----------------------------------------------
+    // --------------------------------------------------------
+    // Record task history
+    // --------------------------------------------------------
 
     const {
       error: historyError,
@@ -894,47 +1048,52 @@ export default function Projects() {
       .from("task_history")
       .insert({
         user_id: user.id,
-        task_id: editingTask.id,
-        note: "Edited from Projects",
+
+        task_id:
+          editingTask.id,
+
+        note:
+          "Edited from Projects",
+
         changes: {
-          title: taskTitle.trim(),
+          title:
+            taskTitle.trim(),
 
           description:
             taskDescription.trim() ||
             null,
 
           start_time:
-            taskStartTime || null,
+            taskStartTime ||
+            null,
 
           due_date:
-            taskDueDate || null,
+            taskDueDate ||
+            null,
 
           estimated_duration:
-            taskDuration || null,
+            taskDuration ||
+            null,
 
-          status: taskStatus,
+          status:
+            taskStatus,
         },
       });
 
-    // History failure should not make the task update
-    // look like it failed.
     if (historyError) {
       console.warn(
-        "Task updated, but history could not be recorded:",
+        "Task was updated, but history could not be recorded:",
         historyError
       );
     }
 
-
-    // ----------------------------------------------
-    // Success
-    // ----------------------------------------------
 
     toast.success(
       "Task updated successfully."
     );
 
     setTaskDialogOpen(false);
+
     setEditingTask(null);
 
     await fetchAll();
@@ -945,59 +1104,76 @@ export default function Projects() {
   // ARCHIVE TASK
   // ==========================================================
 
-  const confirmDeleteTask = async () => {
-    if (!deleteTaskTarget) return;
+  const confirmDeleteTask =
+    async () => {
+      if (!deleteTaskTarget)
+        return;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } =
+        await supabase.auth.getUser();
 
-    if (!user) {
-      toast.error(
-        "Please sign in to archive the task."
-      );
+      if (!user) {
+        toast.error(
+          "Please sign in to archive the task."
+        );
 
-      return;
-    }
+        return;
+      }
 
-    const { error } = await supabase
-      .from("tasks")
-      .update({
-        archived: true,
-        archived_at:
-          new Date().toISOString(),
-      })
-      .eq("id", deleteTaskTarget.id)
-      .eq("user_id", user.id);
+      const {
+        error,
+      } = await supabase
+        .from("tasks")
+        .update({
+          archived: true,
+          archived_at:
+            new Date().toISOString(),
+        })
+        .eq(
+          "id",
+          deleteTaskTarget.id
+        )
+        .eq(
+          "user_id",
+          user.id
+        );
 
-    if (error) {
-      toast.error(error.message);
-    } else {
-      toast.success(
-        "Task archived — it can be restored later"
-      );
+      if (error) {
+        toast.error(
+          error.message
+        );
+      } else {
+        toast.success(
+          "Task archived — it can be restored later."
+        );
 
-      await fetchAll();
-    }
+        await fetchAll();
+      }
 
-    setDeleteTaskTarget(null);
-  };
+      setDeleteTaskTarget(null);
+    };
 
 
   // ==========================================================
-  // MOVE TASK STATUS
+  // CHANGE TASK STATUS
   // ==========================================================
 
   const moveTask = async (
     task: Task,
     status: string
   ) => {
-    if (task.status === status) return;
+    if (
+      task.status === status
+    ) {
+      return;
+    }
 
     try {
-      // --------------------------------------------
-      // Complete task through Edge Function
-      // --------------------------------------------
+      // ------------------------------------------------------
+      // Complete through Edge Function
+      // ------------------------------------------------------
 
       if (status === "done") {
         const {
@@ -1018,7 +1194,8 @@ export default function Projects() {
         }
 
         const body =
-          typeof data === "string"
+          typeof data ===
+          "string"
             ? JSON.parse(data)
             : data || {};
 
@@ -1033,8 +1210,8 @@ export default function Projects() {
             body?.adaptive_moves
           )
             ? body.adaptive_moves.filter(
-                (m: any) =>
-                  m.status ===
+                (move: any) =>
+                  move.status ===
                   "rescheduled"
               ).length
             : 0;
@@ -1050,14 +1227,17 @@ export default function Projects() {
         );
       }
 
-      // --------------------------------------------
+      // ------------------------------------------------------
       // Normal status update
-      // --------------------------------------------
+      // ------------------------------------------------------
 
       else {
         const {
-          data: { user },
-        } = await supabase.auth.getUser();
+          data: {
+            user,
+          },
+        } =
+          await supabase.auth.getUser();
 
         if (!user) {
           throw new Error(
@@ -1065,15 +1245,23 @@ export default function Projects() {
           );
         }
 
-        const { error } =
-          await supabase
-            .from("tasks")
-            .update({
-              status,
-              completed_at: null,
-            })
-            .eq("id", task.id)
-            .eq("user_id", user.id);
+        const {
+          error,
+        } = await supabase
+          .from("tasks")
+          .update({
+            status,
+            completed_at:
+              null,
+          })
+          .eq(
+            "id",
+            task.id
+          )
+          .eq(
+            "user_id",
+            user.id
+          );
 
         if (error) {
           throw error;
@@ -1123,6 +1311,7 @@ export default function Projects() {
       ====================================================== */}
 
       <div className="flex items-center justify-between">
+
         <div>
           <h1 className="font-display text-3xl font-bold">
             Projects
@@ -1133,11 +1322,13 @@ export default function Projects() {
           </p>
         </div>
 
+
         <div className="flex items-center gap-2">
 
           {/* VIEW SWITCHER */}
 
           <div className="flex rounded-md border border-border overflow-hidden">
+
             {(
               [
                 {
@@ -1150,8 +1341,10 @@ export default function Projects() {
                 },
               ] as const
             ).map((v) => (
+
               <button
                 key={v.key}
+                type="button"
                 onClick={() =>
                   setView(v.key)
                 }
@@ -1163,7 +1356,9 @@ export default function Projects() {
               >
                 {v.label}
               </button>
+
             ))}
+
           </div>
 
 
@@ -1171,15 +1366,17 @@ export default function Projects() {
 
           <Dialog
             open={open}
-            onOpenChange={(o) => {
-              setOpen(o);
+            onOpenChange={(value) => {
+              setOpen(value);
 
-              if (!o) {
+              if (!value) {
                 resetProjectForm();
               }
             }}
           >
+
             <DialogTrigger asChild>
+
               <Button
                 onClick={
                   openCreateDialog
@@ -1189,37 +1386,42 @@ export default function Projects() {
 
                 New Project
               </Button>
+
             </DialogTrigger>
+
 
             <DialogContent>
 
               <DialogHeader>
+
                 <DialogTitle>
                   {editingProject
                     ? "Edit Project"
                     : "Create Project"}
                 </DialogTitle>
+
               </DialogHeader>
 
 
               <div className="space-y-4">
 
-                {/* NAME */}
+                {/* PROJECT NAME */}
 
                 <div className="space-y-2">
+
                   <Label>
                     Name
                   </Label>
 
                   <Input
                     value={name}
-                    onChange={(e) => {
+                    onChange={(event) => {
                       setName(
-                        e.target.value
+                        event.target.value
                       );
 
                       if (
-                        e.target.value.trim()
+                        event.target.value.trim()
                       ) {
                         setNameError("");
                       }
@@ -1232,12 +1434,14 @@ export default function Projects() {
                       {nameError}
                     </p>
                   )}
+
                 </div>
 
 
                 {/* DESCRIPTION */}
 
                 <div className="space-y-2">
+
                   <Label>
                     Description
                   </Label>
@@ -1246,43 +1450,57 @@ export default function Projects() {
                     value={
                       description
                     }
-                    onChange={(e) =>
+                    onChange={(event) =>
                       setDescription(
-                        e.target.value
+                        event.target.value
                       )
                     }
                     rows={2}
                   />
+
                 </div>
 
 
                 {/* COLOR */}
 
                 <div className="space-y-2">
+
                   <Label>
                     Color
                   </Label>
 
                   <div className="flex gap-2 flex-wrap">
-                    {COLORS.map((c) => (
-                      <button
-                        key={c}
-                        type="button"
-                        onClick={() =>
-                          setColor(c)
-                        }
-                        className={`h-7 w-7 rounded-full border-2 ${
-                          color === c
-                            ? "border-foreground"
-                            : "border-transparent"
-                        }`}
-                        style={{
-                          backgroundColor:
-                            c,
-                        }}
-                      />
-                    ))}
+
+                    {COLORS.map(
+                      (projectColor) => (
+
+                        <button
+                          key={
+                            projectColor
+                          }
+                          type="button"
+                          onClick={() =>
+                            setColor(
+                              projectColor
+                            )
+                          }
+                          className={`h-7 w-7 rounded-full border-2 ${
+                            color ===
+                            projectColor
+                              ? "border-foreground"
+                              : "border-transparent"
+                          }`}
+                          style={{
+                            backgroundColor:
+                              projectColor,
+                          }}
+                        />
+
+                      )
+                    )}
+
                   </div>
+
                 </div>
 
               </div>
@@ -1311,9 +1529,11 @@ export default function Projects() {
               </DialogFooter>
 
             </DialogContent>
+
           </Dialog>
 
         </div>
+
       </div>
 
 
@@ -1324,12 +1544,15 @@ export default function Projects() {
       {loading ? (
 
         <div className="flex justify-center py-12">
+
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+
         </div>
 
       ) : projects.length === 0 ? (
 
         <Card>
+
           <CardContent className="py-16 text-center text-muted-foreground">
 
             <FolderKanban className="mx-auto h-12 w-12 mb-4 opacity-30" />
@@ -1339,13 +1562,14 @@ export default function Projects() {
             </p>
 
           </CardContent>
+
         </Card>
 
       ) : view === "board" ? (
 
-        // ====================================================
-        // BOARD VIEW
-        // ====================================================
+        /* ====================================================
+           BOARD VIEW
+        ==================================================== */
 
         <div className="grid gap-4 md:grid-cols-3">
 
@@ -1364,36 +1588,44 @@ export default function Projects() {
                 label: "Done",
               },
             ] as const
-          ).map((col) => {
+          ).map((column) => {
 
-            const colTasks =
+            const columnTasks =
               tasks.filter(
-                (t) =>
-                  t.project_id &&
-                  t.status === col.key
+                (task) =>
+                  task.project_id &&
+                  task.status ===
+                    column.key
               );
 
             return (
+
               <Card
-                key={col.key}
+                key={column.key}
                 className="bg-muted/30"
               >
 
                 <CardHeader className="pb-3">
 
                   <CardTitle className="text-sm flex items-center justify-between">
-                    {col.label}
+
+                    {column.label}
 
                     <Badge variant="outline">
-                      {colTasks.length}
+                      {
+                        columnTasks.length
+                      }
                     </Badge>
+
                   </CardTitle>
 
                 </CardHeader>
 
+
                 <CardContent className="space-y-2 max-h-[65vh] overflow-y-auto">
 
-                  {colTasks.length === 0 ? (
+                  {columnTasks.length ===
+                  0 ? (
 
                     <p className="text-xs text-muted-foreground py-2">
                       Nothing here yet.
@@ -1401,94 +1633,108 @@ export default function Projects() {
 
                   ) : (
 
-                    colTasks.map((t) => {
+                    columnTasks.map(
+                      (task) => {
 
-                      const proj =
-                        projects.find(
-                          (p) =>
-                            p.id ===
-                            t.project_id
-                        );
+                        const project =
+                          projects.find(
+                            (item) =>
+                              item.id ===
+                              task.project_id
+                          );
 
-                      return (
-                        <div
-                          key={t.id}
-                          className="rounded-md border border-border bg-background p-2.5 space-y-2"
-                        >
+                        return (
 
-                          <p className="text-sm font-medium">
-                            {t.title}
-                          </p>
+                          <div
+                            key={task.id}
+                            className="rounded-md border border-border bg-background p-2.5 space-y-2"
+                          >
 
-                          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                            <p className="text-sm font-medium">
+                              {task.title}
+                            </p>
 
-                            {proj && (
-                              <span
-                                className="h-2 w-2 rounded-full"
-                                style={{
-                                  backgroundColor:
-                                    proj.color,
-                                }}
-                              />
-                            )}
 
-                            <span className="truncate">
-                              {proj?.name}
-                            </span>
+                            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
 
-                            {t.due_date && (
-                              <span className="ml-auto shrink-0">
-                                Due{" "}
-                                {formatPH(
-                                  t.due_date,
-                                  "MMM d, h:mm a"
-                                )}
+                              {project && (
+                                <span
+                                  className="h-2 w-2 rounded-full"
+                                  style={{
+                                    backgroundColor:
+                                      project.color,
+                                  }}
+                                />
+                              )}
+
+                              <span className="truncate">
+                                {
+                                  project?.name
+                                }
                               </span>
-                            )}
+
+
+                              {task.due_date && (
+                                <span className="ml-auto shrink-0">
+                                  Due{" "}
+                                  {formatPH(
+                                    task.due_date,
+                                    "MMM d, h:mm a"
+                                  )}
+                                </span>
+                              )}
+
+                            </div>
+
+
+                            <Select
+                              value={
+                                task.status
+                              }
+                              onValueChange={(
+                                value
+                              ) =>
+                                moveTask(
+                                  task,
+                                  value
+                                )
+                              }
+                            >
+
+                              <SelectTrigger className="h-7 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+
+                              <SelectContent>
+
+                                <SelectItem value="todo">
+                                  To Do
+                                </SelectItem>
+
+                                <SelectItem value="in_progress">
+                                  In Progress
+                                </SelectItem>
+
+                                <SelectItem value="done">
+                                  Done
+                                </SelectItem>
+
+                              </SelectContent>
+
+                            </Select>
 
                           </div>
 
+                        );
+                      }
+                    )
 
-                          <Select
-                            value={t.status}
-                            onValueChange={(
-                              v
-                            ) =>
-                              moveTask(
-                                t,
-                                v
-                              )
-                            }
-                          >
-                            <SelectTrigger className="h-7 text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-
-                            <SelectContent>
-
-                              <SelectItem value="todo">
-                                To Do
-                              </SelectItem>
-
-                              <SelectItem value="in_progress">
-                                In Progress
-                              </SelectItem>
-
-                              <SelectItem value="done">
-                                Done
-                              </SelectItem>
-
-                            </SelectContent>
-                          </Select>
-
-                        </div>
-                      );
-                    })
                   )}
 
                 </CardContent>
 
               </Card>
+
             );
           })}
 
@@ -1496,35 +1742,42 @@ export default function Projects() {
 
       ) : (
 
-        // ====================================================
-        // CARD VIEW
-        // ====================================================
+        /* ====================================================
+           CARD VIEW
+        ==================================================== */
 
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
 
-          {projects.map((p) => {
+          {projects.map((project) => {
 
-            const s =
-              statsFor(p.id);
+            const stats =
+              statsFor(
+                project.id
+              );
 
             const projectTasks =
-              tasksFor(p.id);
+              tasksFor(
+                project.id
+              );
 
             const filter =
-              projectFilters[p.id] ||
-              "all";
+              projectFilters[
+                project.id
+              ] || "all";
 
             const filteredTasks =
               filter === "all"
                 ? projectTasks
                 : projectTasks.filter(
-                    (t) =>
-                      t.status ===
+                    (task) =>
+                      task.status ===
                       filter
                   );
 
             const isExpanded =
-              !!expandedProjects[p.id];
+              !!expandedProjects[
+                project.id
+              ];
 
             const visibleTasks =
               isExpanded
@@ -1540,15 +1793,17 @@ export default function Projects() {
 
 
             return (
+
               <Card
-                key={p.id}
-                ref={(el) => {
+                key={project.id}
+                ref={(element) => {
                   projectRefs.current[
-                    p.id
-                  ] = el;
+                    project.id
+                  ] = element;
                 }}
                 className={`hover:shadow-md transition-shadow ${
-                  highlightId === p.id
+                  highlightId ===
+                  project.id
                     ? "ring-2 ring-primary"
                     : ""
                 }`}
@@ -1566,12 +1821,12 @@ export default function Projects() {
                         className="h-3 w-3 rounded-full shrink-0"
                         style={{
                           backgroundColor:
-                            p.color,
+                            project.color,
                         }}
                       />
 
                       <CardTitle className="text-base truncate">
-                        {p.name}
+                        {project.name}
                       </CardTitle>
 
                     </div>
@@ -1584,12 +1839,13 @@ export default function Projects() {
                         size="icon"
                         onClick={() =>
                           openEditDialog(
-                            p
+                            project
                           )
                         }
                       >
                         <Pencil className="h-4 w-4 text-muted-foreground" />
                       </Button>
+
 
                       <Button
                         variant="ghost"
@@ -1597,7 +1853,7 @@ export default function Projects() {
                         title="Archive project"
                         onClick={() =>
                           setDeleteProjectTarget(
-                            p
+                            project
                           )
                         }
                       >
@@ -1611,42 +1867,50 @@ export default function Projects() {
                 </CardHeader>
 
 
-                {/* PROJECT CONTENT */}
+                {/* PROJECT BODY */}
 
                 <CardContent className="space-y-3">
 
-                  {p.description && (
+                  {project.description && (
+
                     <p className="text-sm text-muted-foreground line-clamp-2">
-                      {p.description}
+                      {
+                        project.description
+                      }
                     </p>
+
                   )}
 
 
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
 
                     <span>
-                      {s.done}/
-                      {s.total} completed
+                      {stats.done}/
+                      {stats.total}{" "}
+                      completed
                     </span>
 
                     <Badge variant="outline">
-                      {s.pct}%
+                      {stats.pct}%
                     </Badge>
 
                   </div>
 
 
                   <Progress
-                    value={s.pct}
+                    value={
+                      stats.pct
+                    }
                     className="h-2"
                   />
 
 
-                  {/* TASKS */}
+                  {/* TASK LIST */}
 
                   <div className="pt-2 border-t border-border">
 
-                    {projectTasks.length === 0 ? (
+                    {projectTasks.length ===
+                    0 ? (
 
                       <p className="text-xs text-muted-foreground py-1">
                         No tasks assigned to this project.
@@ -1656,63 +1920,70 @@ export default function Projects() {
 
                       <>
 
-                        {/* FILTERS */}
+                        {/* ==================================================
+                            FILTER BUTTONS
+                        ================================================== */}
 
                         <div className="flex flex-wrap gap-1.5 mb-2">
 
                           {[
                             {
-                              key:
-                                "all" as const,
-                              label:
-                                "All",
+                              key: "all" as const,
+                              label: "All",
                             },
                             {
-                              key:
-                                "todo" as const,
-                              label:
-                                "To Do",
+                              key: "todo" as const,
+                              label: "To Do",
                             },
                             {
-                              key:
-                                "in_progress" as const,
-                              label:
-                                "In Progress",
+                              key: "in_progress" as const,
+                              label: "In Progress",
                             },
                             {
-                              key:
-                                "done" as const,
-                              label:
-                                "Done",
+                              key: "done" as const,
+                              label: "Done",
                             },
-                          ].map((f) => (
+                          ].map(
+                            (filterOption) => (
 
-                            <button
-                              key={f.key}
-                              onClick={() =>
-                                setProjectFilters(
-                                  (prev) => ({
-                                    ...prev,
-                                    [p.id]:
-                                      f.key,
-                                  })
-                              }
-                              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                                filter ===
-                                f.key
-                                  ? "bg-primary text-primary-foreground border-primary"
-                                  : "bg-background text-muted-foreground border-border hover:border-muted-foreground/50"
-                              }`}
-                            >
-                              {f.label}
-                            </button>
+                              <button
+                                key={
+                                  filterOption.key
+                                }
+                                type="button"
+                                onClick={() =>
+                                  setProjectFilters(
+                                    (previous) => ({
+                                      ...previous,
+                                      [project.id]:
+                                        filterOption.key,
+                                    })
+                                  )
+                                }
+                                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                                  filter ===
+                                  filterOption.key
+                                    ? "bg-primary text-primary-foreground border-primary"
+                                    : "bg-background text-muted-foreground border-border hover:border-muted-foreground/50"
+                                }`}
+                              >
+                                {
+                                  filterOption.label
+                                }
+                              </button>
 
-                          ))}
+                            )
+                          )}
 
                         </div>
 
 
-                        {filteredTasks.length === 0 ? (
+                        {/* ==================================================
+                            NO FILTER RESULTS
+                        ================================================== */}
+
+                        {filteredTasks.length ===
+                        0 ? (
 
                           <p className="text-xs text-muted-foreground py-1">
                             No tasks match this filter.
@@ -1723,61 +1994,76 @@ export default function Projects() {
                           <div className="space-y-2">
 
                             {visibleTasks.map(
-                              (t) => (
+                              (task) => (
 
                                 <div
-                                  key={t.id}
+                                  key={
+                                    task.id
+                                  }
                                   className="group flex items-start justify-between gap-2 p-2 rounded-md border border-border bg-background hover:bg-muted/50 transition-colors"
                                 >
 
                                   <div className="min-w-0 flex-1">
 
                                     <p className="text-sm font-medium truncate">
-                                      {t.title}
+                                      {
+                                        task.title
+                                      }
                                     </p>
+
 
                                     <div className="flex flex-wrap items-center gap-1.5 mt-1">
 
                                       <Badge
                                         className={`text-[10px] px-1.5 py-0 ${
                                           statusColors[
-                                            t.status
+                                            task.status
                                           ] ||
                                           "bg-muted text-muted-foreground"
                                         }`}
                                       >
-                                        {t.status.replace(
+                                        {task.status.replace(
                                           "_",
                                           " "
                                         )}
                                       </Badge>
 
 
-                                      {t.start_time && (
+                                      {task.start_time && (
+
                                         <span className="text-[10px] text-muted-foreground">
+
                                           {formatPH(
-                                            t.start_time,
+                                            task.start_time,
                                             "MMM d, h:mm a"
                                           )}
+
                                         </span>
+
                                       )}
 
 
-                                      {t.due_date &&
-                                        !t.start_time && (
+                                      {task.due_date &&
+                                        !task.start_time && (
+
                                           <span className="text-[10px] text-muted-foreground">
+
                                             Due{" "}
                                             {formatPH(
-                                              t.due_date,
+                                              task.due_date,
                                               "MMM d, h:mm a"
                                             )}
+
                                           </span>
+
                                         )}
 
                                     </div>
 
                                   </div>
 
+
+                                  {/* TASK ACTIONS */}
 
                                   <div className="flex items-center shrink-0 opacity-80 group-hover:opacity-100">
 
@@ -1787,7 +2073,7 @@ export default function Projects() {
                                       className="h-7 w-7"
                                       onClick={() =>
                                         openEditTaskDialog(
-                                          t
+                                          task
                                         )
                                       }
                                     >
@@ -1802,7 +2088,7 @@ export default function Projects() {
                                       title="Archive task"
                                       onClick={() =>
                                         setDeleteTaskTarget(
-                                          t
+                                          task
                                         )
                                       }
                                     >
@@ -1817,7 +2103,9 @@ export default function Projects() {
                             )}
 
 
-                            {/* SHOW MORE */}
+                            {/* ==================================================
+                                SHOW MORE / LESS
+                            ================================================== */}
 
                             {hasMore && (
 
@@ -1827,13 +2115,11 @@ export default function Projects() {
                                 className="w-full text-xs h-7"
                                 onClick={() =>
                                   setExpandedProjects(
-                                    (
-                                      prev
-                                    ) => ({
-                                      ...prev,
-                                      [p.id]:
-                                        !prev[
-                                          p.id
+                                    (previous) => ({
+                                      ...previous,
+                                      [project.id]:
+                                        !previous[
+                                          project.id
                                         ],
                                     })
                                   )
@@ -1852,8 +2138,10 @@ export default function Projects() {
 
                                   <>
                                     Show{" "}
-                                    {filteredTasks.length -
-                                      TASK_LIST_LIMIT}{" "}
+                                    {
+                                      filteredTasks.length -
+                                      TASK_LIST_LIMIT
+                                    }{" "}
                                     more
 
                                     <ChevronDown className="ml-1 h-3.5 w-3.5" />
@@ -1878,6 +2166,7 @@ export default function Projects() {
                 </CardContent>
 
               </Card>
+
             );
           })}
 
@@ -1887,15 +2176,15 @@ export default function Projects() {
 
 
       {/* ======================================================
-          DELETE PROJECT
+          ARCHIVE PROJECT DIALOG
       ====================================================== */}
 
       <AlertDialog
         open={
           !!deleteProjectTarget
         }
-        onOpenChange={(o) => {
-          if (!o) {
+        onOpenChange={(value) => {
+          if (!value) {
             setDeleteProjectTarget(
               null
             );
@@ -1940,15 +2229,19 @@ export default function Projects() {
 
 
       {/* ======================================================
-          EDIT TASK
+          EDIT TASK DIALOG
       ====================================================== */}
 
       <Dialog
-        open={taskDialogOpen}
-        onOpenChange={(o) => {
-          setTaskDialogOpen(o);
+        open={
+          taskDialogOpen
+        }
+        onOpenChange={(value) => {
+          setTaskDialogOpen(
+            value
+          );
 
-          if (!o) {
+          if (!value) {
             setEditingTask(null);
             setTaskTitleError("");
           }
@@ -1958,15 +2251,17 @@ export default function Projects() {
         <DialogContent>
 
           <DialogHeader>
+
             <DialogTitle>
               Edit Task
             </DialogTitle>
+
           </DialogHeader>
 
 
           <div className="space-y-4">
 
-            {/* TITLE */}
+            {/* TASK TITLE */}
 
             <div className="space-y-2">
 
@@ -1976,13 +2271,13 @@ export default function Projects() {
 
               <Input
                 value={taskTitle}
-                onChange={(e) => {
+                onChange={(event) => {
                   setTaskTitle(
-                    e.target.value
+                    event.target.value
                   );
 
                   if (
-                    e.target.value.trim()
+                    event.target.value.trim()
                   ) {
                     setTaskTitleError("");
                   }
@@ -1990,9 +2285,11 @@ export default function Projects() {
               />
 
               {taskTitleError && (
+
                 <p className="text-sm text-destructive">
                   {taskTitleError}
                 </p>
+
               )}
 
             </div>
@@ -2010,9 +2307,9 @@ export default function Projects() {
                 value={
                   taskDescription
                 }
-                onChange={(e) =>
+                onChange={(event) =>
                   setTaskDescription(
-                    e.target.value
+                    event.target.value
                   )
                 }
                 rows={2}
@@ -2021,7 +2318,7 @@ export default function Projects() {
             </div>
 
 
-            {/* START / DUE */}
+            {/* START + DUE */}
 
             <div className="grid grid-cols-2 gap-4">
 
@@ -2036,9 +2333,9 @@ export default function Projects() {
                   value={
                     taskStartTime
                   }
-                  onChange={(e) =>
+                  onChange={(event) =>
                     setTaskStartTime(
-                      e.target.value
+                      event.target.value
                     )
                   }
                 />
@@ -2057,9 +2354,9 @@ export default function Projects() {
                   value={
                     taskDueDate
                   }
-                  onChange={(e) =>
+                  onChange={(event) =>
                     setTaskDueDate(
-                      e.target.value
+                      event.target.value
                     )
                   }
                 />
@@ -2069,7 +2366,7 @@ export default function Projects() {
             </div>
 
 
-            {/* DURATION / STATUS */}
+            {/* DURATION + STATUS */}
 
             <div className="grid grid-cols-2 gap-4">
 
@@ -2085,9 +2382,9 @@ export default function Projects() {
                   value={
                     taskDuration
                   }
-                  onChange={(e) =>
+                  onChange={(event) =>
                     setTaskDuration(
-                      e.target.value
+                      event.target.value
                     )
                   }
                 />
@@ -2102,7 +2399,9 @@ export default function Projects() {
                 </Label>
 
                 <Select
-                  value={taskStatus}
+                  value={
+                    taskStatus
+                  }
                   onValueChange={
                     setTaskStatus
                   }
@@ -2164,15 +2463,15 @@ export default function Projects() {
 
 
       {/* ======================================================
-          DELETE TASK
+          ARCHIVE TASK DIALOG
       ====================================================== */}
 
       <AlertDialog
         open={
           !!deleteTaskTarget
         }
-        onOpenChange={(o) => {
-          if (!o) {
+        onOpenChange={(value) => {
+          if (!value) {
             setDeleteTaskTarget(
               null
             );
@@ -2189,7 +2488,7 @@ export default function Projects() {
             </AlertDialogTitle>
 
             <AlertDialogDescription>
-              "{deleteTaskTarget?.title}" will be moved out of your lists but kept on record.
+              "{deleteTaskTarget?.title}" will be moved out of your lists but kept on record, so nothing is lost.
             </AlertDialogDescription>
 
           </AlertDialogHeader>

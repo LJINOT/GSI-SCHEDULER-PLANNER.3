@@ -1608,42 +1608,140 @@ export default function AddTask({
                 : "Analyze with AI"}
             </Button>
 
-            {/* AI RESULT */}
-            {aiMeta && (
-              <Card className="bg-accent/30 border-primary/20">
-                <CardContent className="py-4">
-                  <p className="text-sm font-medium mb-2">
-                    AI Analysis
-                  </p>
+        {/* AI RESULT */}
+{aiMeta && (
+  <Card className="bg-accent/30 border-primary/20">
+    <CardContent className="py-4 space-y-4">
+      {/* Header */}
+      <div>
+        <p className="text-sm font-semibold">
+          AI Analysis
+        </p>
 
-                  <div className="flex flex-wrap gap-2">
-                    <Badge variant="outline">
-                      ⏱{" "}
-                      {aiMeta.duration}{" "}
-                      min
-                    </Badge>
+        <p className="text-xs text-muted-foreground mt-1">
+          The task is analyzed using the following criteria:
+          difficulty, duration, category importance, and
+          deadline proximity.
+        </p>
+      </div>
 
-                    <Badge variant="outline">
-                      📊{" "}
-                      {aiMeta.difficulty}
-                    </Badge>
+      {/* Criteria Table */}
+      <div className="rounded-lg border overflow-hidden">
+        <div className="grid grid-cols-[1fr_1.2fr] bg-muted/50 border-b">
+          <div className="px-3 py-2 text-xs font-semibold">
+            Criterion
+          </div>
 
-                    <Badge variant="outline">
-                      📁{" "}
-                      {aiMeta.category}
-                    </Badge>
+          <div className="px-3 py-2 text-xs font-semibold">
+            Task Information
+          </div>
+        </div>
 
-                    {aiMeta.priority && (
-                      <Badge variant="outline">
-                        ⚡{" "}
-                        {aiMeta.priority}{" "}
-                        priority
-                      </Badge>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
+        {/* Difficulty */}
+        <div className="grid grid-cols-[1fr_1.2fr] border-b">
+          <div className="px-3 py-3 text-sm font-medium">
+            Difficulty
+          </div>
+
+          <div className="px-3 py-3 text-sm">
+            <Badge variant="outline" className="capitalize">
+              {aiMeta.difficulty}
+            </Badge>
+          </div>
+        </div>
+
+        {/* Duration */}
+        <div className="grid grid-cols-[1fr_1.2fr] border-b">
+          <div className="px-3 py-3 text-sm font-medium">
+            Duration
+          </div>
+
+          <div className="px-3 py-3 text-sm">
+            <Badge variant="outline">
+              {aiMeta.duration} minutes
+            </Badge>
+          </div>
+        </div>
+
+        {/* Category Importance */}
+        <div className="grid grid-cols-[1fr_1.2fr] border-b">
+          <div className="px-3 py-3 text-sm font-medium">
+            Category Importance
+          </div>
+
+          <div className="px-3 py-3 text-sm">
+            <Badge variant="outline">
+              {aiMeta.category}
+            </Badge>
+          </div>
+        </div>
+
+        {/* Deadline Proximity */}
+        <div className="grid grid-cols-[1fr_1.2fr]">
+          <div className="px-3 py-3 text-sm font-medium">
+            Deadline Proximity
+          </div>
+
+          <div className="px-3 py-3 text-sm">
+            {dueDate && dueTime ? (
+              <div className="space-y-1">
+                <Badge variant="outline">
+                  {dueDate} at {dueTime}
+                </Badge>
+
+                <p className="text-xs text-muted-foreground">
+                  How close the task is to its deadline.
+                </p>
+              </div>
+            ) : (
+              <span className="text-muted-foreground">
+                Deadline not set
+              </span>
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* Overall Priority */}
+      {aiMeta.priority && (
+        <div className="rounded-lg border bg-background/60 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs text-muted-foreground">
+                Overall Priority
+              </p>
+
+              <p className="text-sm font-semibold mt-1">
+                Calculated Priority
+              </p>
+            </div>
+
+            <Badge
+              variant="outline"
+              className="capitalize font-semibold"
+            >
+              ⚡ {aiMeta.priority}
+            </Badge>
+          </div>
+        </div>
+      )}
+
+      {/* Explanation */}
+      <div className="rounded-md bg-muted/40 p-3">
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          <span className="font-semibold text-foreground">
+            How this is used:
+          </span>{" "}
+          These task characteristics provide the information
+          used when determining the task's priority and
+          scheduling order. Difficulty, duration, category
+          importance, and deadline proximity are considered
+          when managing the task.
+        </p>
+      </div>
+    </CardContent>
+  </Card>
+)}
 
             {/* CREATE TASK */}
             <Button

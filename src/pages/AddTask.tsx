@@ -53,7 +53,6 @@ const MAX_DATE = "9999-12-31";
 
 const categories = VA_CATEGORY_NAMES;
 
-
 export default function AddTask({
   embedded = false,
   onCreated,
@@ -70,15 +69,21 @@ export default function AddTask({
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+
   const [dueDate, setDueDate] = useState(
     embedded ? "" : prefillDate,
   );
+
   const [dueTime, setDueTime] = useState("");
+
   const [startTime, setStartTime] = useState("");
+
   const [startDate, setStartDate] = useState(
     embedded ? "" : prefillDate,
   );
+
   const [category, setCategory] = useState("");
+
   const [projectId, setProjectId] =
     useState<string>("none");
 
@@ -95,6 +100,7 @@ export default function AddTask({
     useState("");
 
   const [loading, setLoading] = useState(false);
+
   const [analyzing, setAnalyzing] =
     useState(false);
 
@@ -198,16 +204,43 @@ export default function AddTask({
         return;
       }
 
-      const norm = newProjectName.trim().toLowerCase();
-      const { data: existingProjects } = await supabase
+      const norm =
+        newProjectName
+          .trim()
+          .toLowerCase();
+
+      const {
+        data: existingProjects,
+        error: projectCheckError,
+      } = await supabase
         .from("projects")
         .select("id, name")
         .eq("user_id", user.id)
-        .or("archived.eq.false,archived.is.null");
-      if ((existingProjects || []).some(
-        (row: { name?: string }) =>
-          String(row.name || "").trim().toLowerCase() === norm,
-      )) {
+        .or(
+          "archived.eq.false,archived.is.null",
+        );
+
+      if (projectCheckError) {
+        console.error(
+          "AddTask: project check failed:",
+          projectCheckError,
+        );
+
+        toast.error(
+          "Unable to check existing projects.",
+        );
+
+        return;
+      }
+
+      if (
+        (existingProjects || []).some(
+          (row: { name?: string }) =>
+            String(row.name || "")
+              .trim()
+              .toLowerCase() === norm,
+        )
+      ) {
         setErrors((p) => ({
           ...p,
           newProject:
@@ -232,7 +265,9 @@ export default function AddTask({
 
       if (error) {
         toast.error(
-          /duplicate|unique/i.test(error.message || "")
+          /duplicate|unique/i.test(
+            error.message || "",
+          )
             ? "Project name already exists. Please use a different project name."
             : error.message,
         );
@@ -323,10 +358,6 @@ export default function AddTask({
         error,
       );
 
-      // ------------------------------------
-      // Supabase function-level error
-      // ------------------------------------
-
       if (error) {
         console.error(
           "AddTask: Edge Function error:",
@@ -338,10 +369,6 @@ export default function AddTask({
             "The AI analysis function failed.",
         );
       }
-
-      // ------------------------------------
-      // Validate response
-      // ------------------------------------
 
       const payload =
         data &&
@@ -357,16 +384,6 @@ export default function AddTask({
           "The AI function returned no data.",
         );
       }
-
-      // ------------------------------------
-      // New Edge Function returns:
-      //
-      // {
-      //   ok: false,
-      //   error: "...",
-      //   details: "..."
-      // }
-      // ------------------------------------
 
       if (payload.ok === false) {
         const mainError =
@@ -395,10 +412,6 @@ export default function AddTask({
         );
       }
 
-      // ------------------------------------
-      // Validate required AI result
-      // ------------------------------------
-
       const duration =
         Number(payload.duration);
 
@@ -424,7 +437,7 @@ export default function AddTask({
 
       const analyzedCategory =
         typeof payload.category ===
-        "string" &&
+          "string" &&
         payload.category.trim()
           ? payload.category.trim()
           : category || "General";
@@ -441,10 +454,6 @@ export default function AddTask({
           ? payload.corrected_description
           : "";
 
-      // ------------------------------------
-      // Save AI result
-      // ------------------------------------
-
       const result: AiMeta = {
         duration,
         difficulty,
@@ -456,20 +465,16 @@ export default function AddTask({
 
       setAiMeta(result);
 
-      // Show the AI-detected category in the form when the user did not
-      // manually choose one. A manually selected category is preserved by
-      // the Edge Function and therefore remains unchanged here.
       if (!category) {
-        setCategory(analyzedCategory);
+        setCategory(
+          analyzedCategory,
+        );
       }
-
-      // ------------------------------------
-      // Apply corrected description
-      // ------------------------------------
 
       if (
         correctedDescription &&
-        correctedDescription !== description
+        correctedDescription !==
+          description
       ) {
         setDescription(
           correctedDescription,
@@ -500,9 +505,6 @@ export default function AddTask({
           : "Analysis failed.";
 
       toast.error(message);
-
-      // Don't remove an existing successful
-      // AI analysis if a later request fails.
     } finally {
       setAnalyzing(false);
     }
@@ -537,66 +539,129 @@ export default function AddTask({
   ) => {
     e.preventDefault();
 
-    // The required task details are validated here as well as in the
-    // form controls so a task cannot be created by bypassing browser
-    // validation or by submitting an incomplete form.
-    const trimmedTitle = title.trim();
-    const trimmedDescription = description.trim();
-    const validationErrors: typeof errors = {};
+    const trimmedTitle =
+      title.trim();
+
+    const trimmedDescription =
+      description.trim();
+
+    const validationErrors:
+      typeof errors = {};
+
+    // ----------------------------------------
+    // Required fields
+    // ----------------------------------------
 
     if (!trimmedTitle) {
-      validationErrors.title = "Task title is required.";
-    } else if (trimmedTitle.length > TITLE_MAX) {
-      validationErrors.title = `Keep the title under ${TITLE_MAX} characters.`;
+      validationErrors.title =
+        "Task title is required.";
+    } else if (
+      trimmedTitle.length > TITLE_MAX
+    ) {
+      validationErrors.title =
+        `Keep the title under ${TITLE_MAX} characters.`;
     }
 
     if (!trimmedDescription) {
-      validationErrors.description = "Task description is required.";
+      validationErrors.description =
+        "Task description is required.";
     }
 
     if (!dueDate) {
-      validationErrors.dueDate = "Due date is required.";
+      validationErrors.dueDate =
+        "Due date is required.";
     }
 
     if (!dueTime) {
-      validationErrors.dueTime = "Due time is required.";
+      validationErrors.dueTime =
+        "Due time is required.";
     }
 
-    // Start date/time are optional, but they must always be entered as a pair.
-    if (startDate && !startTime) {
-      validationErrors.startTime = "Start time is required when a start date is set.";
-    }
-    if (startTime && !startDate) {
-      validationErrors.startDate = "Start date is required when a start time is set.";
+    // Start date/time are optional,
+    // but they must always be entered
+    // as a pair.
+
+    if (
+      startDate &&
+      !startTime
+    ) {
+      validationErrors.startTime =
+        "Start time is required when a start date is set.";
     }
 
-    if (Object.keys(validationErrors).length > 0) {
-      setErrors((p) => ({ ...p, ...validationErrors }));
-      toast.error("Please complete all required task fields.");
+    if (
+      startTime &&
+      !startDate
+    ) {
+      validationErrors.startDate =
+        "Start date is required when a start time is set.";
+    }
+
+    if (
+      Object.keys(
+        validationErrors,
+      ).length > 0
+    ) {
+      setErrors((p) => ({
+        ...p,
+        ...validationErrors,
+      }));
+
+      toast.error(
+        "Please complete all required task fields.",
+      );
+
       setLoading(false);
       return;
     }
 
-    if (dueDate < todayInputDate()) {
+    // ----------------------------------------
+    // Date validation
+    // ----------------------------------------
+
+    if (
+      dueDate <
+      todayInputDate()
+    ) {
       setErrors((p) => ({
         ...p,
-        dueDate: "Due date cannot be in the past.",
+        dueDate:
+          "Due date cannot be in the past.",
       }));
-      toast.error("Due date cannot be in the past.");
+
+      toast.error(
+        "Due date cannot be in the past.",
+      );
+
       return;
     }
 
-    if (startDate && startDate < todayInputDate()) {
+    if (
+      startDate &&
+      startDate <
+        todayInputDate()
+    ) {
       setErrors((p) => ({
         ...p,
-        startDate: "Start date cannot be in the past.",
+        startDate:
+          "Start date cannot be in the past.",
       }));
-      toast.error("Start date cannot be in the past.");
+
+      toast.error(
+        "Start date cannot be in the past.",
+      );
+
       return;
     }
 
-    if (!isValidYear(dueDate) || !isValidYear(startDate)) {
-      toast.error("Year cannot be greater than 9999.");
+    if (
+      !isValidYear(dueDate) ||
+      !isValidYear(startDate)
+    ) {
+      toast.error(
+        "Year cannot be greater than 9999.",
+      );
+
       return;
     }
 
@@ -612,6 +677,10 @@ export default function AddTask({
 
     setLoading(true);
 
+    // ----------------------------------------
+    // Get authenticated user
+    // ----------------------------------------
+
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -622,27 +691,60 @@ export default function AddTask({
       return;
     }
 
-    // ------------------------------------
+    // ----------------------------------------
     // Duplicate title checker
-    // ------------------------------------
+    // ----------------------------------------
 
-    const normalizedTitle = title.trim().toLowerCase();
-    const { data: existingTitles } = await supabase
+    const normalizedTitle =
+      trimmedTitle.toLowerCase();
+
+    const {
+      data: existingTitles,
+      error: titleCheckError,
+    } = await supabase
       .from("tasks")
       .select("id, title")
       .eq("user_id", user.id)
-      .or("archived.eq.false,archived.is.null");
+      .or(
+        "archived.eq.false,archived.is.null",
+      );
 
-    const dup = (existingTitles || []).some(
-      (row: { title?: string }) =>
-        String(row.title || "").trim().toLowerCase() === normalizedTitle,
-    );
+    if (titleCheckError) {
+      console.error(
+        "AddTask: failed to check existing task titles:",
+        titleCheckError,
+      );
 
-    if (dup) {
+      toast.error(
+        "Unable to verify the task title. Please try again.",
+      );
+
+      setLoading(false);
+      return;
+    }
+
+    const duplicate =
+      (existingTitles || []).some(
+        (row: { title?: string }) =>
+          String(
+            row.title || "",
+          )
+            .trim()
+            .toLowerCase() ===
+          normalizedTitle,
+      );
+
+    if (duplicate) {
       setErrors((p) => ({
         ...p,
-        title: "Task title already exists. Please use a different task title.",
+        title:
+          "Task title already exists. Please use a different task title.",
       }));
+
+      toast.error(
+        "Task title already exists.",
+      );
+
       setLoading(false);
       return;
     }
@@ -652,10 +754,9 @@ export default function AddTask({
       title: undefined,
     }));
 
-    // ------------------------------------
-    // Auto-analyze if the user didn't
-    // manually click Analyze with AI.
-    // ------------------------------------
+    // ----------------------------------------
+    // Auto-analyze if AI was not manually run
+    // ----------------------------------------
 
     let meta = aiMeta;
 
@@ -669,10 +770,13 @@ export default function AddTask({
             "analyze-task",
             {
               body: {
-                title: title.trim(),
-                description,
+                title:
+                  trimmedTitle,
+                description:
+                  trimmedDescription,
                 category:
-                  category || undefined,
+                  category ||
+                  undefined,
               },
             },
           );
@@ -680,7 +784,8 @@ export default function AddTask({
         if (
           !error &&
           data &&
-          typeof data === "object"
+          typeof data ===
+            "object"
         ) {
           const payload =
             data as Record<
@@ -688,8 +793,6 @@ export default function AddTask({
               unknown
             >;
 
-          // Only use the result when
-          // the Edge Function says it succeeded.
           if (
             payload.ok !== false &&
             typeof payload.duration ===
@@ -746,9 +849,9 @@ export default function AddTask({
       }
     }
 
-    // ------------------------------------
+    // ----------------------------------------
     // Build timezone-aware dates
-    // ------------------------------------
+    // ----------------------------------------
 
     const off = tzOffset(
       new Date(),
@@ -780,52 +883,94 @@ export default function AddTask({
         `${effectiveStartDate}T${startTime}:00${off}`;
     }
 
-    // ------------------------------------
-    // Validate required due date/time and
-    // start date/time relationship.
-    // ------------------------------------
+    // ----------------------------------------
+    // Validate due date/time
+    // ----------------------------------------
 
     if (!dueDatetime) {
-      toast.error("Due date and due time are required.");
+      toast.error(
+        "Due date and due time are required.",
+      );
+
       setLoading(false);
       return;
     }
 
-    const dueTimestamp = new Date(dueDatetime).getTime();
-    if (!Number.isFinite(dueTimestamp)) {
-      toast.error("Please enter a valid due date and time.");
+    const dueTimestamp =
+      new Date(
+        dueDatetime,
+      ).getTime();
+
+    if (
+      !Number.isFinite(
+        dueTimestamp,
+      )
+    ) {
+      toast.error(
+        "Please enter a valid due date and time.",
+      );
+
       setLoading(false);
       return;
     }
 
-    if (dueTimestamp <= Date.now()) {
-      toast.error("Due date and time must be in the future.");
+    if (
+      dueTimestamp <=
+      Date.now()
+    ) {
+      toast.error(
+        "Due date and time must be in the future.",
+      );
+
       setLoading(false);
       return;
     }
+
+    // ----------------------------------------
+    // Validate start date/time
+    // ----------------------------------------
 
     if (startDatetime) {
-      const startTimestamp = new Date(startDatetime).getTime();
-      if (!Number.isFinite(startTimestamp)) {
-        toast.error("Please enter a valid start date and time.");
+      const startTimestamp =
+        new Date(
+          startDatetime,
+        ).getTime();
+
+      if (
+        !Number.isFinite(
+          startTimestamp,
+        )
+      ) {
+        toast.error(
+          "Please enter a valid start date and time.",
+        );
+
         setLoading(false);
         return;
       }
 
-      if (startTimestamp >= dueTimestamp) {
-        toast.error("Start date and time must be before the due date and time.");
+      if (
+        startTimestamp >=
+        dueTimestamp
+      ) {
+        toast.error(
+          "Start date and time must be before the due date and time.",
+        );
+
         setLoading(false);
         return;
       }
     }
 
-    // ------------------------------------
+    // ----------------------------------------
     // Prevent past start time
-    // ------------------------------------
+    // ----------------------------------------
 
     if (
       startDatetime &&
-      new Date(startDatetime).getTime() <
+      new Date(
+        startDatetime,
+      ).getTime() <
         Date.now()
     ) {
       toast.error(
@@ -836,114 +981,81 @@ export default function AddTask({
       return;
     }
 
-    // ------------------------------------
+    // ----------------------------------------
     // Final category
-    // ------------------------------------
+    // ----------------------------------------
 
     const finalCategory =
       category ||
       meta?.category ||
       "General";
 
-    // ------------------------------------
-    // Prevent overlapping schedules
-    // ------------------------------------
+    // ============================================================
+    // IMPORTANT SCHEDULING RULE
+    // ============================================================
+    //
+    // DO NOT CHECK FOR OVERLAPPING TASKS HERE.
+    //
+    // Add Task is responsible for collecting and saving
+    // the user's task information.
+    //
+    // The scheduling system is responsible for solving
+    // conflicts between tasks.
+    //
+    // Workflow:
+    //
+    // User enters tasks
+    //       ↓
+    // AHP → determine priority
+    //       ↓
+    // PSO → search for task order
+    //       ↓
+    // CSP → find valid time slots
+    //       ↓
+    // Generated schedule
+    //
+    // Therefore:
+    //
+    // Multiple tasks may temporarily have the same
+    // requested start time.
+    //
+    // They must still be saved.
+    //
+    // The final generated schedule must NOT contain
+    // overlapping tasks.
+    // ============================================================
 
-    if (startDatetime) {
-      const newStart =
-        new Date(
-          startDatetime,
-        ).getTime();
-
-      const newEnd =
-        newStart +
-        (meta?.duration || 30) *
-          60_000;
-
-      const {
-        data: scheduled,
-      } = await supabase
-        .from("tasks")
-        .select(
-          "title, start_time, estimated_duration",
-        )
-        .eq(
-          "user_id",
-          user.id,
-        )
-        .eq(
-          "archived",
-          false,
-        )
-        .neq(
-          "status",
-          "done",
-        )
-        .not(
-          "start_time",
-          "is",
-          null,
-        );
-
-      const clash =
-        (scheduled || []).find(
-          (t: any) => {
-            const s =
-              new Date(
-                t.start_time,
-              ).getTime();
-
-            const e =
-              s +
-              (t.estimated_duration ||
-                30) *
-                60_000;
-
-            return (
-              newStart < e &&
-              s < newEnd
-            );
-          },
-        );
-
-      if (clash) {
-        setLoading(false);
-
-        toast.error(
-          `That time overlaps with "${clash.title}". Pick another start time.`,
-        );
-
-        return;
-      }
-    }
-
-    // ------------------------------------
+    // ----------------------------------------
     // Initial status
-    // ------------------------------------
+    // ----------------------------------------
 
     let initialStatus =
       "todo";
 
     if (
       startDatetime &&
-      new Date(startDatetime) <=
-        new Date()
+      new Date(
+        startDatetime,
+      ) <= new Date()
     ) {
       initialStatus =
         "in_progress";
     }
 
-    // ------------------------------------
+    // ----------------------------------------
     // Insert task
-    // ------------------------------------
+    // ----------------------------------------
 
     const {
-      error,
+      error: insertError,
     } = await supabase
       .from("tasks")
       .insert({
-        title: trimmedTitle,
-        description: trimmedDescription,
+        title:
+          trimmedTitle,
+
+        description:
+          trimmedDescription,
 
         due_date:
           dueDatetime,
@@ -952,10 +1064,12 @@ export default function AddTask({
           startDatetime,
 
         estimated_duration:
-          meta?.duration || null,
+          meta?.duration ||
+          null,
 
         difficulty:
-          meta?.difficulty || null,
+          meta?.difficulty ||
+          null,
 
         category:
           finalCategory,
@@ -970,26 +1084,40 @@ export default function AddTask({
           projectId !== "none"
             ? projectId
             : null,
+
+        archived: false,
       });
 
     setLoading(false);
 
-    if (error) {
+    if (insertError) {
+      console.error(
+        "AddTask: failed to create task:",
+        insertError,
+      );
+
       toast.error(
-        error.message,
+        insertError.message ||
+          "Failed to create task.",
       );
+
+      return;
+    }
+
+    // ----------------------------------------
+    // Success
+    // ----------------------------------------
+
+    toast.success(
+      "Task created successfully!",
+    );
+
+    resetForm();
+
+    if (embedded) {
+      onCreated?.();
     } else {
-      toast.success(
-        "Task created!",
-      );
-
-      resetForm();
-
-      if (embedded) {
-        onCreated?.();
-      } else {
-        navigate("/tasks");
-      }
+      navigate("/tasks");
     }
   };
 
@@ -1065,9 +1193,6 @@ export default function AddTask({
                     }));
                   }
 
-                  // Clear previous AI
-                  // analysis when the task
-                  // itself changes.
                   if (aiMeta) {
                     setAiMeta(null);
                   }
@@ -1107,7 +1232,9 @@ export default function AddTask({
               <Textarea
                 id="desc"
                 required
-                aria-invalid={!!errors.description}
+                aria-invalid={
+                  !!errors.description
+                }
                 value={description}
                 onChange={(e) => {
                   setDescription(
@@ -1313,15 +1440,29 @@ export default function AddTask({
                   max={MAX_DATE}
                   value={dueDate}
                   onChange={(e) => {
-                    setDueDate(e.target.value);
-                    if (errors.dueDate) {
-                      setErrors((p) => ({ ...p, dueDate: undefined }));
+                    setDueDate(
+                      e.target.value,
+                    );
+
+                    if (
+                      errors.dueDate
+                    ) {
+                      setErrors((p) => ({
+                        ...p,
+                        dueDate:
+                          undefined,
+                      }));
                     }
                   }}
-                  aria-invalid={!!errors.dueDate}
+                  aria-invalid={
+                    !!errors.dueDate
+                  }
                 />
+
                 {errors.dueDate && (
-                  <p className="text-xs text-destructive">{errors.dueDate}</p>
+                  <p className="text-xs text-destructive">
+                    {errors.dueDate}
+                  </p>
                 )}
               </div>
 
@@ -1336,15 +1477,29 @@ export default function AddTask({
                   required
                   value={dueTime}
                   onChange={(e) => {
-                    setDueTime(e.target.value);
-                    if (errors.dueTime) {
-                      setErrors((p) => ({ ...p, dueTime: undefined }));
+                    setDueTime(
+                      e.target.value,
+                    );
+
+                    if (
+                      errors.dueTime
+                    ) {
+                      setErrors((p) => ({
+                        ...p,
+                        dueTime:
+                          undefined,
+                      }));
                     }
                   }}
-                  aria-invalid={!!errors.dueTime}
+                  aria-invalid={
+                    !!errors.dueTime
+                  }
                 />
+
                 {errors.dueTime && (
-                  <p className="text-xs text-destructive">{errors.dueTime}</p>
+                  <p className="text-xs text-destructive">
+                    {errors.dueTime}
+                  </p>
                 )}
               </div>
             </div>
@@ -1363,15 +1518,29 @@ export default function AddTask({
                   max={MAX_DATE}
                   value={startDate}
                   onChange={(e) => {
-                    setStartDate(e.target.value);
-                    if (errors.startDate) {
-                      setErrors((p) => ({ ...p, startDate: undefined }));
+                    setStartDate(
+                      e.target.value,
+                    );
+
+                    if (
+                      errors.startDate
+                    ) {
+                      setErrors((p) => ({
+                        ...p,
+                        startDate:
+                          undefined,
+                      }));
                     }
                   }}
-                  aria-invalid={!!errors.startDate}
+                  aria-invalid={
+                    !!errors.startDate
+                  }
                 />
+
                 {errors.startDate && (
-                  <p className="text-xs text-destructive">{errors.startDate}</p>
+                  <p className="text-xs text-destructive">
+                    {errors.startDate}
+                  </p>
                 )}
               </div>
 
@@ -1385,15 +1554,29 @@ export default function AddTask({
                   type="time"
                   value={startTime}
                   onChange={(e) => {
-                    setStartTime(e.target.value);
-                    if (errors.startTime) {
-                      setErrors((p) => ({ ...p, startTime: undefined }));
+                    setStartTime(
+                      e.target.value,
+                    );
+
+                    if (
+                      errors.startTime
+                    ) {
+                      setErrors((p) => ({
+                        ...p,
+                        startTime:
+                          undefined,
+                      }));
                     }
                   }}
-                  aria-invalid={!!errors.startTime}
+                  aria-invalid={
+                    !!errors.startTime
+                  }
                 />
+
                 {errors.startTime && (
-                  <p className="text-xs text-destructive">{errors.startTime}</p>
+                  <p className="text-xs text-destructive">
+                    {errors.startTime}
+                  </p>
                 )}
               </div>
             </div>

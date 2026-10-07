@@ -51,7 +51,9 @@ function CodeBlock({ code }: { code: string }) {
    ========================================================= */
 
 const HOW_AHP = [
-  "1. The Analytic Hierarchy Process (AHP) calculates a priority score for each task using four evaluation criteria: Deadline Proximity, Difficulty, Duration, and Category Importance.",
+  "Architecture: TASK INPUT → TITLE/DESCRIPTION VALIDATION (NLP) → CONFIRMED DURATION / DIFFICULTY / CATEGORY / DEADLINE → AHP → PSO → CSP. NLP validates task text and provides optional recommendations only. AHP calculates the priority score from validated task attributes — NLP does not generate the AHP score.",
+
+  "1. The Analytic Hierarchy Process (AHP) calculates a priority score for each task using four evaluation criteria: Deadline Proximity, Difficulty, Duration, and Category Importance. These inputs come from structured user input (and Focus Mode actual duration for future recommendations), not from AI guesses.",
 
   "2. A fixed 4×4 Saaty pairwise-comparison matrix is used to determine the relative importance of the four criteria. The resulting criterion weights are normalized so that Σwj = 1.",
 
@@ -59,7 +61,7 @@ const HOW_AHP = [
 
   "4. The consistency of the pairwise comparisons is evaluated using λmax, the Consistency Index (CI), and the Consistency Ratio (CR). For four criteria, the Random Index (RI) is 0.90.",
 
-  "5. Each task receives a normalized score sij from 0 to 1 for every evaluation criterion. These scores represent the task's performance under deadline proximity, difficulty, duration, and category importance.",
+  "5. Each task receives a normalized score sij from 0 to 1 for every evaluation criterion. These scores represent the task's performance under deadline proximity, difficulty, duration, and category importance — all derived from user-confirmed values.",
 
   "6. The overall priority of task i is computed using the weighted-sum model: Pi = Σ(wj × sij). The weighted criterion scores are combined to produce one overall priority value for the task.",
 

@@ -25,10 +25,12 @@ import {
   Brain,
   Loader2,
   PlusCircle,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
 } from "lucide-react";
 import { TITLE_MAX } from "@/lib/validation";
 import { VA_CATEGORY_NAMES } from "@/lib/va-categories";
-
 import {
   todayInputDate,
   tzOffset,
@@ -41,16 +43,22 @@ type Project = {
   color: string;
 };
 
-type AiMeta = {
-  duration: number;
-  difficulty: string;
-  category: string;
-  priority?: string;
-  corrected_description?: string;
+type ValidationStatus = "VALID" | "REVIEW" | "INVALID" | null;
+
+type AiValidation = {
+  validation: ValidationStatus;
+  related: boolean;
+  confidence: number;
+  reason: string;
+  suggestions: {
+    duration?: number;
+    difficulty?: string;
+    category?: string;
+  } | null;
 };
 
 const MAX_DATE = "9999-12-31";
-
+const DURATION_PRESETS = [15, 30, 45, 60, 90, 120];
 const categories = VA_CATEGORY_NAMES;
 
 export default function AddTask({
@@ -69,43 +77,22 @@ export default function AddTask({
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-
-  const [dueDate, setDueDate] = useState(
-    embedded ? "" : prefillDate,
-  );
-
+  const [dueDate, setDueDate] = useState(embedded ? "" : prefillDate);
   const [dueTime, setDueTime] = useState("");
-
   const [startTime, setStartTime] = useState("");
-
-  const [startDate, setStartDate] = useState(
-    embedded ? "" : prefillDate,
-  );
-
+  const [startDate, setStartDate] = useState(embedded ? "" : prefillDate);
   const [category, setCategory] = useState("");
-
-  const [projectId, setProjectId] =
-    useState<string>("none");
-
-  const [projects, setProjects] =
-    useState<Project[]>([]);
-
-  const [showNewProject, setShowNewProject] =
-    useState(false);
-
-  const [newProjectName, setNewProjectName] =
-    useState("");
-
-  const [newProjectDesc, setNewProjectDesc] =
-    useState("");
-
+  const [difficulty, setDifficulty] = useState<string>("");
+  const [estimatedDuration, setEstimatedDuration] = useState<string>("");
+  const [projectId, setProjectId] = useState<string>("none");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [showNewProject, setShowNewProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectDesc, setNewProjectDesc] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const [analyzing, setAnalyzing] =
-    useState(false);
-
-  const [aiMeta, setAiMeta] =
-    useState<AiMeta | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [aiValidation, setAiValidation] = useState<AiValidation | null>(null);
+  const [forceContinue, setForceContinue] = useState(false);
 
   const [errors, setErrors] = useState<{
     title?: string;
@@ -115,57 +102,36 @@ export default function AddTask({
     startDate?: string;
     startTime?: string;
     newProject?: string;
+    duration?: string;
+    difficulty?: string;
+    category?: string;
   }>({});
-
-  // ----------------------------------------
-  // Load projects
-  // ----------------------------------------
 
   useEffect(() => {
     let cancelled = false;
-
     const loadProjects = async () => {
       const {
         data: { user },
       } = await supabase.auth.getUser();
-
       if (!user || cancelled) return;
-
       const { data, error } = await supabase
         .from("projects")
         .select("id, name, color")
         .eq("user_id", user.id)
-        .order("created_at", {
-          ascending: false,
-        });
-
+        .order("created_at", { ascending: false });
       if (error) {
-        console.error(
-          "AddTask: failed to load projects:",
-          error,
-        );
+        console.error("AddTask: failed to load projects:", error);
         return;
       }
-
-      if (!cancelled) {
-        setProjects(data || []);
-      }
+      if (!cancelled) setProjects(data || []);
     };
-
     loadProjects();
-
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // ----------------------------------------
-  // Project selection
-  // ----------------------------------------
-
-  const handleProjectChange = (
-    val: string,
-  ) => {
+  const handleProjectChange = (val: string) => {
     if (val === "__new__") {
       setShowNewProject(true);
       setProjectId("none");
@@ -175,128 +141,73 @@ export default function AddTask({
     }
   };
 
-  // ----------------------------------------
-  // Create project
-  // ----------------------------------------
-
-  const createInlineProject =
-    async () => {
-      if (!newProjectName.trim()) {
-        setErrors((p) => ({
-          ...p,
-          newProject:
-            "Project name is required",
-        }));
-        return;
-      }
-
+  const createInlineProject = async () => {
+    if (!newProjectName.trim()) {
       setErrors((p) => ({
         ...p,
-        newProject: undefined,
+        newProject: "Project name is required",
       }));
-
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        toast.error("Not logged in");
-        return;
-      }
-
-      const norm =
-        newProjectName
-          .trim()
-          .toLowerCase();
-
-      const {
-        data: existingProjects,
-        error: projectCheckError,
-      } = await supabase
-        .from("projects")
-        .select("id, name")
-        .eq("user_id", user.id)
-        .or(
-          "archived.eq.false,archived.is.null",
-        );
-
-      if (projectCheckError) {
-        console.error(
-          "AddTask: project check failed:",
-          projectCheckError,
-        );
-
-        toast.error(
-          "Unable to check existing projects.",
-        );
-
-        return;
-      }
-
-      if (
-        (existingProjects || []).some(
-          (row: { name?: string }) =>
-            String(row.name || "")
-              .trim()
-              .toLowerCase() === norm,
-        )
-      ) {
-        setErrors((p) => ({
-          ...p,
-          newProject:
-            "Project name already exists. Please use a different project name.",
-        }));
-        return;
-      }
-
-      const {
-        data,
-        error,
-      } = await supabase
-        .from("projects")
-        .insert({
-          user_id: user.id,
-          name: newProjectName.trim(),
-          description:
-            newProjectDesc.trim() || null,
-        })
-        .select()
-        .single();
-
-      if (error) {
-        toast.error(
-          /duplicate|unique/i.test(
-            error.message || "",
-          )
-            ? "Project name already exists. Please use a different project name."
-            : error.message,
-        );
-        return;
-      }
-
-      if (!data) {
-        toast.error(
-          "Project was not created.",
-        );
-        return;
-      }
-
-      setProjects((previous) => [
-        data as Project,
-        ...previous,
-      ]);
-
-      setProjectId(data.id);
-      setShowNewProject(false);
-      setNewProjectName("");
-      setNewProjectDesc("");
-
-      toast.success("Project created");
-    };
-
-  // ----------------------------------------
-  // Reset
-  // ----------------------------------------
+      return;
+    }
+    setErrors((p) => ({ ...p, newProject: undefined }));
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      toast.error("Not logged in");
+      return;
+    }
+    const norm = newProjectName.trim().toLowerCase();
+    const { data: existingProjects, error: projectCheckError } = await supabase
+      .from("projects")
+      .select("id, name")
+      .eq("user_id", user.id)
+      .or("archived.eq.false,archived.is.null");
+    if (projectCheckError) {
+      toast.error("Unable to check existing projects.");
+      return;
+    }
+    if (
+      (existingProjects || []).some(
+        (row: { name?: string }) =>
+          String(row.name || "").trim().toLowerCase() === norm,
+      )
+    ) {
+      setErrors((p) => ({
+        ...p,
+        newProject:
+          "Project name already exists. Please use a different project name.",
+      }));
+      return;
+    }
+    const { data, error } = await supabase
+      .from("projects")
+      .insert({
+        user_id: user.id,
+        name: newProjectName.trim(),
+        description: newProjectDesc.trim() || null,
+      })
+      .select()
+      .single();
+    if (error) {
+      toast.error(
+        /duplicate|unique/i.test(error.message || "")
+          ? "Project name already exists. Please use a different project name."
+          : error.message,
+      );
+      return;
+    }
+    if (!data) {
+      toast.error("Project was not created.");
+      return;
+    }
+    setProjects((previous) => [data as Project, ...previous]);
+    setProjectId(data.id);
+    setShowNewProject(false);
+    setNewProjectName("");
+    setNewProjectDesc("");
+    toast.success("Project created");
+  };
 
   const resetForm = () => {
     setTitle("");
@@ -306,814 +217,431 @@ export default function AddTask({
     setStartTime("");
     setStartDate("");
     setCategory("");
+    setDifficulty("");
+    setEstimatedDuration("");
     setProjectId("none");
-    setAiMeta(null);
+    setAiValidation(null);
+    setForceContinue(false);
     setErrors({});
   };
 
-  // ----------------------------------------
-  // Analyze task with AI
-  // ----------------------------------------
+  const clearValidationOnEdit = () => {
+    if (aiValidation) setAiValidation(null);
+    if (forceContinue) setForceContinue(false);
+  };
 
-  const analyzeTask = async () => {
+  /** Semantic validation of title vs description; optional suggestions only. */
+  const validateDescription = async () => {
     if (!title.trim()) {
+      setErrors((p) => ({ ...p, title: "Enter a title first" }));
+      return;
+    }
+    if (!description.trim()) {
       setErrors((p) => ({
         ...p,
-        title: "Enter a title first",
+        description: "Enter a description to validate.",
       }));
       return;
     }
-
     if (analyzing) return;
-
     setAnalyzing(true);
+    setForceContinue(false);
 
     try {
-      console.log(
-        "AddTask: starting AI analysis",
-      );
-
-      const {
-        data,
-        error,
-      } = await supabase.functions.invoke(
-        "analyze-task",
-        {
-          body: {
-            title: title.trim(),
-            description,
-            category:
-              category || undefined,
-          },
+      const { data, error } = await supabase.functions.invoke("analyze-task", {
+        body: {
+          title: title.trim(),
+          description: description.trim(),
+          category: category || undefined,
+          duration: estimatedDuration
+            ? Number(estimatedDuration)
+            : undefined,
+          difficulty: difficulty || undefined,
         },
-      );
-
-      console.log(
-        "AddTask: analyze-task response:",
-        data,
-      );
-
-      console.log(
-        "AddTask: analyze-task error:",
-        error,
-      );
+      });
 
       if (error) {
-        console.error(
-          "AddTask: Edge Function error:",
-          error,
-        );
-
-        throw new Error(
-          error.message ||
-            "The AI analysis function failed.",
-        );
+        throw new Error(error.message || "The validation function failed.");
       }
 
       const payload =
-        data &&
-        typeof data === "object"
-          ? (data as Record<
-              string,
-              unknown
-            >)
+        data && typeof data === "object"
+          ? (data as Record<string, unknown>)
           : null;
 
       if (!payload) {
-        throw new Error(
-          "The AI function returned no data.",
-        );
+        throw new Error("The validation function returned no data.");
       }
 
       if (payload.ok === false) {
         const mainError =
           typeof payload.error === "string"
             ? payload.error
-            : "AI analysis failed.";
-
-        const details =
-          typeof payload.details ===
-          "string"
-            ? payload.details
-            : "";
-
-        console.error(
-          "AddTask: Gemini error:",
-          {
-            mainError,
-            details,
-          },
-        );
-
-        throw new Error(
-          details
-            ? `${mainError} ${details}`
-            : mainError,
-        );
+            : "Validation failed.";
+        throw new Error(mainError);
       }
 
-      const duration =
-        Number(payload.duration);
+      const validation = (
+        ["VALID", "REVIEW", "INVALID"].includes(
+          String(payload.validation || ""),
+        )
+          ? String(payload.validation)
+          : "REVIEW"
+      ) as ValidationStatus;
 
-      if (
-        !Number.isFinite(duration) ||
-        duration <= 0
-      ) {
-        console.error(
-          "AddTask: Invalid AI response:",
-          payload,
-        );
-
-        throw new Error(
-          "AI returned an invalid duration.",
-        );
-      }
-
-      const difficulty =
-        typeof payload.difficulty ===
-        "string"
-          ? payload.difficulty
-          : "medium";
-
-      const analyzedCategory =
-        typeof payload.category ===
-          "string" &&
-        payload.category.trim()
-          ? payload.category.trim()
-          : category || "General";
-
-      const priority =
-        typeof payload.priority ===
-        "string"
-          ? payload.priority
-          : "medium";
-
-      const correctedDescription =
-        typeof payload.corrected_description ===
-        "string"
-          ? payload.corrected_description
-          : "";
-
-      const result: AiMeta = {
-        duration,
-        difficulty,
-        category: analyzedCategory,
-        priority,
-        corrected_description:
-          correctedDescription,
+      const result: AiValidation = {
+        validation,
+        related: Boolean(payload.related),
+        confidence: Number(payload.confidence) || 0,
+        reason:
+          typeof payload.reason === "string"
+            ? payload.reason
+            : "Validation complete.",
+        suggestions:
+          payload.suggestions && typeof payload.suggestions === "object"
+            ? (payload.suggestions as AiValidation["suggestions"])
+            : null,
       };
 
-      setAiMeta(result);
+      setAiValidation(result);
 
-      if (!category) {
-        setCategory(
-          analyzedCategory,
-        );
-      }
-
-      if (
-        correctedDescription &&
-        correctedDescription !==
-          description
-      ) {
-        setDescription(
-          correctedDescription,
-        );
-
-        toast.success(
-          "AI analysis complete — description auto-corrected",
-        );
+      if (validation === "VALID") {
+        toast.success("Description matches the task.");
+      } else if (validation === "REVIEW") {
+        toast.message("Please review your description.");
       } else {
-        toast.success(
-          "AI analysis complete!",
-        );
+        toast.error("Description does not match the task title.");
       }
-
-      console.log(
-        "AddTask: AI analysis successful:",
-        result,
-      );
     } catch (err: unknown) {
-      console.error(
-        "AddTask: AI analysis failed:",
-        err,
+      console.error("AddTask: validation failed:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Validation failed.",
       );
-
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Analysis failed.";
-
-      toast.error(message);
     } finally {
       setAnalyzing(false);
     }
   };
 
-  // ----------------------------------------
-  // Date validation
-  // ----------------------------------------
-
-  const isValidYear = (
-    dateStr: string,
+  const applySuggestion = (
+    field: "duration" | "difficulty" | "category",
   ) => {
-    if (!dateStr) return true;
-
-    const year = parseInt(
-      dateStr.slice(0, 4),
-      10,
-    );
-
-    return (
-      !Number.isNaN(year) &&
-      year <= 9999
-    );
+    if (!aiValidation?.suggestions) return;
+    if (field === "duration" && aiValidation.suggestions.duration) {
+      setEstimatedDuration(String(aiValidation.suggestions.duration));
+      setErrors((p) => ({ ...p, duration: undefined }));
+    }
+    if (field === "difficulty" && aiValidation.suggestions.difficulty) {
+      setDifficulty(aiValidation.suggestions.difficulty);
+      setErrors((p) => ({ ...p, difficulty: undefined }));
+    }
+    if (field === "category" && aiValidation.suggestions.category) {
+      setCategory(aiValidation.suggestions.category);
+      setErrors((p) => ({ ...p, category: undefined }));
+    }
   };
 
-  // ----------------------------------------
-  // Submit task
-  // ----------------------------------------
+  const isValidYear = (dateStr: string) => {
+    if (!dateStr) return true;
+    const year = parseInt(dateStr.slice(0, 4), 10);
+    return !Number.isNaN(year) && year <= 9999;
+  };
 
-  const handleSubmit = async (
-    e: React.FormEvent,
-  ) => {
+  const parseDuration = (): number | null => {
+    const n = Number(estimatedDuration);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.round(n);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const trimmedTitle =
-      title.trim();
-
-    const trimmedDescription =
-      description.trim();
-
-    const validationErrors:
-      typeof errors = {};
-
-    // ----------------------------------------
-    // Required fields
-    // ----------------------------------------
+    const trimmedTitle = title.trim();
+    const trimmedDescription = description.trim();
+    const validationErrors: typeof errors = {};
 
     if (!trimmedTitle) {
-      validationErrors.title =
-        "Task title is required.";
-    } else if (
-      trimmedTitle.length > TITLE_MAX
-    ) {
-      validationErrors.title =
-        `Keep the title under ${TITLE_MAX} characters.`;
+      validationErrors.title = "Task title is required.";
+    } else if (trimmedTitle.length > TITLE_MAX) {
+      validationErrors.title = `Keep the title under ${TITLE_MAX} characters.`;
     }
 
     if (!trimmedDescription) {
-      validationErrors.description =
-        "Task description is required.";
+      validationErrors.description = "Task description is required.";
     }
 
-    if (!dueDate) {
-      validationErrors.dueDate =
-        "Due date is required.";
+    if (!dueDate) validationErrors.dueDate = "Due date is required.";
+    if (!dueTime) validationErrors.dueTime = "Due time is required.";
+
+    const durationVal = parseDuration();
+    if (durationVal === null) {
+      validationErrors.duration =
+        "Estimated duration is required (positive number of minutes).";
     }
 
-    if (!dueTime) {
-      validationErrors.dueTime =
-        "Due time is required.";
+    if (!difficulty || !["easy", "medium", "hard"].includes(difficulty)) {
+      validationErrors.difficulty = "Please select a difficulty.";
     }
 
-    // Start date/time are optional,
-    // but they must always be entered
-    // as a pair.
+    if (!category) {
+      validationErrors.category = "Please select a category.";
+    }
 
-    if (
-      startDate &&
-      !startTime
-    ) {
+    if (startDate && !startTime) {
       validationErrors.startTime =
         "Start time is required when a start date is set.";
     }
-
-    if (
-      startTime &&
-      !startDate
-    ) {
+    if (startTime && !startDate) {
       validationErrors.startDate =
         "Start date is required when a start time is set.";
     }
 
+    if (Object.keys(validationErrors).length > 0) {
+      setErrors((p) => ({ ...p, ...validationErrors }));
+      toast.error("Please complete all required task fields.");
+      return;
+    }
+
+    // Semantic validation gate
     if (
-      Object.keys(
-        validationErrors,
-      ).length > 0
+      aiValidation?.validation === "INVALID" &&
+      !forceContinue
     ) {
+      toast.error(
+        "Description does not match the task title. Please provide a related description.",
+      );
+      return;
+    }
+
+    if (
+      aiValidation?.validation === "REVIEW" &&
+      !forceContinue
+    ) {
+      toast.message(
+        "Please review your description, or choose Continue Anyway.",
+      );
+      return;
+    }
+
+    // If user never ran validation, run it once before save
+    if (!aiValidation) {
+      setAnalyzing(true);
+      try {
+        const { data, error } = await supabase.functions.invoke(
+          "analyze-task",
+          {
+            body: {
+              title: trimmedTitle,
+              description: trimmedDescription,
+              category: category || undefined,
+              duration: durationVal ?? undefined,
+              difficulty: difficulty || undefined,
+            },
+          },
+        );
+        if (!error && data && typeof data === "object") {
+          const payload = data as Record<string, unknown>;
+          if (payload.ok !== false) {
+            const validation = (
+              ["VALID", "REVIEW", "INVALID"].includes(
+                String(payload.validation || ""),
+              )
+                ? String(payload.validation)
+                : "REVIEW"
+            ) as ValidationStatus;
+            const result: AiValidation = {
+              validation,
+              related: Boolean(payload.related),
+              confidence: Number(payload.confidence) || 0,
+              reason:
+                typeof payload.reason === "string"
+                  ? payload.reason
+                  : "",
+              suggestions:
+                payload.suggestions &&
+                typeof payload.suggestions === "object"
+                  ? (payload.suggestions as AiValidation["suggestions"])
+                  : null,
+            };
+            setAiValidation(result);
+            setAnalyzing(false);
+            if (validation === "INVALID") {
+              toast.error(
+                "Description does not match the task title. Please edit and validate again.",
+              );
+              return;
+            }
+            if (validation === "REVIEW") {
+              toast.message(
+                "Please review your description, or choose Continue Anyway.",
+              );
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(
+          "Automatic validation failed; allowing save with user values:",
+          err,
+        );
+      } finally {
+        setAnalyzing(false);
+      }
+    }
+
+    if (dueDate < todayInputDate()) {
       setErrors((p) => ({
         ...p,
-        ...validationErrors,
+        dueDate: "Due date cannot be in the past.",
       }));
-
-      toast.error(
-        "Please complete all required task fields.",
-      );
-
-      setLoading(false);
+      toast.error("Due date cannot be in the past.");
       return;
     }
 
-    // ----------------------------------------
-    // Date validation
-    // ----------------------------------------
-
-    if (
-      dueDate <
-      todayInputDate()
-    ) {
+    if (startDate && startDate < todayInputDate()) {
       setErrors((p) => ({
         ...p,
-        dueDate:
-          "Due date cannot be in the past.",
+        startDate: "Start date cannot be in the past.",
       }));
-
-      toast.error(
-        "Due date cannot be in the past.",
-      );
-
+      toast.error("Start date cannot be in the past.");
       return;
     }
 
-    if (
-      startDate &&
-      startDate <
-        todayInputDate()
-    ) {
-      setErrors((p) => ({
-        ...p,
-        startDate:
-          "Start date cannot be in the past.",
-      }));
-
-      toast.error(
-        "Start date cannot be in the past.",
-      );
-
+    if (!isValidYear(dueDate) || !isValidYear(startDate)) {
+      toast.error("Year cannot be greater than 9999.");
       return;
     }
 
-    if (
-      !isValidYear(dueDate) ||
-      !isValidYear(startDate)
-    ) {
-      toast.error(
-        "Year cannot be greater than 9999.",
-      );
-
-      return;
-    }
-
-    setErrors((p) => ({
-      ...p,
-      title: undefined,
-      description: undefined,
-      dueDate: undefined,
-      dueTime: undefined,
-      startDate: undefined,
-      startTime: undefined,
-    }));
-
+    setErrors({});
     setLoading(true);
-
-    // ----------------------------------------
-    // Get authenticated user
-    // ----------------------------------------
 
     const {
       data: { user },
     } = await supabase.auth.getUser();
-
     if (!user) {
       toast.error("Not logged in");
       setLoading(false);
       return;
     }
 
-    // ----------------------------------------
-    // Duplicate title checker
-    // ----------------------------------------
-
-    const normalizedTitle =
-      trimmedTitle.toLowerCase();
-
-    const {
-      data: existingTitles,
-      error: titleCheckError,
-    } = await supabase
+    const normalizedTitle = trimmedTitle.toLowerCase();
+    const { data: existingTitles, error: titleCheckError } = await supabase
       .from("tasks")
       .select("id, title")
       .eq("user_id", user.id)
-      .or(
-        "archived.eq.false,archived.is.null",
-      );
+      .or("archived.eq.false,archived.is.null");
 
     if (titleCheckError) {
-      console.error(
-        "AddTask: failed to check existing task titles:",
-        titleCheckError,
-      );
-
-      toast.error(
-        "Unable to verify the task title. Please try again.",
-      );
-
+      toast.error("Unable to verify the task title. Please try again.");
       setLoading(false);
       return;
     }
 
-    const duplicate =
-      (existingTitles || []).some(
-        (row: { title?: string }) =>
-          String(
-            row.title || "",
-          )
-            .trim()
-            .toLowerCase() ===
-          normalizedTitle,
-      );
-
+    const duplicate = (existingTitles || []).some(
+      (row: { title?: string }) =>
+        String(row.title || "").trim().toLowerCase() === normalizedTitle,
+    );
     if (duplicate) {
       setErrors((p) => ({
         ...p,
         title:
           "Task title already exists. Please use a different task title.",
       }));
-
-      toast.error(
-        "Task title already exists.",
-      );
-
+      toast.error("Task title already exists.");
       setLoading(false);
       return;
     }
 
-    setErrors((p) => ({
-      ...p,
-      title: undefined,
-    }));
-
-    // ----------------------------------------
-    // Auto-analyze if AI was not manually run
-    // ----------------------------------------
-
-    let meta = aiMeta;
-
-    if (!meta) {
-      try {
-        const {
-          data,
-          error,
-        } =
-          await supabase.functions.invoke(
-            "analyze-task",
-            {
-              body: {
-                title:
-                  trimmedTitle,
-                description:
-                  trimmedDescription,
-                category:
-                  category ||
-                  undefined,
-              },
-            },
-          );
-
-        if (
-          !error &&
-          data &&
-          typeof data ===
-            "object"
-        ) {
-          const payload =
-            data as Record<
-              string,
-              unknown
-            >;
-
-          if (
-            payload.ok !== false &&
-            typeof payload.duration ===
-              "number"
-          ) {
-            meta = {
-              duration:
-                payload.duration,
-
-              difficulty:
-                typeof payload.difficulty ===
-                "string"
-                  ? payload.difficulty
-                  : "medium",
-
-              category:
-                typeof payload.category ===
-                "string"
-                  ? payload.category
-                  : category ||
-                    "General",
-
-              priority:
-                typeof payload.priority ===
-                "string"
-                  ? payload.priority
-                  : "medium",
-
-              corrected_description:
-                typeof payload.corrected_description ===
-                "string"
-                  ? payload.corrected_description
-                  : "",
-            };
-
-            setAiMeta(meta);
-
-            if (
-              meta.corrected_description &&
-              meta.corrected_description !==
-                description
-            ) {
-              setDescription(
-                meta.corrected_description,
-              );
-            }
-          }
-        }
-      } catch (error) {
-        console.warn(
-          "Automatic AI analysis failed. Task will still be saved:",
-          error,
-        );
-      }
-    }
-
-    // ----------------------------------------
-    // Build timezone-aware dates
-    // ----------------------------------------
-
-    const off = tzOffset(
-      new Date(),
-      getTimezone(),
-    );
-
-    let dueDatetime:
-      | string
-      | null = null;
-
+    const off = tzOffset(new Date(), getTimezone());
+    let dueDatetime: string | null = null;
     if (dueDate) {
       dueDatetime = dueTime
         ? `${dueDate}T${dueTime}:00${off}`
         : `${dueDate}T23:59:00${off}`;
     }
 
-    let startDatetime:
-      | string
-      | null = null;
-
-    const effectiveStartDate =
-      startDate || dueDate;
-
-    if (
-      effectiveStartDate &&
-      startTime
-    ) {
-      startDatetime =
-        `${effectiveStartDate}T${startTime}:00${off}`;
+    let startDatetime: string | null = null;
+    const effectiveStartDate = startDate || dueDate;
+    if (effectiveStartDate && startTime) {
+      startDatetime = `${effectiveStartDate}T${startTime}:00${off}`;
     }
-
-    // ----------------------------------------
-    // Validate due date/time
-    // ----------------------------------------
 
     if (!dueDatetime) {
-      toast.error(
-        "Due date and due time are required.",
-      );
-
+      toast.error("Due date and due time are required.");
       setLoading(false);
       return;
     }
 
-    const dueTimestamp =
-      new Date(
-        dueDatetime,
-      ).getTime();
-
-    if (
-      !Number.isFinite(
-        dueTimestamp,
-      )
-    ) {
-      toast.error(
-        "Please enter a valid due date and time.",
-      );
-
+    const dueTimestamp = new Date(dueDatetime).getTime();
+    if (!Number.isFinite(dueTimestamp)) {
+      toast.error("Please enter a valid due date and time.");
       setLoading(false);
       return;
     }
-
-    if (
-      dueTimestamp <=
-      Date.now()
-    ) {
-      toast.error(
-        "Due date and time must be in the future.",
-      );
-
+    if (dueTimestamp <= Date.now()) {
+      toast.error("Due date and time must be in the future.");
       setLoading(false);
       return;
     }
-
-    // ----------------------------------------
-    // Validate start date/time
-    // ----------------------------------------
 
     if (startDatetime) {
-      const startTimestamp =
-        new Date(
-          startDatetime,
-        ).getTime();
-
-      if (
-        !Number.isFinite(
-          startTimestamp,
-        )
-      ) {
-        toast.error(
-          "Please enter a valid start date and time.",
-        );
-
+      const startTimestamp = new Date(startDatetime).getTime();
+      if (!Number.isFinite(startTimestamp)) {
+        toast.error("Please enter a valid start date and time.");
         setLoading(false);
         return;
       }
-
-      if (
-        startTimestamp >=
-        dueTimestamp
-      ) {
+      if (startTimestamp >= dueTimestamp) {
         toast.error(
           "Start date and time must be before the due date and time.",
         );
-
+        setLoading(false);
+        return;
+      }
+      if (startTimestamp < Date.now()) {
+        toast.error("Start time cannot be in the past.");
         setLoading(false);
         return;
       }
     }
 
-    // ----------------------------------------
-    // Prevent past start time
-    // ----------------------------------------
+    // ============================================================
+    // SOURCE OF TRUTH: user-confirmed structured attributes only.
+    // NLP may suggest; it never overrides these values.
+    // AHP / PSO / CSP receive these validated values.
+    // ============================================================
+    const finalDuration = durationVal as number;
+    const finalDifficulty = difficulty; // easy | medium | hard
+    const finalCategory = category;
 
-    if (
-      startDatetime &&
-      new Date(
-        startDatetime,
-      ).getTime() <
-        Date.now()
-    ) {
-      toast.error(
-        "Start time cannot be in the past.",
-      );
-
-      setLoading(false);
-      return;
+    let initialStatus = "todo";
+    if (startDatetime && new Date(startDatetime) <= new Date()) {
+      initialStatus = "in_progress";
     }
 
-    // ----------------------------------------
-    // Final category
-    // ----------------------------------------
-
-    const finalCategory =
-      category ||
-      meta?.category ||
-      "General";
-
-    // ============================================================
-    // IMPORTANT SCHEDULING RULE
-    // ============================================================
-    //
-    // DO NOT CHECK FOR OVERLAPPING TASKS HERE.
-    //
-    // Add Task is responsible for collecting and saving
-    // the user's task information.
-    //
-    // The scheduling system is responsible for solving
-    // conflicts between tasks.
-    //
-    // Workflow:
-    //
-    // User enters tasks
-    //       ↓
-    // AHP → determine priority
-    //       ↓
-    // PSO → search for task order
-    //       ↓
-    // CSP → find valid time slots
-    //       ↓
-    // Generated schedule
-    //
-    // Therefore:
-    //
-    // Multiple tasks may temporarily have the same
-    // requested start time.
-    //
-    // They must still be saved.
-    //
-    // The final generated schedule must NOT contain
-    // overlapping tasks.
-    // ============================================================
-
-    // ----------------------------------------
-    // Initial status
-    // ----------------------------------------
-
-    let initialStatus =
-      "todo";
-
-    if (
-      startDatetime &&
-      new Date(
-        startDatetime,
-      ) <= new Date()
-    ) {
-      initialStatus =
-        "in_progress";
-    }
-
-    // ----------------------------------------
-    // Insert task
-    // ----------------------------------------
-
-    const {
-      error: insertError,
-    } = await supabase
-      .from("tasks")
-      .insert({
-        title:
-          trimmedTitle,
-
-        description:
-          trimmedDescription,
-
-        due_date:
-          dueDatetime,
-
-        start_time:
-          startDatetime,
-
-        estimated_duration:
-          meta?.duration ||
-          null,
-
-        difficulty:
-          meta?.difficulty ||
-          null,
-
-        category:
-          finalCategory,
-
-        status:
-          initialStatus,
-
-        user_id:
-          user.id,
-
-        project_id:
-          projectId !== "none"
-            ? projectId
-            : null,
-
-        archived: false,
-      });
+    const { error: insertError } = await supabase.from("tasks").insert({
+      title: trimmedTitle,
+      description: trimmedDescription,
+      due_date: dueDatetime,
+      start_time: startDatetime,
+      estimated_duration: finalDuration,
+      difficulty: finalDifficulty,
+      category: finalCategory,
+      status: initialStatus,
+      user_id: user.id,
+      project_id: projectId !== "none" ? projectId : null,
+      archived: false,
+    });
 
     setLoading(false);
 
     if (insertError) {
-      console.error(
-        "AddTask: failed to create task:",
-        insertError,
-      );
-
-      toast.error(
-        insertError.message ||
-          "Failed to create task.",
-      );
-
+      console.error("AddTask: failed to create task:", insertError);
+      toast.error(insertError.message || "Failed to create task.");
       return;
     }
 
-    // ----------------------------------------
-    // Success
-    // ----------------------------------------
-
-    toast.success(
-      "Task created successfully!",
-    );
-
+    toast.success("Task created successfully!");
     resetForm();
-
     if (embedded) {
       onCreated?.();
     } else {
@@ -1121,137 +649,84 @@ export default function AddTask({
     }
   };
 
-  // ----------------------------------------
-  // UI
-  // ----------------------------------------
-
   return (
     <motion.div
-      initial={{
-        opacity: 0,
-        y: 8,
-      }}
-      animate={{
-        opacity: 1,
-        y: 0,
-      }}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
       className={
-        embedded
-          ? "space-y-4"
-          : "max-w-2xl mx-auto space-y-6"
+        embedded ? "space-y-4" : "max-w-2xl mx-auto space-y-6"
       }
     >
       {!embedded && (
-        <h1 className="font-display text-3xl font-bold">
-          Add Task
-        </h1>
+        <h1 className="font-display text-3xl font-bold">Add Task</h1>
       )}
 
       <form onSubmit={handleSubmit}>
-        <Card
-          className={
-            embedded
-              ? "border-0 shadow-none"
-              : undefined
-          }
-        >
+        <Card className={embedded ? "border-0 shadow-none" : undefined}>
           {!embedded && (
             <CardHeader>
-              <CardTitle className="font-display">
-                New Task
-              </CardTitle>
+              <CardTitle className="font-display">New Task</CardTitle>
             </CardHeader>
           )}
 
           <CardContent
-            className={
-              embedded
-                ? "space-y-4 p-0"
-                : "space-y-4"
-            }
+            className={embedded ? "space-y-4 p-0" : "space-y-4"}
           >
             {/* TITLE */}
             <div className="space-y-2">
-              <Label htmlFor="title">
-                Title
-              </Label>
-
+              <Label htmlFor="title">Title</Label>
               <Input
                 id="title"
                 required
                 value={title}
                 onChange={(e) => {
-                  setTitle(
-                    e.target.value,
-                  );
-
+                  setTitle(e.target.value);
                   if (errors.title) {
-                    setErrors((p) => ({
-                      ...p,
-                      title:
-                        undefined,
-                    }));
+                    setErrors((p) => ({ ...p, title: undefined }));
                   }
-
-                  if (aiMeta) {
-                    setAiMeta(null);
-                  }
+                  clearValidationOnEdit();
                 }}
-                placeholder="e.g. Finish Math Assignment or Grocery shopping"
-                aria-invalid={
-                  !!errors.title
-                }
-                maxLength={
-                  TITLE_MAX
-                }
+                placeholder="e.g. Log & Categorize Reported System Bugs"
+                aria-invalid={!!errors.title}
+                maxLength={TITLE_MAX}
                 className={
                   errors.title
                     ? "border-destructive focus-visible:ring-destructive"
                     : undefined
                 }
               />
-
               <p className="text-xs text-muted-foreground">
-                {title.length}/
-                {TITLE_MAX} characters
+                {title.length}/{TITLE_MAX} characters
               </p>
-
               {errors.title && (
-                <p className="text-xs text-destructive">
-                  {errors.title}
-                </p>
+                <p className="text-xs text-destructive">{errors.title}</p>
               )}
             </div>
 
             {/* DESCRIPTION */}
             <div className="space-y-2">
-              <Label htmlFor="desc">
-                Description
-              </Label>
-
+              <Label htmlFor="desc">Description</Label>
               <Textarea
                 id="desc"
                 required
-                aria-invalid={
-                  !!errors.description
-                }
+                aria-invalid={!!errors.description}
                 value={description}
                 onChange={(e) => {
-                  setDescription(
-                    e.target.value,
-                  );
-
-                  if (aiMeta) {
-                    setAiMeta(null);
+                  setDescription(e.target.value);
+                  if (errors.description) {
+                    setErrors((p) => ({
+                      ...p,
+                      description: undefined,
+                    }));
                   }
+                  clearValidationOnEdit();
                 }}
-                placeholder="Add details..."
+                placeholder="Describe the work involved in this task..."
                 rows={3}
                 autoCorrect="on"
                 spellCheck
                 autoCapitalize="sentences"
               />
-
               {errors.description && (
                 <p className="text-xs text-destructive">
                   {errors.description}
@@ -1261,43 +736,24 @@ export default function AddTask({
 
             {/* PROJECT */}
             <div className="space-y-2">
-              <Label>
-                Project
-              </Label>
-
-              <Select
-                value={projectId}
-                onValueChange={
-                  handleProjectChange
-                }
-              >
+              <Label>Project</Label>
+              <Select value={projectId} onValueChange={handleProjectChange}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select project" />
                 </SelectTrigger>
-
                 <SelectContent>
-                  <SelectItem value="none">
-                    Stand-alone Task
-                  </SelectItem>
-
+                  <SelectItem value="none">Stand-alone Task</SelectItem>
                   {projects.map((p) => (
-                    <SelectItem
-                      key={p.id}
-                      value={p.id}
-                    >
+                    <SelectItem key={p.id} value={p.id}>
                       <span className="inline-flex items-center gap-2">
                         <span
                           className="h-2 w-2 rounded-full"
-                          style={{
-                            backgroundColor:
-                              p.color,
-                          }}
+                          style={{ backgroundColor: p.color }}
                         />
                         {p.name}
                       </span>
                     </SelectItem>
                   ))}
-
                   <SelectItem value="__new__">
                     <span className="inline-flex items-center gap-1 text-primary">
                       <PlusCircle className="h-3 w-3" />
@@ -1311,76 +767,48 @@ export default function AddTask({
                 <Card className="bg-accent/30 border-primary/20">
                   <CardContent className="py-3 space-y-2">
                     <Input
-                      value={
-                        newProjectName
-                      }
+                      value={newProjectName}
                       onChange={(e) => {
-                        setNewProjectName(
-                          e.target.value,
-                        );
-
-                        if (
-                          errors.newProject
-                        ) {
+                        setNewProjectName(e.target.value);
+                        if (errors.newProject) {
                           setErrors((p) => ({
                             ...p,
-                            newProject:
-                              undefined,
+                            newProject: undefined,
                           }));
                         }
                       }}
                       placeholder="Project name"
-                      aria-invalid={
-                        !!errors.newProject
-                      }
+                      aria-invalid={!!errors.newProject}
                       className={
                         errors.newProject
                           ? "border-destructive focus-visible:ring-destructive"
                           : undefined
                       }
                     />
-
                     {errors.newProject && (
                       <p className="text-xs text-destructive">
-                        {
-                          errors.newProject
-                        }
+                        {errors.newProject}
                       </p>
                     )}
-
                     <Textarea
-                      value={
-                        newProjectDesc
-                      }
-                      onChange={(e) =>
-                        setNewProjectDesc(
-                          e.target.value,
-                        )
-                      }
+                      value={newProjectDesc}
+                      onChange={(e) => setNewProjectDesc(e.target.value)}
                       rows={2}
                       placeholder="Description (optional)"
                     />
-
                     <div className="flex gap-2 justify-end">
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={() =>
-                          setShowNewProject(
-                            false,
-                          )
-                        }
+                        onClick={() => setShowNewProject(false)}
                       >
                         Cancel
                       </Button>
-
                       <Button
                         type="button"
                         size="sm"
-                        onClick={
-                          createInlineProject
-                        }
+                        onClick={createInlineProject}
                       >
                         Create
                       </Button>
@@ -1390,48 +818,131 @@ export default function AddTask({
               )}
             </div>
 
-            {/* CATEGORY */}
+            {/* CATEGORY — user selected is source of truth */}
             <div className="space-y-2">
-              <Label>
-                Category
-              </Label>
-
+              <Label>Category</Label>
               <Select
                 value={category}
                 onValueChange={(value) => {
                   setCategory(value);
-
-                  if (aiMeta) {
-                    setAiMeta(null);
+                  if (errors.category) {
+                    setErrors((p) => ({ ...p, category: undefined }));
                   }
                 }}
               >
-                <SelectTrigger>
+                <SelectTrigger
+                  className={
+                    errors.category
+                      ? "border-destructive focus-visible:ring-destructive"
+                      : undefined
+                  }
+                >
                   <SelectValue placeholder="Select category" />
                 </SelectTrigger>
-
                 <SelectContent>
-                  {categories.map(
-                    (c) => (
-                      <SelectItem
-                        key={c}
-                        value={c}
-                      >
-                        {c}
-                      </SelectItem>
-                    ),
-                  )}
+                  {categories.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+              {errors.category && (
+                <p className="text-xs text-destructive">{errors.category}</p>
+              )}
             </div>
 
-            {/* DUE DATE / TIME */}
+            {/* DIFFICULTY — user selected is source of truth */}
+            <div className="space-y-2">
+              <Label>Difficulty</Label>
+              <Select
+                value={difficulty}
+                onValueChange={(value) => {
+                  setDifficulty(value);
+                  if (errors.difficulty) {
+                    setErrors((p) => ({ ...p, difficulty: undefined }));
+                  }
+                }}
+              >
+                <SelectTrigger
+                  className={
+                    errors.difficulty
+                      ? "border-destructive focus-visible:ring-destructive"
+                      : undefined
+                  }
+                >
+                  <SelectValue placeholder="Select difficulty" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="easy">Easy</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="hard">Hard</SelectItem>
+                </SelectContent>
+              </Select>
+              {errors.difficulty && (
+                <p className="text-xs text-destructive">
+                  {errors.difficulty}
+                </p>
+              )}
+            </div>
+
+            {/* ESTIMATED DURATION — user input is source of truth */}
+            <div className="space-y-2">
+              <Label htmlFor="duration">Estimated Duration (minutes)</Label>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {DURATION_PRESETS.map((m) => (
+                  <Button
+                    key={m}
+                    type="button"
+                    size="sm"
+                    variant={
+                      estimatedDuration === String(m) ? "default" : "outline"
+                    }
+                    onClick={() => {
+                      setEstimatedDuration(String(m));
+                      if (errors.duration) {
+                        setErrors((p) => ({ ...p, duration: undefined }));
+                      }
+                    }}
+                  >
+                    {m} min
+                  </Button>
+                ))}
+              </div>
+              <Input
+                id="duration"
+                type="number"
+                min={1}
+                max={480}
+                step={1}
+                value={estimatedDuration}
+                onChange={(e) => {
+                  setEstimatedDuration(e.target.value);
+                  if (errors.duration) {
+                    setErrors((p) => ({ ...p, duration: undefined }));
+                  }
+                }}
+                placeholder="e.g. 60"
+                aria-invalid={!!errors.duration}
+                className={
+                  errors.duration
+                    ? "border-destructive focus-visible:ring-destructive"
+                    : undefined
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                Your estimate is used for scheduling. Actual time is tracked
+                in Focus Mode and stored separately.
+              </p>
+              {errors.duration && (
+                <p className="text-xs text-destructive">{errors.duration}</p>
+              )}
+            </div>
+
+            {/* DUE DATE / TIME — user selected is source of truth */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="due-date">
-                  Due Date
-                </Label>
-
+                <Label htmlFor="due-date">Due Date</Label>
                 <Input
                   id="due-date"
                   type="date"
@@ -1440,66 +951,34 @@ export default function AddTask({
                   max={MAX_DATE}
                   value={dueDate}
                   onChange={(e) => {
-                    setDueDate(
-                      e.target.value,
-                    );
-
-                    if (
-                      errors.dueDate
-                    ) {
-                      setErrors((p) => ({
-                        ...p,
-                        dueDate:
-                          undefined,
-                      }));
+                    setDueDate(e.target.value);
+                    if (errors.dueDate) {
+                      setErrors((p) => ({ ...p, dueDate: undefined }));
                     }
                   }}
-                  aria-invalid={
-                    !!errors.dueDate
-                  }
+                  aria-invalid={!!errors.dueDate}
                 />
-
                 {errors.dueDate && (
-                  <p className="text-xs text-destructive">
-                    {errors.dueDate}
-                  </p>
+                  <p className="text-xs text-destructive">{errors.dueDate}</p>
                 )}
               </div>
-
               <div className="space-y-2">
-                <Label htmlFor="due-time">
-                  Due Time
-                </Label>
-
+                <Label htmlFor="due-time">Due Time</Label>
                 <Input
                   id="due-time"
                   type="time"
                   required
                   value={dueTime}
                   onChange={(e) => {
-                    setDueTime(
-                      e.target.value,
-                    );
-
-                    if (
-                      errors.dueTime
-                    ) {
-                      setErrors((p) => ({
-                        ...p,
-                        dueTime:
-                          undefined,
-                      }));
+                    setDueTime(e.target.value);
+                    if (errors.dueTime) {
+                      setErrors((p) => ({ ...p, dueTime: undefined }));
                     }
                   }}
-                  aria-invalid={
-                    !!errors.dueTime
-                  }
+                  aria-invalid={!!errors.dueTime}
                 />
-
                 {errors.dueTime && (
-                  <p className="text-xs text-destructive">
-                    {errors.dueTime}
-                  </p>
+                  <p className="text-xs text-destructive">{errors.dueTime}</p>
                 )}
               </div>
             </div>
@@ -1507,10 +986,7 @@ export default function AddTask({
             {/* START DATE / TIME */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="start-date">
-                  Start Date
-                </Label>
-
+                <Label htmlFor="start-date">Start Date</Label>
                 <Input
                   id="start-date"
                   type="date"
@@ -1518,61 +994,33 @@ export default function AddTask({
                   max={MAX_DATE}
                   value={startDate}
                   onChange={(e) => {
-                    setStartDate(
-                      e.target.value,
-                    );
-
-                    if (
-                      errors.startDate
-                    ) {
-                      setErrors((p) => ({
-                        ...p,
-                        startDate:
-                          undefined,
-                      }));
+                    setStartDate(e.target.value);
+                    if (errors.startDate) {
+                      setErrors((p) => ({ ...p, startDate: undefined }));
                     }
                   }}
-                  aria-invalid={
-                    !!errors.startDate
-                  }
+                  aria-invalid={!!errors.startDate}
                 />
-
                 {errors.startDate && (
                   <p className="text-xs text-destructive">
                     {errors.startDate}
                   </p>
                 )}
               </div>
-
               <div className="space-y-2">
-                <Label htmlFor="start-time">
-                  Start Time
-                </Label>
-
+                <Label htmlFor="start-time">Start Time</Label>
                 <Input
                   id="start-time"
                   type="time"
                   value={startTime}
                   onChange={(e) => {
-                    setStartTime(
-                      e.target.value,
-                    );
-
-                    if (
-                      errors.startTime
-                    ) {
-                      setErrors((p) => ({
-                        ...p,
-                        startTime:
-                          undefined,
-                      }));
+                    setStartTime(e.target.value);
+                    if (errors.startTime) {
+                      setErrors((p) => ({ ...p, startTime: undefined }));
                     }
                   }}
-                  aria-invalid={
-                    !!errors.startTime
-                  }
+                  aria-invalid={!!errors.startTime}
                 />
-
                 {errors.startTime && (
                   <p className="text-xs text-destructive">
                     {errors.startTime}
@@ -1582,18 +1030,16 @@ export default function AddTask({
             </div>
 
             <p className="text-xs text-muted-foreground">
-              Task will auto-switch to
-              "In Progress" when this
-              date/time is reached. If no
-              start date is set, the due
-              date will be used.
+              Task will auto-switch to &quot;In Progress&quot; when this
+              date/time is reached. If no start date is set, the due date
+              will be used.
             </p>
 
-            {/* AI BUTTON */}
+            {/* NLP: Title/Description validation */}
             <Button
               type="button"
               variant="outline"
-              onClick={analyzeTask}
+              onClick={validateDescription}
               disabled={analyzing}
               className="w-full"
             >
@@ -1602,156 +1048,168 @@ export default function AddTask({
               ) : (
                 <Brain className="mr-2 h-4 w-4" />
               )}
-
               {analyzing
-                ? "Analyzing..."
-                : "Analyze with AI"}
+                ? "Validating..."
+                : "Validate Description with AI"}
             </Button>
 
-        {/* AI RESULT */}
-{aiMeta && (
-  <Card className="bg-accent/30 border-primary/20">
-    <CardContent className="py-4 space-y-4">
-      {/* Header */}
-      <div>
-        <p className="text-sm font-semibold">
-          AI Analysis
-        </p>
+            {/* Validation result */}
+            {aiValidation && (
+              <Card
+                className={
+                  aiValidation.validation === "VALID"
+                    ? "bg-accent/30 border-primary/20"
+                    : aiValidation.validation === "REVIEW"
+                      ? "bg-amber-500/10 border-amber-500/30"
+                      : "bg-destructive/10 border-destructive/30"
+                }
+              >
+                <CardContent className="py-4 space-y-3">
+                  <div className="flex items-start gap-2">
+                    {aiValidation.validation === "VALID" && (
+                      <CheckCircle2 className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+                    )}
+                    {aiValidation.validation === "REVIEW" && (
+                      <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                    )}
+                    {aiValidation.validation === "INVALID" && (
+                      <XCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                    )}
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold">
+                        {aiValidation.validation === "VALID" &&
+                          "Description matches the task."}
+                        {aiValidation.validation === "REVIEW" &&
+                          "Please review your description. It may not fully match the task title."}
+                        {aiValidation.validation === "INVALID" &&
+                          "Description does not match the task title."}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {aiValidation.reason}
+                      </p>
+                      {aiValidation.validation === "INVALID" && (
+                        <p className="text-xs text-destructive mt-1">
+                          Please describe the work involved in this task,
+                          then validate again.
+                        </p>
+                      )}
+                    </div>
+                  </div>
 
-        <p className="text-xs text-muted-foreground mt-1">
-          The task is analyzed using the following criteria:
-          difficulty, duration, category importance, and
-          deadline proximity.
-        </p>
-      </div>
+                  {aiValidation.validation === "REVIEW" && !forceContinue && (
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          /* user edits description — validation clears on change */
+                        }}
+                      >
+                        Edit Description
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => {
+                          setForceContinue(true);
+                          toast.message(
+                            "You can create the task with the current description.",
+                          );
+                        }}
+                      >
+                        Continue Anyway
+                      </Button>
+                    </div>
+                  )}
 
-      {/* Criteria Table */}
-      <div className="rounded-lg border overflow-hidden">
-        <div className="grid grid-cols-[1fr_1.2fr] bg-muted/50 border-b">
-          <div className="px-3 py-2 text-xs font-semibold">
-            Criterion
-          </div>
+                  {forceContinue && aiValidation.validation !== "VALID" && (
+                    <Badge variant="outline">Continuing with review override</Badge>
+                  )}
 
-          <div className="px-3 py-2 text-xs font-semibold">
-            Task Information
-          </div>
-        </div>
+                  {/* Optional AI suggestions — never auto-applied */}
+                  {aiValidation.suggestions && (
+                    <div className="rounded-lg border overflow-hidden mt-2">
+                      <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
+                        Optional AI suggestions (you confirm the final values)
+                      </div>
+                      {aiValidation.suggestions.difficulty && (
+                        <div className="flex items-center justify-between px-3 py-2 border-b text-sm">
+                          <span>
+                            Difficulty:{" "}
+                            <Badge variant="outline" className="capitalize">
+                              {aiValidation.suggestions.difficulty}
+                            </Badge>
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => applySuggestion("difficulty")}
+                          >
+                            Use
+                          </Button>
+                        </div>
+                      )}
+                      {aiValidation.suggestions.duration != null && (
+                        <div className="flex items-center justify-between px-3 py-2 border-b text-sm">
+                          <span>
+                            Duration:{" "}
+                            <Badge variant="outline">
+                              {aiValidation.suggestions.duration} min
+                            </Badge>
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => applySuggestion("duration")}
+                          >
+                            Use
+                          </Button>
+                        </div>
+                      )}
+                      {aiValidation.suggestions.category && (
+                        <div className="flex items-center justify-between px-3 py-2 text-sm">
+                          <span>
+                            Category:{" "}
+                            <Badge variant="outline">
+                              {aiValidation.suggestions.category}
+                            </Badge>
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => applySuggestion("category")}
+                          >
+                            Use
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
-        {/* Difficulty */}
-        <div className="grid grid-cols-[1fr_1.2fr] border-b">
-          <div className="px-3 py-3 text-sm font-medium">
-            Difficulty
-          </div>
-
-          <div className="px-3 py-3 text-sm">
-            <Badge variant="outline" className="capitalize">
-              {aiMeta.difficulty}
-            </Badge>
-          </div>
-        </div>
-
-        {/* Duration */}
-        <div className="grid grid-cols-[1fr_1.2fr] border-b">
-          <div className="px-3 py-3 text-sm font-medium">
-            Duration
-          </div>
-
-          <div className="px-3 py-3 text-sm">
-            <Badge variant="outline">
-              {aiMeta.duration} minutes
-            </Badge>
-          </div>
-        </div>
-
-        {/* Category Importance */}
-        <div className="grid grid-cols-[1fr_1.2fr] border-b">
-          <div className="px-3 py-3 text-sm font-medium">
-            Category Importance
-          </div>
-
-          <div className="px-3 py-3 text-sm">
-            <Badge variant="outline">
-              {aiMeta.category}
-            </Badge>
-          </div>
-        </div>
-
-        {/* Deadline Proximity */}
-        <div className="grid grid-cols-[1fr_1.2fr]">
-          <div className="px-3 py-3 text-sm font-medium">
-            Deadline Proximity
-          </div>
-
-          <div className="px-3 py-3 text-sm">
-            {dueDate && dueTime ? (
-              <div className="space-y-1">
-                <Badge variant="outline">
-                  {dueDate} at {dueTime}
-                </Badge>
-
-                <p className="text-xs text-muted-foreground">
-                  How close the task is to its deadline.
-                </p>
-              </div>
-            ) : (
-              <span className="text-muted-foreground">
-                Deadline not set
-              </span>
+                  <p className="text-xs text-muted-foreground">
+                    NLP validates task text and provides optional
+                    recommendations. AHP calculates priority from your
+                    confirmed duration, difficulty, category, and deadline.
+                  </p>
+                </CardContent>
+              </Card>
             )}
-          </div>
-        </div>
-      </div>
-
-      {/* Overall Priority */}
-      {aiMeta.priority && (
-        <div className="rounded-lg border bg-background/60 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs text-muted-foreground">
-                Overall Priority
-              </p>
-
-              <p className="text-sm font-semibold mt-1">
-                Calculated Priority
-              </p>
-            </div>
-
-            <Badge
-              variant="outline"
-              className="capitalize font-semibold"
-            >
-              ⚡ {aiMeta.priority}
-            </Badge>
-          </div>
-        </div>
-      )}
-
-      {/* Explanation */}
-      <div className="rounded-md bg-muted/40 p-3">
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          <span className="font-semibold text-foreground">
-            How this is used:
-          </span>{" "}
-          These task characteristics provide the information
-          used when determining the task's priority and
-          scheduling order. Difficulty, duration, category
-          importance, and deadline proximity are considered
-          when managing the task.
-        </p>
-      </div>
-    </CardContent>
-  </Card>
-)}
 
             {/* CREATE TASK */}
             <Button
               type="submit"
               className="w-full"
-              disabled={loading}
+              disabled={
+                loading ||
+                analyzing ||
+                (aiValidation?.validation === "INVALID" && !forceContinue)
+              }
             >
-              {loading
-                ? "Creating..."
-                : "Create Task"}
+              {loading ? "Creating..." : "Create Task"}
             </Button>
           </CardContent>
         </Card>

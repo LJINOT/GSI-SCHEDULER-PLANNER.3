@@ -49,6 +49,9 @@ type AiValidation = {
   validation: ValidationStatus;
   related: boolean;
   confidence: number;
+  /** Embedding cosine similarity 0–1 (primary relatedness score). */
+  similarity: number;
+  basic_score?: number;
   reason: string;
   suggestions: {
     duration?: number;
@@ -293,6 +296,11 @@ export default function AddTask({
         validation,
         related: Boolean(payload.related),
         confidence: Number(payload.confidence) || 0,
+        similarity: Number(payload.similarity) || 0,
+        basic_score:
+          typeof payload.basic_score === "number"
+            ? payload.basic_score
+            : undefined,
         reason:
           typeof payload.reason === "string"
             ? payload.reason
@@ -452,6 +460,11 @@ export default function AddTask({
               validation,
               related: Boolean(payload.related),
               confidence: Number(payload.confidence) || 0,
+              similarity: Number(payload.similarity) || 0,
+              basic_score:
+                typeof payload.basic_score === "number"
+                  ? payload.basic_score
+                  : undefined,
               reason:
                 typeof payload.reason === "string"
                   ? payload.reason
@@ -1086,6 +1099,17 @@ export default function AddTask({
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {aiValidation.reason}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Relatedness (embedding):{" "}
+                        <span className="font-medium tabular-nums">
+                          {(aiValidation.similarity * 100).toFixed(0)}%
+                        </span>
+                        {" · "}
+                        AI confidence:{" "}
+                        <span className="font-medium tabular-nums">
+                          {(aiValidation.confidence * 100).toFixed(0)}%
+                        </span>
                       </p>
                       {aiValidation.validation === "INVALID" && (
                         <p className="text-xs text-destructive mt-1">

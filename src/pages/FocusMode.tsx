@@ -583,10 +583,35 @@ export default function FocusMode() {
         .eq("id", entryId)
         .eq("user_id", user.id);
 
+      // Aggregate measured time onto the task as actual_duration.
+      // Never overwrites estimated_duration (user estimate remains source of truth for AHP until history is used for recommendations only).
+      const taskId = focusTask?.id;
+      if (taskId) {
+        const { data: entries } = await supabase
+          .from("time_entries")
+          .select("duration")
+          .eq("task_id", taskId)
+          .eq("user_id", user.id)
+          .not("duration", "is", null);
+
+        const totalActual = (entries || []).reduce(
+          (sum, row) => sum + (Number(row.duration) || 0),
+          0,
+        );
+
+        if (totalActual > 0) {
+          await supabase
+            .from("tasks")
+            .update({ actual_duration: totalActual })
+            .eq("id", taskId)
+            .eq("user_id", user.id);
+        }
+      }
+
       setEntryId(null);
       setSessionStartIso(null);
     },
-    [entryId],
+    [entryId, focusTask?.id],
   );
 
   /**

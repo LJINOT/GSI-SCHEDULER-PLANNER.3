@@ -1863,10 +1863,10 @@ export default function Projects() {
       ) : (
 
         /* ====================================================
-           CARD VIEW
+           CARD VIEW / PROJECT DETAILS
         ==================================================== */
 
-        {selectedProject ? (
+        selectedProject ? (
           /* PROJECT DETAILS — compact summary + task list */
           <div className="space-y-4 max-w-3xl">
             <Button
@@ -2212,7 +2212,7 @@ export default function Projects() {
             );
           })}
         </div>
-        )}
+        )
 
       )}
 

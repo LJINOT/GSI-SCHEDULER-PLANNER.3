@@ -100,6 +100,11 @@ export default function AddTask({
       ? new URLSearchParams(window.location.search).get("date") || ""
       : "";
 
+  const prefillProjectId =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("project") || ""
+      : "";
+
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [dueDate, setDueDate] = useState(embedded ? "" : prefillDate);
@@ -109,7 +114,9 @@ export default function AddTask({
   const [category, setCategory] = useState("");
   const [difficulty, setDifficulty] = useState<string>("");
   const [estimatedDuration, setEstimatedDuration] = useState<string>("");
-  const [projectId, setProjectId] = useState<string>("none");
+  const [projectId, setProjectId] = useState<string>(
+    prefillProjectId || "none",
+  );
   const [projects, setProjects] = useState<Project[]>([]);
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");

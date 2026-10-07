@@ -128,6 +128,13 @@ export default function AddTask({
   /** True only after a successful validation call for the current title/description/category. */
   const [descriptionValidated, setDescriptionValidated] = useState(false);
 
+  /** Tracks which optional AI suggestions the user has applied (Use → Used). */
+  const [appliedSuggestions, setAppliedSuggestions] = useState<{
+    duration?: boolean;
+    difficulty?: boolean;
+    category?: boolean;
+  }>({});
+
   const [errors, setErrors] = useState<{
     title?: string;
     description?: string;
@@ -257,6 +264,7 @@ export default function AddTask({
     setAiValidation(null);
     setForceContinue(false);
     setDescriptionValidated(false);
+    setAppliedSuggestions({});
     setErrors({});
   };
 
@@ -264,6 +272,7 @@ export default function AddTask({
     if (aiValidation) setAiValidation(null);
     if (forceContinue) setForceContinue(false);
     setDescriptionValidated(false);
+    setAppliedSuggestions({});
   };
 
   /** Semantic validation of title vs description; optional suggestions only. */
@@ -366,6 +375,7 @@ export default function AddTask({
 
       setAiValidation(result);
       setDescriptionValidated(true);
+      setAppliedSuggestions({});
 
       if (validation === "VALID") {
         toast.success("Description matches the task.");
@@ -391,14 +401,19 @@ export default function AddTask({
     if (field === "duration" && aiValidation.suggestions.duration) {
       setEstimatedDuration(String(aiValidation.suggestions.duration));
       setErrors((p) => ({ ...p, duration: undefined }));
+      setAppliedSuggestions((p) => ({ ...p, duration: true }));
     }
     if (field === "difficulty" && aiValidation.suggestions.difficulty) {
       setDifficulty(aiValidation.suggestions.difficulty);
       setErrors((p) => ({ ...p, difficulty: undefined }));
+      setAppliedSuggestions((p) => ({ ...p, difficulty: true }));
     }
     if (field === "category" && aiValidation.suggestions.category) {
       setCategory(aiValidation.suggestions.category);
       setErrors((p) => ({ ...p, category: undefined }));
+      // Category participates in validation — applying suggestion should not
+      // wipe a just-completed validation; only mark as used.
+      setAppliedSuggestions((p) => ({ ...p, category: true }));
     }
   };
 
@@ -1172,9 +1187,15 @@ export default function AddTask({
                             type="button"
                             size="sm"
                             variant="ghost"
+                            disabled={!!appliedSuggestions.difficulty}
+                            className={
+                              appliedSuggestions.difficulty
+                                ? "text-muted-foreground cursor-default"
+                                : undefined
+                            }
                             onClick={() => applySuggestion("difficulty")}
                           >
-                            Use
+                            {appliedSuggestions.difficulty ? "Used" : "Use"}
                           </Button>
                         </div>
                       )}
@@ -1190,9 +1211,15 @@ export default function AddTask({
                             type="button"
                             size="sm"
                             variant="ghost"
+                            disabled={!!appliedSuggestions.duration}
+                            className={
+                              appliedSuggestions.duration
+                                ? "text-muted-foreground cursor-default"
+                                : undefined
+                            }
                             onClick={() => applySuggestion("duration")}
                           >
-                            Use
+                            {appliedSuggestions.duration ? "Used" : "Use"}
                           </Button>
                         </div>
                       )}
@@ -1208,9 +1235,15 @@ export default function AddTask({
                             type="button"
                             size="sm"
                             variant="ghost"
+                            disabled={!!appliedSuggestions.category}
+                            className={
+                              appliedSuggestions.category
+                                ? "text-muted-foreground cursor-default"
+                                : undefined
+                            }
                             onClick={() => applySuggestion("category")}
                           >
-                            Use
+                            {appliedSuggestions.category ? "Used" : "Use"}
                           </Button>
                         </div>
                       )}

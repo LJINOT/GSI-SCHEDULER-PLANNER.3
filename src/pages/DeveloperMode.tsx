@@ -51,7 +51,7 @@ function CodeBlock({ code }: { code: string }) {
    ========================================================= */
 
 const HOW_AHP = [
-  "Architecture: TASK INPUT → TITLE/DESCRIPTION VALIDATION (NLP) → CONFIRMED DURATION / DIFFICULTY / CATEGORY / DEADLINE → AHP → PSO → CSP. NLP validates task text and provides optional recommendations only. AHP calculates the priority score from validated task attributes — NLP does not generate the AHP score.",
+  "Architecture: TASK INPUT → TITLE/DESCRIPTION VALIDATION (embeddings + AI) → CONFIRMED DURATION / DIFFICULTY / CATEGORY / DEADLINE → AHP → PSO → CSP. NLP uses embedding cosine similarity as the primary relatedness score, plus AI judgment. It provides optional recommendations only. AHP calculates the priority score from validated task attributes — NLP does not generate the AHP score.",
 
   "1. The Analytic Hierarchy Process (AHP) calculates a priority score for each task using four evaluation criteria: Deadline Proximity, Difficulty, Duration, and Category Importance. These inputs come from structured user input (and Focus Mode actual duration for future recommendations), not from AI guesses.",
 

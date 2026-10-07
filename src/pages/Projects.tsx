@@ -54,7 +54,18 @@ import {
   Pencil,
   ChevronDown,
   ChevronUp,
+  ArrowLeft,
+  Search,
+  MoreHorizontal,
+  Eye,
 } from "lucide-react";
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 import { formatPH } from "@/lib/date-utils";
 
@@ -80,6 +91,9 @@ type Task = {
   start_time: string | null;
   estimated_duration: number | null;
   project_id: string | null;
+  priority_score: number | null;
+  difficulty: string | null;
+  category: string | null;
 };
 
 
@@ -105,6 +119,27 @@ const statusColors: Record<string, string> = {
 };
 
 const TASK_LIST_LIMIT = 3;
+
+/** Map priority_score to HIGH / MEDIUM / LOW for compact scanning. */
+function priorityLabel(score: number | null | undefined): "HIGH" | "MEDIUM" | "LOW" {
+  if (score == null || !Number.isFinite(Number(score))) return "MEDIUM";
+  const s = Number(score);
+  if (s >= 0.66) return "HIGH";
+  if (s >= 0.33) return "MEDIUM";
+  return "LOW";
+}
+
+const priorityDot: Record<string, string> = {
+  HIGH: "bg-destructive",
+  MEDIUM: "bg-warning",
+  LOW: "bg-success",
+};
+
+const priorityText: Record<string, string> = {
+  HIGH: "text-destructive",
+  MEDIUM: "text-warning",
+  LOW: "text-success",
+};
 
 
 // ============================================================
@@ -166,6 +201,24 @@ export default function Projects() {
 
   const [view, setView] =
     useState<"cards" | "board">("cards");
+
+  /** Focused Project Details (reduces crowding vs embedding all tasks in every card). */
+  const [selectedProjectId, setSelectedProjectId] =
+    useState<string | null>(null);
+
+  const [detailFilter, setDetailFilter] = useState<
+    "all" | "todo" | "in_progress" | "done"
+  >("all");
+
+  const [detailSearch, setDetailSearch] = useState("");
+
+  const [detailSort, setDetailSort] = useState<
+    "priority" | "due" | "title" | "status"
+  >("priority");
+
+  /** Read-only task details panel (edit still uses existing dialog). */
+  const [viewingTask, setViewingTask] =
+    useState<Task | null>(null);
 
   const [
     projectFilters,
@@ -242,6 +295,8 @@ export default function Projects() {
 
   useEffect(() => {
     if (highlightId && !loading) {
+      setSelectedProjectId(highlightId);
+      setView("cards");
       setTimeout(() => {
         projectRefs.current[
           highlightId
@@ -249,12 +304,7 @@ export default function Projects() {
           behavior: "smooth",
           block: "center",
         });
-      }, 200);
-
-      setExpandedProjects((prev) => ({
-        ...prev,
-        [highlightId]: true,
-      }));
+      }, 100);
     }
   }, [highlightId, loading]);
 
@@ -303,7 +353,7 @@ export default function Projects() {
       supabase
         .from("tasks")
         .select(
-          "id, title, description, status, due_date, start_time, estimated_duration, project_id"
+          "id, title, description, status, due_date, start_time, estimated_duration, project_id, priority_score, difficulty, category"
         )
         .eq("user_id", uid)
         .or(
@@ -719,6 +769,76 @@ export default function Projects() {
         projectId
     );
 
+  const selectedProject =
+    selectedProjectId
+      ? projects.find((pr) => pr.id === selectedProjectId) ?? null
+      : null;
+
+  const openProjectDetails = (projectId: string) => {
+    setSelectedProjectId(projectId);
+    setDetailFilter("all");
+    setDetailSearch("");
+    setDetailSort("priority");
+    setViewingTask(null);
+  };
+
+  const closeProjectDetails = () => {
+    setSelectedProjectId(null);
+    setViewingTask(null);
+    setDetailSearch("");
+    setDetailFilter("all");
+  };
+
+  const detailTasksFor = (projectId: string) => {
+    let list = tasksFor(projectId);
+    if (detailFilter !== "all") {
+      list = list.filter((t) => t.status === detailFilter);
+    }
+    const q = detailSearch.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (t) =>
+          t.title.toLowerCase().includes(q) ||
+          (t.description || "").toLowerCase().includes(q),
+      );
+    }
+    const sorted = [...list];
+    sorted.sort((a, b) => {
+      if (detailSort === "title") {
+        return a.title.localeCompare(b.title);
+      }
+      if (detailSort === "status") {
+        return a.status.localeCompare(b.status);
+      }
+      if (detailSort === "due") {
+        const ad = a.due_date ? new Date(a.due_date).getTime() : Infinity;
+        const bd = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+        return ad - bd;
+      }
+      // priority
+      return (Number(b.priority_score) || 0) - (Number(a.priority_score) || 0);
+    });
+    return sorted;
+  };
+
+  const formatDueCompact = (iso: string | null) => {
+    if (!iso) return null;
+    try {
+      return formatPH(iso, "MMM d");
+    } catch {
+      return null;
+    }
+  };
+
+  const statusCountsFor = (projectId: string) => {
+    const list = tasksFor(projectId);
+    return {
+      total: list.length,
+      todo: list.filter((t) => t.status === "todo").length,
+      in_progress: list.filter((t) => t.status === "in_progress").length,
+      done: list.filter((t) => t.status === "done").length,
+    };
+  };
 
   // ==========================================================
   // DATETIME LOCAL FORMATTER
@@ -1746,433 +1866,450 @@ export default function Projects() {
            CARD VIEW
         ==================================================== */
 
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {selectedProject ? (
+          /* PROJECT DETAILS — compact summary + task list */
+          <div className="space-y-4 max-w-3xl">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 -ml-2 text-muted-foreground"
+              onClick={closeProjectDetails}
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Projects
+            </Button>
 
+            <Card>
+              <CardContent className="pt-5 pb-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="h-3 w-3 rounded-full shrink-0"
+                        style={{ backgroundColor: selectedProject.color }}
+                      />
+                      <h2 className="font-display text-xl font-semibold truncate">
+                        {selectedProject.name}
+                      </h2>
+                    </div>
+                    {selectedProject.description && (
+                      <p className="text-sm text-muted-foreground line-clamp-2">
+                        {selectedProject.description}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => openEditDialog(selectedProject)}
+                    >
+                      <Pencil className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="Archive project"
+                      onClick={() => setDeleteProjectTarget(selectedProject)}
+                    >
+                      <Archive className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                  </div>
+                </div>
+
+                {(() => {
+                  const st = statsFor(selectedProject.id);
+                  const sc = statusCountsFor(selectedProject.id);
+                  return (
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                        <span>
+                          Status:{" "}
+                          <span className="text-foreground font-medium capitalize">
+                            {(selectedProject.status || "active").replace(/_/g, " ")}
+                          </span>
+                        </span>
+                        <span>
+                          Progress:{" "}
+                          <span className="text-foreground font-medium">{st.pct}%</span>
+                        </span>
+                        <span>
+                          {st.done}/{st.total} completed
+                        </span>
+                      </div>
+                      <Progress value={st.pct} className="h-2" />
+                      <p className="text-[11px] text-muted-foreground">
+                        {sc.total} task{sc.total === 1 ? "" : "s"}
+                        {sc.total > 0 && (
+                          <>
+                            {" · "}
+                            {sc.in_progress} In Progress · {sc.todo} To Do
+                            {sc.done > 0 ? ` · ${sc.done} Done` : ""}
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold tracking-wide uppercase text-muted-foreground">
+                  Tasks
+                </h3>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    window.location.href = `/add-task?project=${selectedProject.id}`;
+                  }}
+                >
+                  <PlusCircle className="mr-1.5 h-3.5 w-3.5" />
+                  Add Task
+                </Button>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    value={detailSearch}
+                    onChange={(e) => setDetailSearch(e.target.value)}
+                    placeholder="Search tasks..."
+                    className="h-9 pl-8 text-sm"
+                  />
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(
+                    [
+                      { key: "all" as const, label: "All" },
+                      { key: "todo" as const, label: "To Do" },
+                      { key: "in_progress" as const, label: "In Progress" },
+                      { key: "done" as const, label: "Done" },
+                    ]
+                  ).map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setDetailFilter(opt.key)}
+                      className={`text-xs px-2.5 py-1.5 rounded-full border transition-colors ${
+                        detailFilter === opt.key
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background text-muted-foreground border-border hover:border-muted-foreground/50"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <Select
+                  value={detailSort}
+                  onValueChange={(v) => setDetailSort(v as typeof detailSort)}
+                >
+                  <SelectTrigger className="h-9 w-[140px] text-xs">
+                    <SelectValue placeholder="Sort" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="priority">Priority</SelectItem>
+                    <SelectItem value="due">Due date</SelectItem>
+                    <SelectItem value="title">Title</SelectItem>
+                    <SelectItem value="status">Status</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {(() => {
+                const rows = detailTasksFor(selectedProject.id);
+                if (tasksFor(selectedProject.id).length === 0) {
+                  return (
+                    <Card className="border-dashed">
+                      <CardContent className="py-8 text-center space-y-2">
+                        <p className="text-sm font-medium">No tasks yet</p>
+                        <p className="text-xs text-muted-foreground">
+                          Add your first task to start planning this project.
+                        </p>
+                        <Button
+                          size="sm"
+                          className="mt-2"
+                          onClick={() => {
+                            window.location.href = `/add-task?project=${selectedProject.id}`;
+                          }}
+                        >
+                          <PlusCircle className="mr-1.5 h-3.5 w-3.5" />
+                          Add Task
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  );
+                }
+                if (rows.length === 0) {
+                  return (
+                    <p className="text-xs text-muted-foreground py-4 text-center">
+                      No tasks match this search or filter.
+                    </p>
+                  );
+                }
+                return (
+                  <div className="rounded-lg border border-border divide-y divide-border max-h-[min(60vh,520px)] overflow-y-auto bg-card">
+                    {rows.map((task) => {
+                      const pri = priorityLabel(task.priority_score);
+                      const due = formatDueCompact(task.due_date);
+                      const dur =
+                        task.estimated_duration != null
+                          ? `${task.estimated_duration} min`
+                          : null;
+                      const meta = [due ? `Due ${due}` : null, dur]
+                        .filter(Boolean)
+                        .join(" · ");
+                      return (
+                        <div
+                          key={task.id}
+                          className="group flex items-center gap-3 px-3 py-2.5 hover:bg-muted/50 cursor-pointer transition-colors"
+                          onClick={() => setViewingTask(task)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setViewingTask(task);
+                            }
+                          }}
+                        >
+                          <div className="flex items-center gap-1.5 w-[4.5rem] shrink-0">
+                            <span className={`h-2 w-2 rounded-full ${priorityDot[pri]}`} />
+                            <span className={`text-[10px] font-semibold tracking-wide ${priorityText[pri]}`}>
+                              {pri}
+                            </span>
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium truncate">{task.title}</p>
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {meta || "No due date"}
+                              {" · "}
+                              <span className="capitalize">{task.status.replace(/_/g, " ")}</span>
+                            </p>
+                          </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 shrink-0 opacity-70 group-hover:opacity-100"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setViewingTask(task);
+                                }}
+                              >
+                                <Eye className="mr-2 h-3.5 w-3.5" />
+                                View
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openEditTaskDialog(task);
+                                }}
+                              >
+                                <Pencil className="mr-2 h-3.5 w-3.5" />
+                                Edit
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeleteTaskTarget(task);
+                                }}
+                              >
+                                <Archive className="mr-2 h-3.5 w-3.5" />
+                                Archive
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        ) : (
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
           {projects.map((project) => {
-
-            const stats =
-              statsFor(
-                project.id
-              );
-
-            const projectTasks =
-              tasksFor(
-                project.id
-              );
-
-            const filter =
-              projectFilters[
-                project.id
-              ] || "all";
-
-            const filteredTasks =
-              filter === "all"
-                ? projectTasks
-                : projectTasks.filter(
-                    (task) =>
-                      task.status ===
-                      filter
-                  );
-
-            const isExpanded =
-              !!expandedProjects[
-                project.id
-              ];
-
-            const visibleTasks =
-              isExpanded
-                ? filteredTasks
-                : filteredTasks.slice(
-                    0,
-                    TASK_LIST_LIMIT
-                  );
-
-            const hasMore =
-              filteredTasks.length >
-              TASK_LIST_LIMIT;
-
-
+            const stats = statsFor(project.id);
+            const counts = statusCountsFor(project.id);
             return (
-
               <Card
                 key={project.id}
                 ref={(element) => {
-                  projectRefs.current[
-                    project.id
-                  ] = element;
+                  projectRefs.current[project.id] = element;
                 }}
-                className={`hover:shadow-md transition-shadow ${
-                  highlightId ===
-                  project.id
-                    ? "ring-2 ring-primary"
-                    : ""
+                className={`hover:shadow-md transition-shadow cursor-pointer ${
+                  highlightId === project.id ? "ring-2 ring-primary" : ""
                 }`}
+                onClick={() => openProjectDetails(project.id)}
               >
-
-                {/* PROJECT HEADER */}
-
-                <CardHeader className="pb-3">
-
+                <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-2">
-
                     <div className="flex items-center gap-2 min-w-0">
-
                       <span
                         className="h-3 w-3 rounded-full shrink-0"
-                        style={{
-                          backgroundColor:
-                            project.color,
-                        }}
+                        style={{ backgroundColor: project.color }}
                       />
-
                       <CardTitle className="text-base truncate">
                         {project.name}
                       </CardTitle>
-
                     </div>
-
-
-                    <div className="flex items-center shrink-0">
-
+                    <div
+                      className="flex items-center shrink-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() =>
-                          openEditDialog(
-                            project
-                          )
-                        }
+                        className="h-8 w-8"
+                        onClick={() => openEditDialog(project)}
                       >
                         <Pencil className="h-4 w-4 text-muted-foreground" />
                       </Button>
-
-
                       <Button
                         variant="ghost"
                         size="icon"
+                        className="h-8 w-8"
                         title="Archive project"
-                        onClick={() =>
-                          setDeleteProjectTarget(
-                            project
-                          )
-                        }
+                        onClick={() => setDeleteProjectTarget(project)}
                       >
                         <Archive className="h-4 w-4 text-muted-foreground" />
                       </Button>
-
                     </div>
-
                   </div>
-
                 </CardHeader>
-
-
-                {/* PROJECT BODY */}
-
-                <CardContent className="space-y-3">
-
+                <CardContent className="space-y-2 pt-0">
                   {project.description && (
-
                     <p className="text-sm text-muted-foreground line-clamp-2">
-                      {
-                        project.description
-                      }
+                      {project.description}
                     </p>
-
                   )}
-
-
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
-
                     <span>
-                      {stats.done}/
-                      {stats.total}{" "}
-                      completed
+                      {counts.total} task{counts.total === 1 ? "" : "s"}
+                      {counts.in_progress > 0 ? ` · ${counts.in_progress} active` : ""}
                     </span>
-
-                    <Badge variant="outline">
-                      {stats.pct}%
-                    </Badge>
-
+                    <Badge variant="outline">{stats.pct}%</Badge>
                   </div>
-
-
-                  <Progress
-                    value={
-                      stats.pct
-                    }
-                    className="h-2"
-                  />
-
-
-                  {/* TASK LIST */}
-
-                  <div className="pt-2 border-t border-border">
-
-                    {projectTasks.length ===
-                    0 ? (
-
-                      <p className="text-xs text-muted-foreground py-1">
-                        No tasks assigned to this project.
-                      </p>
-
-                    ) : (
-
-                      <>
-
-                        {/* ==================================================
-                            FILTER BUTTONS
-                        ================================================== */}
-
-                        <div className="flex flex-wrap gap-1.5 mb-2">
-
-                          {[
-                            {
-                              key: "all" as const,
-                              label: "All",
-                            },
-                            {
-                              key: "todo" as const,
-                              label: "To Do",
-                            },
-                            {
-                              key: "in_progress" as const,
-                              label: "In Progress",
-                            },
-                            {
-                              key: "done" as const,
-                              label: "Done",
-                            },
-                          ].map(
-                            (filterOption) => (
-
-                              <button
-                                key={
-                                  filterOption.key
-                                }
-                                type="button"
-                                onClick={() =>
-                                  setProjectFilters(
-                                    (previous) => ({
-                                      ...previous,
-                                      [project.id]:
-                                        filterOption.key,
-                                    })
-                                  )
-                                }
-                                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                                  filter ===
-                                  filterOption.key
-                                    ? "bg-primary text-primary-foreground border-primary"
-                                    : "bg-background text-muted-foreground border-border hover:border-muted-foreground/50"
-                                }`}
-                              >
-                                {
-                                  filterOption.label
-                                }
-                              </button>
-
-                            )
-                          )}
-
-                        </div>
-
-
-                        {/* ==================================================
-                            NO FILTER RESULTS
-                        ================================================== */}
-
-                        {filteredTasks.length ===
-                        0 ? (
-
-                          <p className="text-xs text-muted-foreground py-1">
-                            No tasks match this filter.
-                          </p>
-
-                        ) : (
-
-                          <div className="space-y-2">
-
-                            {visibleTasks.map(
-                              (task) => (
-
-                                <div
-                                  key={
-                                    task.id
-                                  }
-                                  className="group flex items-start justify-between gap-2 p-2 rounded-md border border-border bg-background hover:bg-muted/50 transition-colors"
-                                >
-
-                                  <div className="min-w-0 flex-1">
-
-                                    <p className="text-sm font-medium truncate">
-                                      {
-                                        task.title
-                                      }
-                                    </p>
-
-
-                                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
-
-                                      <Badge
-                                        className={`text-[10px] px-1.5 py-0 ${
-                                          statusColors[
-                                            task.status
-                                          ] ||
-                                          "bg-muted text-muted-foreground"
-                                        }`}
-                                      >
-                                        {task.status.replace(
-                                          "_",
-                                          " "
-                                        )}
-                                      </Badge>
-
-
-                                      {task.start_time && (
-
-                                        <span className="text-[10px] text-muted-foreground">
-
-                                          {formatPH(
-                                            task.start_time,
-                                            "MMM d, h:mm a"
-                                          )}
-
-                                        </span>
-
-                                      )}
-
-
-                                      {task.due_date &&
-                                        !task.start_time && (
-
-                                          <span className="text-[10px] text-muted-foreground">
-
-                                            Due{" "}
-                                            {formatPH(
-                                              task.due_date,
-                                              "MMM d, h:mm a"
-                                            )}
-
-                                          </span>
-
-                                        )}
-
-                                    </div>
-
-                                  </div>
-
-
-                                  {/* TASK ACTIONS */}
-
-                                  <div className="flex items-center shrink-0 opacity-80 group-hover:opacity-100">
-
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-7 w-7"
-                                      onClick={() =>
-                                        openEditTaskDialog(
-                                          task
-                                        )
-                                      }
-                                    >
-                                      <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-                                    </Button>
-
-
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-7 w-7"
-                                      title="Archive task"
-                                      onClick={() =>
-                                        setDeleteTaskTarget(
-                                          task
-                                        )
-                                      }
-                                    >
-                                      <Archive className="h-3.5 w-3.5 text-muted-foreground" />
-                                    </Button>
-
-                                  </div>
-
-                                </div>
-
-                              )
-                            )}
-
-
-                            {/* ==================================================
-                                SHOW MORE / LESS
-                            ================================================== */}
-
-                            {hasMore && (
-
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="w-full text-xs h-7"
-                                onClick={() =>
-                                  setExpandedProjects(
-                                    (previous) => ({
-                                      ...previous,
-                                      [project.id]:
-                                        !previous[
-                                          project.id
-                                        ],
-                                    })
-                                  )
-                                }
-                              >
-
-                                {isExpanded ? (
-
-                                  <>
-                                    Show less
-
-                                    <ChevronUp className="ml-1 h-3.5 w-3.5" />
-                                  </>
-
-                                ) : (
-
-                                  <>
-                                    Show{" "}
-                                    {
-                                      filteredTasks.length -
-                                      TASK_LIST_LIMIT
-                                    }{" "}
-                                    more
-
-                                    <ChevronDown className="ml-1 h-3.5 w-3.5" />
-                                  </>
-
-                                )}
-
-                              </Button>
-
-                            )}
-
-                          </div>
-
-                        )}
-
-                      </>
-
-                    )}
-
-                  </div>
-
+                  <Progress value={stats.pct} className="h-1.5" />
+                  <p className="text-[11px] text-primary/80 pt-0.5">View details →</p>
                 </CardContent>
-
               </Card>
-
             );
           })}
-
         </div>
+        )}
 
       )}
+
+
+      {/* ======================================================
+          TASK DETAILS (read-only, on demand)
+      ====================================================== */}
+
+      <Dialog
+        open={!!viewingTask}
+        onOpenChange={(open) => {
+          if (!open) setViewingTask(null);
+        }}
+      >
+        <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="pr-6">
+              {viewingTask?.title || "Task Details"}
+            </DialogTitle>
+          </DialogHeader>
+
+          {viewingTask && (
+            <div className="space-y-4 text-sm">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs text-muted-foreground">Priority</p>
+                  <p className={`font-medium ${priorityText[priorityLabel(viewingTask.priority_score)]}`}>
+                    {priorityLabel(viewingTask.priority_score)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Status</p>
+                  <p className="font-medium capitalize">
+                    {viewingTask.status.replace(/_/g, " ")}
+                  </p>
+                </div>
+                {viewingTask.category && (
+                  <div>
+                    <p className="text-xs text-muted-foreground">Category</p>
+                    <p className="font-medium">{viewingTask.category}</p>
+                  </div>
+                )}
+                {viewingTask.difficulty && (
+                  <div>
+                    <p className="text-xs text-muted-foreground">Difficulty</p>
+                    <p className="font-medium capitalize">{viewingTask.difficulty}</p>
+                  </div>
+                )}
+                <div>
+                  <p className="text-xs text-muted-foreground">Estimated Duration</p>
+                  <p className="font-medium">
+                    {viewingTask.estimated_duration != null
+                      ? `${viewingTask.estimated_duration} minutes`
+                      : "—"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Due Date</p>
+                  <p className="font-medium">
+                    {viewingTask.due_date
+                      ? formatPH(viewingTask.due_date, "MMM d, yyyy h:mm a")
+                      : "—"}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Description</p>
+                <div className="rounded-md border border-border bg-muted/30 p-3 max-h-48 overflow-y-auto text-sm whitespace-pre-wrap">
+                  {viewingTask.description?.trim() || (
+                    <span className="text-muted-foreground">No description</span>
+                  )}
+                </div>
+              </div>
+
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button
+                  variant="outline"
+                  onClick={() => setViewingTask(null)}
+                >
+                  Close
+                </Button>
+                <Button
+                  onClick={() => {
+                    const t = viewingTask;
+                    setViewingTask(null);
+                    if (t) openEditTaskDialog(t);
+                  }}
+                >
+                  <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                  Edit Task
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
 
       {/* ======================================================

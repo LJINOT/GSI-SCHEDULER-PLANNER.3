@@ -215,6 +215,7 @@ export type Database = {
           category: string | null
           created_at: string
           description: string | null
+          actual_duration: number | null
           difficulty: string | null
           due_date: string | null
           estimated_duration: number | null
@@ -230,6 +231,7 @@ export type Database = {
         Insert: {
           archived?: boolean
           archived_at?: string | null
+          actual_duration?: number | null
           category?: string | null
           created_at?: string
           description?: string | null
@@ -248,6 +250,7 @@ export type Database = {
         Update: {
           archived?: boolean
           archived_at?: string | null
+          actual_duration?: number | null
           category?: string | null
           created_at?: string
           description?: string | null

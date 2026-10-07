@@ -49,10 +49,30 @@ type AiValidation = {
   validation: ValidationStatus;
   related: boolean;
   confidence: number;
-  /** Embedding cosine similarity 0–1 (primary relatedness score). */
+  /** Embedding cosine similarity 0–1. */
   similarity: number;
+  /** Multi-factor weighted score 0–1. */
+  score: number;
   basic_score?: number;
   reason: string;
+  contradiction?: boolean;
+  repetition?: boolean;
+  category_warning?: string | null;
+  validation_detail?: {
+    status?: string;
+    score?: number;
+    semantic_similarity?: number;
+    intent_match?: number;
+    action_match?: number;
+    object_match?: number;
+    domain_match?: number;
+    purpose_match?: number;
+    category_match?: number;
+    completeness?: number;
+    contradiction?: boolean;
+    repetition?: boolean;
+    repetition_type?: string | null;
+  };
   suggestions: {
     duration?: number;
     difficulty?: string;
@@ -62,7 +82,9 @@ type AiValidation = {
 
 const MAX_DATE = "9999-12-31";
 const DURATION_PRESETS = [15, 30, 45, 60, 90, 120];
-const categories = VA_CATEGORY_NAMES;
+const categories = [...VA_CATEGORY_NAMES].sort((a, b) =>
+  a.localeCompare(b, undefined, { sensitivity: "base" }),
+);
 
 export default function AddTask({
   embedded = false,
@@ -96,6 +118,8 @@ export default function AddTask({
   const [analyzing, setAnalyzing] = useState(false);
   const [aiValidation, setAiValidation] = useState<AiValidation | null>(null);
   const [forceContinue, setForceContinue] = useState(false);
+  /** True only after a successful validation call for the current title/description/category. */
+  const [descriptionValidated, setDescriptionValidated] = useState(false);
 
   const [errors, setErrors] = useState<{
     title?: string;
@@ -225,12 +249,14 @@ export default function AddTask({
     setProjectId("none");
     setAiValidation(null);
     setForceContinue(false);
+    setDescriptionValidated(false);
     setErrors({});
   };
 
   const clearValidationOnEdit = () => {
     if (aiValidation) setAiValidation(null);
     if (forceContinue) setForceContinue(false);
+    setDescriptionValidated(false);
   };
 
   /** Semantic validation of title vs description; optional suggestions only. */
@@ -292,19 +318,39 @@ export default function AddTask({
           : "REVIEW"
       ) as ValidationStatus;
 
+      const detail =
+        payload.validation_detail &&
+        typeof payload.validation_detail === "object"
+          ? (payload.validation_detail as AiValidation["validation_detail"])
+          : undefined;
+
       const result: AiValidation = {
         validation,
         related: Boolean(payload.related),
         confidence: Number(payload.confidence) || 0,
         similarity: Number(payload.similarity) || 0,
+        score: Number(payload.score) || Number(payload.similarity) || 0,
         basic_score:
           typeof payload.basic_score === "number"
             ? payload.basic_score
             : undefined,
         reason:
-          typeof payload.reason === "string"
-            ? payload.reason
-            : "Validation complete.",
+          typeof payload.message === "string"
+            ? payload.message
+            : typeof payload.reason === "string"
+              ? payload.reason
+              : "Validation complete.",
+        contradiction: Boolean(
+          (detail && detail.contradiction) || payload.contradiction,
+        ),
+        repetition: Boolean(
+          (detail && detail.repetition) || payload.repetition,
+        ),
+        category_warning:
+          typeof payload.category_warning === "string"
+            ? payload.category_warning
+            : null,
+        validation_detail: detail,
         suggestions:
           payload.suggestions && typeof payload.suggestions === "object"
             ? (payload.suggestions as AiValidation["suggestions"])
@@ -312,6 +358,7 @@ export default function AddTask({
       };
 
       setAiValidation(result);
+      setDescriptionValidated(true);
 
       if (validation === "VALID") {
         toast.success("Description matches the task.");
@@ -409,9 +456,15 @@ export default function AddTask({
       return;
     }
 
+    // Validation required after latest title/description/category changes
+    if (!descriptionValidated || !aiValidation) {
+      toast.error("Please validate the task description before saving.");
+      return;
+    }
+
     // Semantic validation gate
     if (
-      aiValidation?.validation === "INVALID" &&
+      aiValidation.validation === "INVALID" &&
       !forceContinue
     ) {
       toast.error(
@@ -421,84 +474,13 @@ export default function AddTask({
     }
 
     if (
-      aiValidation?.validation === "REVIEW" &&
+      aiValidation.validation === "REVIEW" &&
       !forceContinue
     ) {
       toast.message(
         "Please review your description, or choose Continue Anyway.",
       );
       return;
-    }
-
-    // If user never ran validation, run it once before save
-    if (!aiValidation) {
-      setAnalyzing(true);
-      try {
-        const { data, error } = await supabase.functions.invoke(
-          "analyze-task",
-          {
-            body: {
-              title: trimmedTitle,
-              description: trimmedDescription,
-              category: category || undefined,
-              duration: durationVal ?? undefined,
-              difficulty: difficulty || undefined,
-            },
-          },
-        );
-        if (!error && data && typeof data === "object") {
-          const payload = data as Record<string, unknown>;
-          if (payload.ok !== false) {
-            const validation = (
-              ["VALID", "REVIEW", "INVALID"].includes(
-                String(payload.validation || ""),
-              )
-                ? String(payload.validation)
-                : "REVIEW"
-            ) as ValidationStatus;
-            const result: AiValidation = {
-              validation,
-              related: Boolean(payload.related),
-              confidence: Number(payload.confidence) || 0,
-              similarity: Number(payload.similarity) || 0,
-              basic_score:
-                typeof payload.basic_score === "number"
-                  ? payload.basic_score
-                  : undefined,
-              reason:
-                typeof payload.reason === "string"
-                  ? payload.reason
-                  : "",
-              suggestions:
-                payload.suggestions &&
-                typeof payload.suggestions === "object"
-                  ? (payload.suggestions as AiValidation["suggestions"])
-                  : null,
-            };
-            setAiValidation(result);
-            setAnalyzing(false);
-            if (validation === "INVALID") {
-              toast.error(
-                "Description does not match the task title. Please edit and validate again.",
-              );
-              return;
-            }
-            if (validation === "REVIEW") {
-              toast.message(
-                "Please review your description, or choose Continue Anyway.",
-              );
-              return;
-            }
-          }
-        }
-      } catch (err) {
-        console.warn(
-          "Automatic validation failed; allowing save with user values:",
-          err,
-        );
-      } finally {
-        setAnalyzing(false);
-      }
     }
 
     if (dueDate < todayInputDate()) {
@@ -841,6 +823,7 @@ export default function AddTask({
                   if (errors.category) {
                     setErrors((p) => ({ ...p, category: undefined }));
                   }
+                  clearValidationOnEdit();
                 }}
               >
                 <SelectTrigger
@@ -1053,17 +1036,25 @@ export default function AddTask({
               type="button"
               variant="outline"
               onClick={validateDescription}
-              disabled={analyzing}
-              className="w-full"
+              disabled={analyzing || descriptionValidated}
+              className={
+                descriptionValidated
+                  ? "w-full opacity-70 bg-muted text-muted-foreground cursor-default"
+                  : "w-full"
+              }
             >
               {analyzing ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : descriptionValidated ? (
+                <CheckCircle2 className="mr-2 h-4 w-4" />
               ) : (
                 <Brain className="mr-2 h-4 w-4" />
               )}
               {analyzing
                 ? "Validating..."
-                : "Validate Description with AI"}
+                : descriptionValidated
+                  ? "Description Validated"
+                  : "Validate Description"}
             </Button>
 
             {/* Validation result */}
@@ -1100,17 +1091,22 @@ export default function AddTask({
                       <p className="text-xs text-muted-foreground">
                         {aiValidation.reason}
                       </p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Relatedness (embedding):{" "}
-                        <span className="font-medium tabular-nums">
-                          {(aiValidation.similarity * 100).toFixed(0)}%
-                        </span>
-                        {" · "}
-                        AI confidence:{" "}
-                        <span className="font-medium tabular-nums">
-                          {(aiValidation.confidence * 100).toFixed(0)}%
-                        </span>
-                      </p>
+                      {aiValidation.category_warning && (
+                        <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                          {aiValidation.category_warning}
+                        </p>
+                      )}
+                      {aiValidation.repetition && (
+                        <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                          Your description is very similar to the task title.
+                          Add more details about the actual work.
+                        </p>
+                      )}
+                      {aiValidation.contradiction && (
+                        <p className="text-xs text-destructive mt-1">
+                          The description conflicts with the task title.
+                        </p>
+                      )}
                       {aiValidation.validation === "INVALID" && (
                         <p className="text-xs text-destructive mt-1">
                           Please describe the work involved in this task,
@@ -1215,9 +1211,10 @@ export default function AddTask({
                   )}
 
                   <p className="text-xs text-muted-foreground">
-                    NLP validates task text and provides optional
-                    recommendations. AHP calculates priority from your
-                    confirmed duration, difficulty, category, and deadline.
+                    Validation checks title–description consistency (intent,
+                    actions, domain, and more). Suggestions are optional. AHP
+                    uses only your confirmed duration, difficulty, category,
+                    and deadline.
                   </p>
                 </CardContent>
               </Card>

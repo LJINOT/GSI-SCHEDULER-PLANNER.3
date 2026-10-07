@@ -2,7 +2,7 @@ import { motion } from "framer-motion";
 import { Brain, Target, CalendarDays, Zap, ArrowRight } from "lucide-react";
 
 const stages = [
-  { icon: Brain, label: "Reader", sub: "NLP", color: "text-primary", bg: "bg-primary/10", ring: "ring-primary/30" },
+  { icon: Brain, label: "Validator", sub: "NLP", color: "text-primary", bg: "bg-primary/10", ring: "ring-primary/30" },
   { icon: Target, label: "Ranker", sub: "AHP", color: "text-destructive", bg: "bg-destructive/10", ring: "ring-destructive/30" },
   { icon: CalendarDays, label: "Planner", sub: "PSO + CSP", color: "text-info", bg: "bg-info/10", ring: "ring-info/30" },
   { icon: Zap, label: "Coach", sub: "Learning", color: "text-warning", bg: "bg-warning/10", ring: "ring-warning/30" },

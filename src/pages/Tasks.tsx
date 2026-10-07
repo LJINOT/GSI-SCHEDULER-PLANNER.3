@@ -338,6 +338,12 @@ export default function Tasks() {
 
   const renderTask = (task: Task) => {
     const highlighted = searchParams.get("task") === task.id;
+    const startLabel = task.start_time
+      ? formatPH(task.start_time, "MMM d · h:mm a")
+      : null;
+    const dueLabel = task.due_date
+      ? formatPH(task.due_date, "MMM d · h:mm a")
+      : null;
     return (
     <Card
       key={task.id}
@@ -345,38 +351,120 @@ export default function Tasks() {
       className={`hover:shadow-md transition-shadow cursor-pointer ${highlighted ? "ring-2 ring-primary" : ""}`}
       onClick={() => setExpandedTaskId(expandedTaskId === task.id ? null : task.id)}
     >
-      <CardContent className="py-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <div onClick={(e) => e.stopPropagation()} className="shrink-0">
-              <Select value={task.status} onValueChange={(v) => setStatus(task, v)}>
-                <SelectTrigger className="h-8 w-36 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {STATUS_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="min-w-0">
-              <p className={`font-medium truncate ${task.status === "done" ? "line-through opacity-60" : ""}`}>{task.title}</p>
-              <div className="flex gap-2 text-xs text-muted-foreground">
-                {task.start_time && <span>Start: {formatPH(task.start_time, "MMM d, h:mm a")}</span>}
-                {task.due_date && <span>Due: {formatPH(task.due_date, "MMM d, h:mm a")}</span>}
-              </div>
-            </div>
+      <CardContent className="py-3 px-3 sm:px-4 space-y-2">
+        {/* Row 1: status + title + actions */}
+        <div className="flex items-start gap-2 sm:gap-3">
+          <div onClick={(e) => e.stopPropagation()} className="shrink-0 pt-0.5">
+            <Select value={task.status} onValueChange={(v) => setStatus(task, v)}>
+              <SelectTrigger className="h-8 w-[7.25rem] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STATUS_OPTIONS.map(o => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-          <div className="flex items-center gap-2">
-            {task.category && <Badge variant="outline">{task.category}</Badge>}
-            {task.difficulty && <Badge variant="secondary">{task.difficulty}</Badge>}
+
+          <div className="min-w-0 flex-1">
+            <p
+              className={`text-sm font-medium leading-snug break-words ${
+                task.status === "done" ? "line-through opacity-60" : ""
+              }`}
+              title={task.title}
+            >
+              {task.title}
+            </p>
+          </div>
+
+          <div
+            className="flex items-center gap-0.5 shrink-0"
+            onClick={(e) => e.stopPropagation()}
+          >
             {task.status !== "done" && (
-              <Button variant="ghost" size="icon" title="Edit task" onClick={(e) => { e.stopPropagation(); setEditErrors({}); setEditNote(""); setEditTask(task); }}><Pencil className="h-4 w-4 text-muted-foreground" /></Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title="Edit task"
+                onClick={() => {
+                  setEditErrors({});
+                  setEditNote("");
+                  setEditTask(task);
+                }}
+              >
+                <Pencil className="h-4 w-4 text-muted-foreground" />
+              </Button>
             )}
-            <Button variant="ghost" size="icon" title="Archive task" onClick={(e) => { e.stopPropagation(); setArchiveTarget(task); }}><Archive className="h-4 w-4 text-muted-foreground" /></Button>
-            {expandedTaskId === task.id ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              title="Archive task"
+              onClick={() => setArchiveTarget(task)}
+            >
+              <Archive className="h-4 w-4 text-muted-foreground" />
+            </Button>
+            <span className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground">
+              {expandedTaskId === task.id ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </span>
           </div>
         </div>
+
+        {/* Row 2: dates + badges — single compact line, no mid-word wrapping */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-0 sm:pl-[7.5rem]">
+          {(startLabel || dueLabel) && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] sm:text-xs text-muted-foreground">
+              {startLabel && (
+                <span className="whitespace-nowrap tabular-nums">
+                  <span className="text-muted-foreground/80">Start</span>{" "}
+                  {startLabel}
+                </span>
+              )}
+              {startLabel && dueLabel && (
+                <span className="text-border hidden sm:inline" aria-hidden>
+                  ·
+                </span>
+              )}
+              {dueLabel && (
+                <span className="whitespace-nowrap tabular-nums">
+                  <span className="text-muted-foreground/80">Due</span>{" "}
+                  {dueLabel}
+                </span>
+              )}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+            {task.category && (
+              <Badge
+                variant="outline"
+                className="max-w-[11rem] truncate text-[10px] font-normal"
+                title={task.category}
+              >
+                {task.category}
+              </Badge>
+            )}
+            {task.difficulty && (
+              <Badge
+                variant="secondary"
+                className="text-[10px] font-normal capitalize shrink-0"
+              >
+                {task.difficulty}
+              </Badge>
+            )}
+          </div>
+        </div>
+
         {expandedTaskId === task.id && (
-          <div className="mt-3 pt-3 border-t border-border space-y-3">
-            <p className="text-sm text-muted-foreground">{task.description || "No description provided."}</p>
+          <div className="mt-1 pt-3 border-t border-border space-y-3">
+            <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words">
+              {task.description || "No description provided."}
+            </p>
             <div>
               <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
                 <History className="h-3.5 w-3.5 text-muted-foreground" /> Change notes
@@ -534,7 +622,7 @@ export default function Tasks() {
 
       {/* Project folder modal */}
       <Dialog open={!!folderProject} onOpenChange={(o) => { if (!o) setFolderProjectId(null); }}>
-        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader className="px-6 pt-6 pb-3 border-b shrink-0">
             <DialogTitle className="flex items-center gap-2 font-display">
               {folderProject && (

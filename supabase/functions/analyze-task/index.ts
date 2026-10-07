@@ -1,14 +1,18 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 /**
- * analyze-task — Hybrid semantic validation (embeddings + AI)
+ * analyze-task — Maximum Task Consistency Validation
  *
- * NLP role:
- * 1. Title ↔ description relatedness (primary: cosine similarity of embeddings)
- * 2. AI structured judgment (secondary: related, confidence, reason)
- * 3. Optional suggestions for duration / difficulty / category (never authoritative)
+ * Multi-factor title ↔ description validation:
+ * 1. Semantic similarity (embeddings + cosine)
+ * 2. Task intent extraction (action, object, domain, purpose)
+ * 3. Action / object / domain / purpose matching
+ * 4. Category consistency
+ * 5. Contradiction detection
+ * 6. Completeness & repetition detection
+ * 7. AI semantic judgment
  *
- * Source of truth for duration, difficulty, category, deadline remains user input.
+ * NLP never overwrites user duration, difficulty, category, or deadline.
  */
 
 const corsHeaders = {
@@ -18,10 +22,22 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-/** Tunable thresholds — calibrate with real GSI task examples. */
+/** Configurable — tune with real GSI examples. */
 const THRESHOLDS = {
   HIGH: 0.75,
   MEDIUM: 0.55,
+};
+
+/** Configurable multi-factor weights (must sum ~1). */
+const WEIGHTS = {
+  semantic_similarity: 0.30,
+  intent_match: 0.20,
+  action_match: 0.15,
+  object_match: 0.10,
+  domain_match: 0.10,
+  category_match: 0.05,
+  purpose_match: 0.05,
+  completeness: 0.05,
 };
 
 const VA_CATEGORIES = [
@@ -48,6 +64,22 @@ const VA_CATEGORIES = [
 
 const VA_CATEGORY_SET = new Set<string>(VA_CATEGORIES);
 
+const VAGUE_PATTERNS = [
+  /^do it\.?$/i,
+  /^work on it\.?$/i,
+  /^report\.?$/i,
+  /^finish this\.?$/i,
+  /^handle this\.?$/i,
+  /^important\.?$/i,
+  /^task\.?$/i,
+  /^todo\.?$/i,
+  /^tbd\.?$/i,
+  /^n\/?a\.?$/i,
+  /^see title\.?$/i,
+  /^as above\.?$/i,
+  /^same\.?$/i,
+];
+
 function normalizeVACategory(value?: string): string {
   const category = String(value || "").trim();
   const aliases: Record<string, string> = {
@@ -71,10 +103,7 @@ function normalizeVACategory(value?: string): string {
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "application/json",
-    },
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
@@ -86,18 +115,13 @@ function extractJsonObject(text: string): unknown {
   }
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    s = s.slice(start, end + 1);
-  }
+  if (start >= 0 && end > start) s = s.slice(start, end + 1);
   return JSON.parse(s);
 }
 
-/** Cosine similarity of two vectors. Returns 0 if either is empty. */
 function cosineSimilarity(a: number[], b: number[]): number {
   if (!a.length || !b.length || a.length !== b.length) return 0;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
+  let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     normA += a[i] * a[i];
@@ -105,11 +129,9 @@ function cosineSimilarity(a: number[], b: number[]): number {
   }
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
   if (denom === 0) return 0;
-  const raw = dot / denom;
-  return Math.min(1, Math.max(0, raw));
+  return Math.min(1, Math.max(0, dot / denom));
 }
 
-/** Cheap lexical overlap as fallback / tertiary signal (0–1). */
 function basicTextRelatedness(title: string, description: string): number {
   const stop = new Set([
     "a", "an", "the", "and", "or", "to", "of", "in", "on", "for", "with",
@@ -117,75 +139,72 @@ function basicTextRelatedness(title: string, description: string): number {
     "task", "work", "do", "please", "will", "can", "should",
   ]);
   const tokens = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/)
       .filter((t) => t.length > 2 && !stop.has(t));
-
   const tTokens = tokens(title);
   const dTokens = tokens(description);
-  if (tTokens.length === 0 || dTokens.length === 0) return 0;
-
+  if (!tTokens.length || !dTokens.length) return 0;
   const dSet = new Set(dTokens);
   let hits = 0;
-  for (const t of tTokens) {
-    if (dSet.has(t)) hits++;
-  }
+  for (const t of tTokens) if (dSet.has(t)) hits++;
   return hits / tTokens.length;
 }
 
-/**
- * Combined decision:
- *   1. Embedding cosine similarity (primary)
- *   2. AI related + confidence (secondary)
- *   3. Basic text overlap (tertiary / fallback)
- */
-function classifyValidation(
-  similarity: number | null,
-  aiRelated: boolean | null,
-  confidence: number,
-  basicScore: number,
-): "VALID" | "REVIEW" | "INVALID" {
-  const sim = similarity ?? basicScore;
-
-  if (sim >= THRESHOLDS.HIGH) {
-    if (aiRelated === false && confidence >= 0.9) return "REVIEW";
-    return "VALID";
-  }
-
-  if (sim >= THRESHOLDS.MEDIUM) {
-    if (aiRelated === true && confidence >= 0.75) return "VALID";
-    if (aiRelated === false && confidence >= 0.85) return "INVALID";
-    return "REVIEW";
-  }
-
-  if (aiRelated === true && confidence >= 0.85 && basicScore >= 0.25) {
-    return "REVIEW";
-  }
-  if (aiRelated === false && confidence >= 0.7) return "INVALID";
-  if (sim < 0.35) return "INVALID";
-  return "REVIEW";
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 }
 
-/** Embed text via Gemini embedding API. Returns null on failure. */
-async function embedText(
-  apiKey: string,
-  text: string,
-): Promise<number[] | null> {
-  const models = [
-    "text-embedding-004",
-    "embedding-001",
-    "text-embedding-005",
-  ];
+function localRepetitionCheck(title: string, description: string): {
+  repetition: boolean;
+  repetition_type: "exact" | "near" | "semantic" | null;
+} {
+  const t = normalizeText(title);
+  const d = normalizeText(description);
+  if (!t || !d) return { repetition: false, repetition_type: null };
+  if (t === d) return { repetition: true, repetition_type: "exact" };
+  if (d === t || d.startsWith(t) || t.startsWith(d)) {
+    if (Math.abs(d.length - t.length) < Math.max(12, t.length * 0.35)) {
+      return { repetition: true, repetition_type: "near" };
+    }
+  }
+  // Token Jaccard near-duplicate
+  const tSet = new Set(t.split(" ").filter((w) => w.length > 2));
+  const dSet = new Set(d.split(" ").filter((w) => w.length > 2));
+  if (tSet.size && dSet.size) {
+    let inter = 0;
+    for (const w of tSet) if (dSet.has(w)) inter++;
+    const union = new Set([...tSet, ...dSet]).size;
+    const jaccard = inter / union;
+    if (jaccard >= 0.85 && Math.abs(d.length - t.length) < 40) {
+      return { repetition: true, repetition_type: "semantic" };
+    }
+  }
+  return { repetition: false, repetition_type: null };
+}
 
+function localCompleteness(description: string): number {
+  const d = description.trim();
+  if (!d) return 0;
+  if (VAGUE_PATTERNS.some((re) => re.test(d))) return 0.1;
+  if (d.length < 12) return 0.2;
+  if (d.length < 25) return 0.4;
+  if (d.split(/\s+/).length < 5) return 0.45;
+  if (d.length < 50) return 0.65;
+  return 0.85;
+}
+
+function clamp01(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(1, Math.max(0, n));
+}
+
+async function embedText(apiKey: string, text: string): Promise<number[] | null> {
+  const models = ["text-embedding-004", "embedding-001", "text-embedding-005"];
   const truncated = text.slice(0, 8000);
-
   for (const model of models) {
     try {
       const url =
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:embedContent`;
-
       const res = await fetch(url, {
         method: "POST",
         headers: {
@@ -194,60 +213,141 @@ async function embedText(
         },
         body: JSON.stringify({
           model: `models/${model}`,
-          content: {
-            parts: [{ text: truncated }],
-          },
+          content: { parts: [{ text: truncated }] },
         }),
       });
-
-      if (!res.ok) {
-        const errBody = await res.text();
-        console.warn(
-          `embedText: ${model} failed (${res.status}):`,
-          errBody.slice(0, 200),
-        );
-        continue;
-      }
-
+      if (!res.ok) continue;
       const json = await res.json();
       const values = json?.embedding?.values;
-      if (Array.isArray(values) && values.length > 0) {
-        console.log(`embedText: ok with ${model}, dim=${values.length}`);
-        return values as number[];
-      }
-    } catch (e) {
-      console.warn(`embedText: ${model} error:`, e);
+      if (Array.isArray(values) && values.length > 0) return values as number[];
+    } catch {
+      /* try next */
     }
   }
-
   return null;
 }
 
-async function getAvailableModel(_apiKey: string): Promise<string> {
-  return "gemini-2.0-flash";
-}
-
-function modelCandidates(primary: string): string[] {
-  const rest = [
+function modelCandidates(): string[] {
+  return [
     "gemini-2.0-flash",
     "gemini-1.5-flash",
     "gemini-1.5-flash-latest",
     "gemini-2.5-flash",
     "gemini-flash-latest",
-  ].filter((m) => m !== primary);
-  return [primary, ...rest];
+  ];
+}
+
+type FactorScores = {
+  semantic_similarity: number;
+  intent_match: number;
+  action_match: number;
+  object_match: number;
+  domain_match: number;
+  purpose_match: number;
+  category_match: number;
+  completeness: number;
+  contradiction: boolean;
+  repetition: boolean;
+  repetition_type: string | null;
+};
+
+function computeWeightedScore(f: FactorScores): number {
+  let score =
+    WEIGHTS.semantic_similarity * f.semantic_similarity +
+    WEIGHTS.intent_match * f.intent_match +
+    WEIGHTS.action_match * f.action_match +
+    WEIGHTS.object_match * f.object_match +
+    WEIGHTS.domain_match * f.domain_match +
+    WEIGHTS.category_match * f.category_match +
+    WEIGHTS.purpose_match * f.purpose_match +
+    WEIGHTS.completeness * f.completeness;
+
+  // Contradiction must not be overridden by high similarity alone
+  if (f.contradiction) {
+    score = Math.min(score, 0.35);
+  }
+  // Heavy repetition / low completeness caps the score into REVIEW band
+  if (f.repetition && f.completeness < 0.5) {
+    score = Math.min(score, 0.68);
+  }
+  if (f.completeness < 0.35) {
+    score = Math.min(score, 0.6);
+  }
+  return clamp01(score);
+}
+
+function classifyFromFactors(
+  score: number,
+  f: FactorScores,
+): "VALID" | "REVIEW" | "INVALID" {
+  if (f.contradiction) {
+    return score < 0.25 ? "INVALID" : "INVALID";
+  }
+  // Clearly unrelated dimensions
+  const relatednessAvg =
+    (f.action_match + f.object_match + f.domain_match + f.purpose_match) / 4;
+  if (
+    f.semantic_similarity < 0.35 &&
+    relatednessAvg < 0.3 &&
+    f.intent_match < 0.3
+  ) {
+    return "INVALID";
+  }
+  if (score >= 0.82 && !f.repetition && f.completeness >= 0.55) {
+    return "VALID";
+  }
+  if (score >= THRESHOLDS.HIGH && f.completeness >= 0.5 && !f.contradiction) {
+    return "VALID";
+  }
+  if (score < 0.4) return "INVALID";
+  return "REVIEW";
+}
+
+function buildUserMessage(
+  status: "VALID" | "REVIEW" | "INVALID",
+  f: FactorScores,
+  aiReason: string,
+  categoryWarning: string | null,
+): string {
+  if (status === "VALID") {
+    return aiReason || "The description is consistent with the task title.";
+  }
+  if (f.contradiction) {
+    return (
+      aiReason ||
+      "The description conflicts with the task title. Please describe work that matches this task."
+    );
+  }
+  if (f.repetition) {
+    return "Your description is very similar to the task title. Add more details about the actual work.";
+  }
+  if (f.completeness < 0.4) {
+    return "Your description is too vague. Add specific details about what needs to be done.";
+  }
+  if (categoryWarning) {
+    return categoryWarning;
+  }
+  if (status === "INVALID") {
+    return (
+      aiReason ||
+      "The description does not match the task title. Please describe the work involved in this task."
+    );
+  }
+  return (
+    aiReason ||
+    "Please review your description. It may not fully match the task title."
+  );
 }
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
-
   if (req.method !== "POST") {
     return jsonResponse({ error: "Method not allowed" }, 405);
   }
 
-  console.log("analyze-task: started (hybrid embedding + AI validation)");
+  console.log("analyze-task: maximum multi-factor validation");
 
   try {
     let body: Record<string, unknown>;
@@ -257,8 +357,7 @@ serve(async (req) => {
       return jsonResponse({ error: "Invalid JSON body." }, 400);
     }
 
-    const title =
-      typeof body.title === "string" ? body.title.trim() : "";
+    const title = typeof body.title === "string" ? body.title.trim() : "";
     const description =
       typeof body.description === "string" ? body.description.trim() : "";
     const userCategory =
@@ -274,6 +373,7 @@ serve(async (req) => {
       return jsonResponse({ error: "Task title is required." }, 400);
     }
 
+    // ---------- Early local checks ----------
     if (!description) {
       return jsonResponse({
         ok: true,
@@ -282,75 +382,78 @@ serve(async (req) => {
         confidence: 1,
         reason:
           "Description is empty. Please provide a description related to the task title.",
+        message:
+          "Description is empty. Please provide a description related to the task title.",
         similarity: 0,
-        basic_score: 0,
+        score: 0,
+        validation_detail: {
+          status: "INVALID",
+          score: 0,
+          semantic_similarity: 0,
+          intent_match: 0,
+          action_match: 0,
+          object_match: 0,
+          domain_match: 0,
+          purpose_match: 0,
+          category_match: userCategory ? 0.5 : 0.5,
+          completeness: 0,
+          contradiction: false,
+          repetition: false,
+          repetition_type: null,
+        },
+        task_intent: null,
         thresholds: THRESHOLDS,
+        weights: WEIGHTS,
         suggestions: null,
       });
     }
 
-    if (description.length < 12) {
-      return jsonResponse({
-        ok: true,
-        validation: "INVALID",
-        related: false,
-        confidence: 0.9,
-        reason:
-          "Description is too short. Please describe the work involved in this task.",
-        similarity: 0,
-        basic_score: 0,
-        thresholds: THRESHOLDS,
-        suggestions: null,
-      });
-    }
-
-    const titleNorm = title.toLowerCase().replace(/\s+/g, " ").trim();
-    const descNorm = description.toLowerCase().replace(/\s+/g, " ").trim();
-    if (descNorm === titleNorm || descNorm.startsWith(titleNorm + " ")) {
-      if (descNorm.length < titleNorm.length + 20) {
-        return jsonResponse({
-          ok: true,
-          validation: "REVIEW",
-          related: true,
-          confidence: 0.6,
-          reason:
-            "Description is almost the same as the title. Please add more detail about the work involved.",
-          similarity: 0.5,
-          basic_score: 1,
-          thresholds: THRESHOLDS,
-          suggestions: null,
-        });
-      }
-    }
-
+    const localRep = localRepetitionCheck(title, description);
+    const localComp = localCompleteness(description);
     const basicScore = basicTextRelatedness(title, description);
     const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 
-    // ---------- Embeddings (primary signal) ----------
+    // ---------- Embeddings ----------
     let similarity: number | null = null;
     let embeddingDegraded = false;
-
     if (GEMINI_API_KEY) {
       const [titleEmb, descEmb] = await Promise.all([
         embedText(GEMINI_API_KEY, title),
         embedText(GEMINI_API_KEY, description),
       ]);
-
       if (titleEmb && descEmb) {
         similarity = cosineSimilarity(titleEmb, descEmb);
-        console.log("analyze-task: cosine similarity =", similarity);
       } else {
         embeddingDegraded = true;
-        console.warn("analyze-task: embeddings unavailable, using basic + AI");
       }
     } else {
       embeddingDegraded = true;
     }
+    const semanticSimilarity = similarity ?? basicScore;
 
-    // ---------- AI judgment (secondary) ----------
+    // ---------- Multi-factor AI analysis ----------
     let aiRelated: boolean | null = null;
     let confidence = 0.5;
-    let reason = "";
+    let aiReason = "";
+    let taskIntent: {
+      action: string[];
+      object: string[];
+      domain: string;
+      purpose: string;
+    } | null = null;
+
+    let actionMatch = 0.5;
+    let objectMatch = 0.5;
+    let domainMatch = 0.5;
+    let purposeMatch = 0.5;
+    let intentMatch = 0.5;
+    let categoryMatch = userCategory ? 0.7 : 0.5;
+    let completeness = localComp;
+    let contradiction = false;
+    let aiRepetition = localRep.repetition;
+    let repetitionType = localRep.repetition_type;
+    let categoryWarning: string | null = null;
+
     const suggestions: {
       duration?: number;
       difficulty?: "easy" | "medium" | "hard";
@@ -359,34 +462,66 @@ serve(async (req) => {
     let aiDegraded = false;
 
     if (GEMINI_API_KEY) {
-      const primaryModel = await getAvailableModel(GEMINI_API_KEY);
-      const modelsToTry = modelCandidates(primaryModel);
-
       const systemPrompt = `
-You are the semantic validation assistant for the GSI Schedule Planner.
+You are the Maximum Task Consistency Validator for the GSI Schedule Planner (Virtual Assistant tasks).
 
-PRIMARY job: judge whether the TASK DESCRIPTION is semantically related to the TASK TITLE.
-Legitimate descriptions may use different wording — still VALID if meaning matches.
+Analyze TITLE vs DESCRIPTION across multiple dimensions. Understand synonyms
+(e.g. log≈record, categorize≈classify, bugs≈software issues).
 
-Return ONLY one valid JSON object:
+Return ONLY one valid JSON object with this exact structure:
 
-related: boolean
-confidence: number between 0 and 1
-reason: string (one short sentence)
+{
+  "related": boolean,
+  "confidence": number,
+  "reason": string,
+  "task_intent": {
+    "action": string[],
+    "object": string[],
+    "domain": string,
+    "purpose": string
+  },
+  "scores": {
+    "intent_match": number,
+    "action_match": number,
+    "object_match": number,
+    "domain_match": number,
+    "purpose_match": number,
+    "category_match": number,
+    "completeness": number
+  },
+  "contradiction": boolean,
+  "repetition": boolean,
+  "repetition_type": "exact" | "near" | "semantic" | null,
+  "category_warning": string | null,
+  "suggested_duration": number | null,
+  "suggested_difficulty": "easy" | "medium" | "hard" | null,
+  "suggested_category": string | null
+}
 
-suggested_duration: integer minutes (optional, 5–480) — recommendation only
-suggested_difficulty: "easy" | "medium" | "hard" (optional) — recommendation only
-  EASY: simple steps, low decision-making, usually short
-  MEDIUM: several steps, moderate research/coordination
-  HARD: many steps, complex problem solving, high cognitive load
-suggested_category: exactly one from:
-  Client Communication, Customer Support, Email Management, Calendar & Scheduling,
-  Administrative Tasks, Data Entry, Research, Report & Documentation,
-  File & Document Management, Project Coordination, Lead Generation, CRM Management,
-  Social Media Management, Content Creation, E-commerce Support, Bookkeeping & Finance,
-  Meeting & Coordination, Personal Assistance, General / Other
+Scoring rules (each score 0 to 1):
+- action_match: does description perform/contribute to title actions?
+- object_match: same main object/target?
+- domain_match: same work domain (software/IT, communication, reporting, etc.)?
+- purpose_match: same successful outcome?
+- intent_match: overall intent alignment
+- category_match: does USER category fit title+description? (1 if consistent, ~0.3 if mismatch, 0.5 if no category)
+- completeness: does description contain useful work details? (not vague like "do it")
 
-Do NOT invent a deadline. Do NOT claim suggestions are final. No Markdown outside JSON.
+contradiction: true if description conflicts with or negates the title (e.g. "do not respond" for "Respond to emails", or completely different activity like games vs report).
+
+repetition: true if description only restates the title with little extra detail.
+
+category_warning: short user-facing warning if category mismatches, else null.
+Example: "Your selected category may not match this task."
+
+reason: one clear sentence a normal user understands. Explain WHAT is wrong or right.
+Do NOT say only "similarity score too low."
+
+Suggestions are OPTIONAL recommendations only — never final values.
+suggested_category must be exactly one of:
+${VA_CATEGORIES.join(", ")}
+
+No Markdown. JSON only.
 `;
 
       const userPrompt = `
@@ -396,9 +531,14 @@ ${title}
 TASK DESCRIPTION:
 ${description}
 
-USER SELECTED CATEGORY (if any): ${userCategory || "(none)"}
-USER SELECTED DURATION (minutes, if any): ${userDuration ?? "(none)"}
-USER SELECTED DIFFICULTY (if any): ${userDifficulty || "(none)"}
+USER SELECTED CATEGORY:
+${userCategory || "(none)"}
+
+USER SELECTED DURATION (minutes):
+${userDuration ?? "(none)"}
+
+USER SELECTED DIFFICULTY:
+${userDifficulty || "(none)"}
 `;
 
       const requestBody = {
@@ -409,20 +549,16 @@ USER SELECTED DIFFICULTY (if any): ${userDifficulty || "(none)"}
           },
         ],
         generationConfig: {
-          temperature: 0.15,
+          temperature: 0.1,
           responseMimeType: "application/json",
         },
       };
 
-      let responseText = "";
-      let lastStatus = 0;
       let gotAi = false;
-
-      for (const model of modelsToTry) {
-        const url =
-          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-
+      for (const model of modelCandidates()) {
         try {
+          const url =
+            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
           const res = await fetch(url, {
             method: "POST",
             headers: {
@@ -431,35 +567,22 @@ USER SELECTED DIFFICULTY (if any): ${userDifficulty || "(none)"}
             },
             body: JSON.stringify(requestBody),
           });
-
-          responseText = await res.text();
-          lastStatus = res.status;
-
           if (res.status === 401 || res.status === 403) {
             return jsonResponse(
-              {
-                error:
-                  "Gemini API authorization failed. Check GEMINI_API_KEY.",
-              },
+              { error: "Gemini API authorization failed. Check GEMINI_API_KEY." },
               502,
             );
           }
           if (res.status === 429) {
             return jsonResponse(
-              {
-                error:
-                  "Gemini rate limit reached. Please try again shortly.",
-              },
+              { error: "Gemini rate limit reached. Please try again shortly." },
               429,
             );
           }
           if (!res.ok) continue;
 
-          const aiJson = JSON.parse(responseText);
-          const candidates = Array.isArray(aiJson?.candidates)
-            ? aiJson.candidates
-            : [];
-          const parts = candidates?.[0]?.content?.parts;
+          const aiJson = JSON.parse(await res.text());
+          const parts = aiJson?.candidates?.[0]?.content?.parts;
           let content = "";
           if (Array.isArray(parts)) {
             content = parts
@@ -470,22 +593,63 @@ USER SELECTED DIFFICULTY (if any): ${userDifficulty || "(none)"}
           }
           if (!content.trim()) continue;
 
-          const parsed = extractJsonObject(content) as Record<
-            string,
-            unknown
-          >;
+          const parsed = extractJsonObject(content) as Record<string, unknown>;
           aiRelated = Boolean(parsed.related);
-          confidence = Number(parsed.confidence);
-          if (!Number.isFinite(confidence)) {
-            confidence = aiRelated ? 0.7 : 0.7;
+          confidence = clamp01(Number(parsed.confidence) || 0.7);
+          aiReason =
+            typeof parsed.reason === "string" ? parsed.reason.trim() : "";
+
+          const intent = parsed.task_intent as Record<string, unknown> | undefined;
+          if (intent && typeof intent === "object") {
+            taskIntent = {
+              action: Array.isArray(intent.action)
+                ? intent.action.map(String)
+                : [],
+              object: Array.isArray(intent.object)
+                ? intent.object.map(String)
+                : [],
+              domain: String(intent.domain || ""),
+              purpose: String(intent.purpose || ""),
+            };
           }
-          confidence = Math.min(1, Math.max(0, confidence));
-          reason =
-            typeof parsed.reason === "string" && parsed.reason.trim()
-              ? parsed.reason.trim()
-              : aiRelated
-                ? "The description appears related to the task title."
-                : "The description does not appear related to the task title.";
+
+          const scores = parsed.scores as Record<string, unknown> | undefined;
+          if (scores && typeof scores === "object") {
+            actionMatch = clamp01(Number(scores.action_match) ?? 0.5);
+            objectMatch = clamp01(Number(scores.object_match) ?? 0.5);
+            domainMatch = clamp01(Number(scores.domain_match) ?? 0.5);
+            purposeMatch = clamp01(Number(scores.purpose_match) ?? 0.5);
+            intentMatch = clamp01(Number(scores.intent_match) ?? 0.5);
+            categoryMatch = clamp01(
+              Number(scores.category_match) ?? (userCategory ? 0.7 : 0.5),
+            );
+            const aiComp = Number(scores.completeness);
+            if (Number.isFinite(aiComp)) {
+              completeness = clamp01(Math.min(localComp + 0.15, aiComp));
+              // Prefer stricter of local vs AI for vague phrases
+              completeness = Math.min(completeness, localComp + 0.2);
+              completeness = clamp01(
+                Math.min(completeness, Number.isFinite(aiComp) ? aiComp : completeness),
+              );
+              // blend: take min for safety on vague
+              completeness = clamp01(Math.min(localComp, clamp01(aiComp)) * 0.4 +
+                Math.max(localComp, clamp01(aiComp)) * 0.6);
+            }
+          }
+
+          contradiction = Boolean(parsed.contradiction);
+          if (Boolean(parsed.repetition)) {
+            aiRepetition = true;
+            const rt = String(parsed.repetition_type || "semantic");
+            if (["exact", "near", "semantic"].includes(rt)) {
+              repetitionType = rt as "exact" | "near" | "semantic";
+            } else if (!repetitionType) {
+              repetitionType = "semantic";
+            }
+          }
+          if (typeof parsed.category_warning === "string" && parsed.category_warning.trim()) {
+            categoryWarning = parsed.category_warning.trim();
+          }
 
           const sugDuration = Number(parsed.suggested_duration);
           if (Number.isFinite(sugDuration)) {
@@ -493,65 +657,85 @@ USER SELECTED DIFFICULTY (if any): ${userDifficulty || "(none)"}
               Math.min(480, Math.max(5, sugDuration)),
             );
           }
-          const sugDiff = String(parsed.suggested_difficulty || "")
-            .toLowerCase();
+          const sugDiff = String(parsed.suggested_difficulty || "").toLowerCase();
           if (["easy", "medium", "hard"].includes(sugDiff)) {
-            suggestions.difficulty = sugDiff as
-              | "easy"
-              | "medium"
-              | "hard";
+            suggestions.difficulty = sugDiff as "easy" | "medium" | "hard";
           }
           const sugCat = String(parsed.suggested_category || "").trim();
-          if (sugCat) {
-            suggestions.category = normalizeVACategory(sugCat);
-          }
+          if (sugCat) suggestions.category = normalizeVACategory(sugCat);
 
           gotAi = true;
-          console.log("analyze-task: AI ok with", model);
+          console.log("analyze-task: multi-factor AI ok", model);
           break;
         } catch (e) {
           console.warn("analyze-task: AI attempt failed", model, e);
         }
       }
-
-      if (!gotAi) {
-        aiDegraded = true;
-        console.warn(
-          "analyze-task: AI unavailable, status=",
-          lastStatus,
-        );
-      }
+      if (!gotAi) aiDegraded = true;
     } else {
       aiDegraded = true;
     }
 
-    // ---------- Classify ----------
-    const validation = classifyValidation(
-      similarity,
-      aiRelated,
-      confidence,
-      basicScore,
-    );
-
-    if (!reason) {
-      if (validation === "VALID") {
-        reason =
-          similarity != null
-            ? `Description is semantically related to the title (similarity ${similarity.toFixed(2)}).`
-            : "Description appears related to the title.";
-      } else if (validation === "REVIEW") {
-        reason =
-          "Please review your description. It may not fully match the task title.";
-      } else {
-        reason =
-          "Description does not match the task title. Please describe the work involved in this task.";
-      }
+    // If AI degraded, derive rough factor scores from semantic + basic
+    if (aiDegraded) {
+      actionMatch = semanticSimilarity;
+      objectMatch = semanticSimilarity;
+      domainMatch = semanticSimilarity;
+      purposeMatch = semanticSimilarity;
+      intentMatch = semanticSimilarity;
+      categoryMatch = userCategory ? 0.6 : 0.5;
+      aiReason =
+        semanticSimilarity >= THRESHOLDS.HIGH
+          ? "Description appears related to the title (AI unavailable; used embedding similarity)."
+          : semanticSimilarity >= THRESHOLDS.MEDIUM
+            ? "Description may not fully match the title. Please review."
+            : "Description does not appear related to the title.";
     }
 
-    const related =
-      validation === "VALID" ||
-      (validation === "REVIEW" && aiRelated !== false);
+    // Apply local completeness floor for known vague phrases
+    if (VAGUE_PATTERNS.some((re) => re.test(description.trim()))) {
+      completeness = Math.min(completeness, 0.15);
+    }
+    if (localRep.repetition) {
+      aiRepetition = true;
+      if (!repetitionType) repetitionType = localRep.repetition_type;
+      completeness = Math.min(completeness, 0.4);
+    }
 
+    const factors: FactorScores = {
+      semantic_similarity: clamp01(semanticSimilarity),
+      intent_match: clamp01(intentMatch),
+      action_match: clamp01(actionMatch),
+      object_match: clamp01(objectMatch),
+      domain_match: clamp01(domainMatch),
+      purpose_match: clamp01(purposeMatch),
+      category_match: clamp01(categoryMatch),
+      completeness: clamp01(completeness),
+      contradiction,
+      repetition: aiRepetition,
+      repetition_type: repetitionType,
+    };
+
+    const score = computeWeightedScore(factors);
+    let status = classifyFromFactors(score, factors);
+
+    // Soften: repetition alone → REVIEW not INVALID
+    if (status === "INVALID" && factors.repetition && !factors.contradiction && factors.semantic_similarity >= 0.55) {
+      status = "REVIEW";
+    }
+
+    const message = buildUserMessage(
+      status,
+      factors,
+      aiReason,
+      categoryWarning,
+    );
+
+    const related =
+      status === "VALID" ||
+      (status === "REVIEW" && !factors.contradiction);
+
+    // Legacy fields for older clients (not authoritative)
     const legacyDuration = suggestions.duration ?? 30;
     const legacyDifficulty = suggestions.difficulty ?? "medium";
     const legacyCategory =
@@ -559,35 +743,49 @@ USER SELECTED DIFFICULTY (if any): ${userDifficulty || "(none)"}
         ? userCategory
         : suggestions.category ?? "General / Other";
 
-    console.log("analyze-task: result", {
-      validation,
-      similarity,
-      basicScore,
-      aiRelated,
-      confidence,
-    });
+    console.log("analyze-task: result", { status, score, factors });
 
     return jsonResponse({
       ok: true,
-      validation,
+      // Primary (backward compatible top-level)
+      validation: status,
       related,
-      confidence: aiRelated != null ? confidence : (similarity ?? basicScore),
-      reason,
-      similarity:
-        similarity != null
-          ? Math.round(similarity * 1000) / 1000
-          : null,
-      basic_score: Math.round(basicScore * 1000) / 1000,
+      confidence: aiRelated != null ? confidence : score,
+      reason: message,
+      message,
+      similarity: Math.round(factors.semantic_similarity * 1000) / 1000,
+      score: Math.round(score * 1000) / 1000,
+      // Structured multi-factor detail
+      validation_detail: {
+        status,
+        score: Math.round(score * 1000) / 1000,
+        semantic_similarity: Math.round(factors.semantic_similarity * 1000) / 1000,
+        intent_match: Math.round(factors.intent_match * 1000) / 1000,
+        action_match: Math.round(factors.action_match * 1000) / 1000,
+        object_match: Math.round(factors.object_match * 1000) / 1000,
+        domain_match: Math.round(factors.domain_match * 1000) / 1000,
+        purpose_match: Math.round(factors.purpose_match * 1000) / 1000,
+        category_match: Math.round(factors.category_match * 1000) / 1000,
+        completeness: Math.round(factors.completeness * 1000) / 1000,
+        contradiction: factors.contradiction,
+        repetition: factors.repetition,
+        repetition_type: factors.repetition_type,
+      },
+      task_intent: taskIntent,
+      category_warning: categoryWarning,
       thresholds: THRESHOLDS,
+      weights: WEIGHTS,
       suggestions:
         Object.keys(suggestions).length > 0 ? suggestions : null,
       degraded: embeddingDegraded || aiDegraded,
       embedding_available: similarity != null,
+      // Legacy
       duration: legacyDuration,
       difficulty: legacyDifficulty,
       category: legacyCategory,
       priority: "medium",
       corrected_description: description,
+      basic_score: Math.round(basicScore * 1000) / 1000,
     });
   } catch (err) {
     console.error("analyze-task: unexpected error", err);

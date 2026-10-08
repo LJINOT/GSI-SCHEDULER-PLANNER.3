@@ -453,11 +453,23 @@ export default function AdaptiveScheduling() {
           ),
       };
 
+      const taskBlocks = next.blocks.filter(
+        (b: any) => b.kind !== "break",
+      );
+
       /**
-       * THIS is the important part.
-       *
-       * The new adaptive schedule becomes
-       * the Current Schedule.
+       * Never replace a valid official schedule with an empty result.
+       */
+      if (taskBlocks.length === 0) {
+        toast.message(
+          body.note ||
+            "The adapted schedule could not be generated. Your current schedule was kept unchanged.",
+        );
+        return;
+      }
+
+      /**
+       * Adaptive update becomes the official Current Schedule.
        */
       setPayload(next);
 
@@ -466,33 +478,16 @@ export default function AdaptiveScheduling() {
         next
       );
 
-      /**
-       * Refresh task information so the
-       * Current Schedule displays the latest
-       * task status/priority information.
-       */
       await fetchTasks();
 
-      /**
-       * Popup notification.
-       *
-       * The schedule itself is NOT duplicated.
-       */
-      if (next.blocks.length === 0) {
-        toast.message(
-          body.note ||
-            "No schedule blocks returned."
-        );
-      } else {
-        toast.success(
-          "Schedule Updated",
-          {
-            description:
-              "Your current schedule has been automatically adapted to the latest task changes.",
-            duration: 4500,
-          }
-        );
-      }
+      toast.success(
+        "Schedule Updated",
+        {
+          description:
+            "Your current schedule has been adapted to the latest task and settings changes.",
+          duration: 4500,
+        }
+      );
     } catch (err: any) {
       let message =
         err?.message || "Failed to adapt schedule";

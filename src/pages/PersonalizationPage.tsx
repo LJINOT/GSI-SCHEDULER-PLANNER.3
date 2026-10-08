@@ -53,11 +53,19 @@ export default function PersonalizationPage() {
 
       if (data) {
         if (data.peak_start) {
-          setPeakStart(data.peak_start);
+          const m = String(data.peak_start).match(/(\d{1,2}):(\d{2})/);
+          if (m) {
+            const h = String(Number(m[1])).padStart(2, "0");
+            setPeakStart(`${h}:${m[2]}`);
+          }
         }
 
         if (data.peak_end) {
-          setPeakEnd(data.peak_end);
+          const m = String(data.peak_end).match(/(\d{1,2}):(\d{2})/);
+          if (m) {
+            const h = String(Number(m[1])).padStart(2, "0");
+            setPeakEnd(`${h}:${m[2]}`);
+          }
         }
 
         if (
@@ -96,23 +104,28 @@ export default function PersonalizationPage() {
         return;
       }
 
-      // Soft-check preferred window order; scheduler also clamps to work hours.
+      // Preferred window may be same-day or overnight (e.g. 22:00–02:00).
+      // Only reject zero-length; the scheduler clamps peak into work hours.
       const ps = peakStart.split(":").map(Number);
       const pe = peakEnd.split(":").map(Number);
       const psm = (ps[0] || 0) * 60 + (ps[1] || 0);
       const pem = (pe[0] || 0) * 60 + (pe[1] || 0);
-      if (pem <= psm) {
-        // Still save but user gets a toast; edge function will fall back to work hours.
+      if (psm === pem) {
         toast.message(
-          "Preferred end time should be later than start. Scheduler will use your working hours as fallback.",
+          "Peak start and end are the same. Scheduler will use your full working hours instead.",
         );
       }
+      const norm = (t: string) => {
+        const m = String(t).match(/(\d{1,2}):(\d{2})/);
+        if (!m) return t;
+        return `${String(Number(m[1])).padStart(2, "0")}:${m[2]}`;
+      };
       const { error } = await supabase
         .from("profiles")
         .upsert({
           id: user.id,
-          peak_start: peakStart,
-          peak_end: peakEnd,
+          peak_start: norm(peakStart),
+          peak_end: norm(peakEnd),
           break_style: breakStyle,
         });
 
@@ -196,8 +209,9 @@ export default function PersonalizationPage() {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Adaptive scheduling will place high-difficulty tasks inside this
-            window. Used as fallback when behavioral data is sparse.
+            High-difficulty tasks prefer this window. Supports overnight peaks
+            (e.g. 22:00–02:00). Must fit inside your working hours when possible;
+            otherwise the scheduler uses the full work window.
           </p>
         </CardContent>
       </Card>

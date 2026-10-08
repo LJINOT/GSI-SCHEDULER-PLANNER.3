@@ -160,7 +160,7 @@ export default function Today() {
         }
       }
       if (t.estimated_duration) {
-        lines.push(`Estimated duration about ${t.estimated_duration} minutes.`);
+        lines.push(`Duration: ${t.estimated_duration} minutes.`);
       }
       if (t.status === "todo") lines.push("Task has not been started yet.");
       if (t.status === "in_progress") lines.push("Already in progress — good to continue.");

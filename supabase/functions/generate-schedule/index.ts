@@ -55,13 +55,62 @@ type PSOResult = {
   best: number;
 };
 
-function parseHHMM(value: string): number {
-  const [hours, minutes] = value.split(":").map(Number);
+/**
+ * Normalize a daily time value to minutes after midnight.
+ * Accepts: "7:00", "07:00", "07:00:00", "07:00:00+08:00", "17:30:00.000Z"
+ * Does NOT use Date objects for simple HH:MM comparisons.
+ */
+function normalizeTimeString(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  let s = String(value).trim();
+  if (!s) return null;
+  // If ISO-like, take the time portion after T
+  if (s.includes("T")) {
+    s = s.split("T")[1] || s;
+  }
+  // Drop timezone offset / Z / fractional seconds
+  s = s.replace(/Z$/i, "");
+  s = s.replace(/[+-]\d{2}:?\d{2}$/, "");
+  s = s.replace(/\.\d+$/, "");
+  const parts = s.split(":").map((p) => p.trim());
+  if (parts.length < 2) return null;
+  const hours = Number(parts[0]);
+  const minutes = Number(parts[1]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return `${String(Math.floor(hours)).padStart(2, "0")}:${String(Math.floor(minutes)).padStart(2, "0")}`;
+}
 
+function parseHHMM(value: string | null | undefined): number {
+  const norm = normalizeTimeString(value);
+  if (!norm) return 0;
+  const [hours, minutes] = norm.split(":").map(Number);
   return (
     (Number.isFinite(hours) ? hours : 0) * 60 +
     (Number.isFinite(minutes) ? minutes : 0)
   );
+}
+
+function isValidWorkWindow(startMin: number, endMin: number): boolean {
+  return Number.isFinite(startMin) && Number.isFinite(endMin) && endMin > startMin;
+}
+
+/** Clamp preferred/peak window into the hard work window. */
+function clampPeakToWork(
+  peakStartMin: number,
+  peakEndMin: number,
+  startMin: number,
+  endMin: number,
+): { peakStartMin: number; peakEndMin: number; adjusted: boolean } {
+  let ps = Math.max(startMin, Math.min(endMin, peakStartMin));
+  let pe = Math.max(startMin, Math.min(endMin, peakEndMin));
+  let adjusted = ps !== peakStartMin || pe !== peakEndMin;
+  if (pe <= ps) {
+    ps = startMin;
+    pe = endMin;
+    adjusted = true;
+  }
+  return { peakStartMin: ps, peakEndMin: pe, adjusted };
 }
 
 function toHHMM(minutes: number): string {
@@ -1064,7 +1113,8 @@ async function persistSchedule(
 function validateBlocks(
   blocks: Block[],
   startMin: number,
-  endMin: number
+  endMin: number,
+  warnings?: string[],
 ): Block[] {
   const sorted = [...blocks].sort(
     (a, b) => {
@@ -1096,9 +1146,21 @@ function validateBlocks(
       end > endMin ||
       end <= start
     ) {
-      throw new Error(
-        `Invalid block outside work window: ${block.title}`
+      // Drop invalid blocks instead of crashing the Edge Function.
+      // Callers (adaptive / full rebuild) re-place affected tasks.
+      warnings?.push(
+        `Dropped block outside work window: ${block.title} (${block.start}–${block.end}).`,
       );
+      console.warn(
+        "validateBlocks: dropped outside-window block",
+        block.title,
+        block.start,
+        block.end,
+        "window",
+        toHHMM(startMin),
+        toHHMM(endMin),
+      );
+      continue;
     }
 
     const previous =
@@ -1118,9 +1180,16 @@ function validateBlocks(
         start <
         previousEnd
       ) {
-        throw new Error(
-          `Overlapping schedule detected between "${previous.title}" and "${block.title}".`
+        // Skip overlapping block rather than 500 — prefer earlier block.
+        warnings?.push(
+          `Dropped overlapping block: "${block.title}" conflicts with "${previous.title}".`,
         );
+        console.warn(
+          "validateBlocks: dropped overlapping block",
+          block.title,
+          previous.title,
+        );
+        continue;
       }
     }
 
@@ -1161,13 +1230,22 @@ function buildOccupiedFromTasks(
     if (excludeIds.has(task.id)) continue;
     if (!task.start_time) continue;
     if (String(task.start_time).slice(0, 10) !== scheduleDate) continue;
-    const timePart = String(task.start_time).includes("T")
-      ? String(task.start_time).split("T")[1].slice(0, 5)
-      : null;
+    const timePart = normalizeTimeString(
+      String(task.start_time).includes("T")
+        ? String(task.start_time).split("T")[1]
+        : String(task.start_time),
+    );
     if (!timePart) continue;
     const sm = parseHHMM(timePart);
     const dur = durationOf(task);
-    occ.push({ start: sm, end: sm + dur, taskId: task.id });
+    const em = sm + dur;
+    // CRITICAL: never preserve placements outside the configured work window.
+    // Changing work hours must force reschedule of old slots (e.g. 17:30 when
+    // the new window ends at 17:00), not an HTTP 500 in final validation.
+    if (sm < startMin || em > endMin || em <= sm) {
+      continue;
+    }
+    occ.push({ start: sm, end: em, taskId: task.id });
   }
   return occ.sort((a, b) => a.start - b.start);
 }
@@ -1656,46 +1734,75 @@ serve(async (req) => {
         )
         .maybeSingle();
 
-    const workStart =
-      profile?.work_start ||
-      "09:00";
+    // Defaults only — never hard-lock the scheduler to 07:00–19:00.
+    const workStartRaw =
+      normalizeTimeString(profile?.work_start) || "09:00";
+    const workEndRaw =
+      normalizeTimeString(profile?.work_end) || "17:00";
 
-    const workEnd =
-      profile?.work_end ||
-      "17:00";
+    const startMin = parseHHMM(workStartRaw);
+    const endMin = parseHHMM(workEndRaw);
 
-    const peakStart =
-      profile?.peak_start ||
-      workStart;
+    const scheduleWarnings: string[] = [];
 
-    const peakEnd =
-      profile?.peak_end ||
-      "12:00";
+    if (!isValidWorkWindow(startMin, endMin)) {
+      console.error("generate-schedule: invalid working hours", {
+        user: user.id,
+        work_start: workStartRaw,
+        work_end: workEndRaw,
+      });
+      return new Response(
+        JSON.stringify({
+          error:
+            "Invalid working hours. The end time must be later than the start time.",
+          window: {
+            start: workStartRaw,
+            end: workEndRaw,
+          },
+        }),
+        {
+          status: 400,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+    }
+
+    const workStart = toHHMM(startMin);
+    const workEnd = toHHMM(endMin);
+
+    // Preferred/peak defaults to the full work window when unset or invalid.
+    let peakStart =
+      normalizeTimeString(profile?.peak_start) || workStart;
+    let peakEnd =
+      normalizeTimeString(profile?.peak_end) || workEnd;
 
     const breakStyle =
       profile?.break_style ||
       "pomodoro";
 
-    const startMin =
-      parseHHMM(
-        workStart
-      );
-
-    const endMin =
-      parseHHMM(
-        workEnd
-      );
-
     let peakStartMin = parseHHMM(peakStart);
     let peakEndMin = parseHHMM(peakEnd);
 
-    if (
-      endMin <=
-      startMin
-    ) {
-      throw new Error(
-        "Work end time must be later than work start time."
+    // Always clamp preferred window into hard work hours.
+    {
+      const clamped = clampPeakToWork(
+        peakStartMin,
+        peakEndMin,
+        startMin,
+        endMin,
       );
+      if (clamped.adjusted) {
+        scheduleWarnings.push(
+          "Preferred working time was adjusted to fit the configured working hours.",
+        );
+      }
+      peakStartMin = clamped.peakStartMin;
+      peakEndMin = clamped.peakEndMin;
+      peakStart = toHHMM(peakStartMin);
+      peakEnd = toHHMM(peakEndMin);
     }
 
     const userTz = profile?.timezone || "UTC";
@@ -1712,33 +1819,30 @@ serve(async (req) => {
       tasks.length + (completedTasksForBehavior || []).length,
     );
     if (behavior.evidenceLevel === "learning") {
-      // Learned behavior is a preferred window, not permission to work
-      // outside the user's configured working hours. Keep it inside the
-      // hard work window before using it in PSO/CSP.
-      peakStartMin = Math.max(startMin, Math.min(endMin, behavior.peakStartMin));
-      peakEndMin = Math.max(
-        peakStartMin,
-        Math.min(endMin, behavior.peakEndMin),
+      // Learned peak is preference only — never expand beyond work hours.
+      const learned = clampPeakToWork(
+        behavior.peakStartMin,
+        behavior.peakEndMin,
+        startMin,
+        endMin,
       );
-
-      // If the learned window collapses, fall back to the configured
-      // preferred/peak window inside the user's working hours.
-      if (peakEndMin <= peakStartMin) {
-        peakStartMin = Math.max(startMin, Math.min(endMin, parseHHMM(peakStart)));
-        peakEndMin = Math.max(
-          peakStartMin,
-          Math.min(endMin, parseHHMM(peakEnd)),
+      peakStartMin = learned.peakStartMin;
+      peakEndMin = learned.peakEndMin;
+      if (learned.adjusted) {
+        scheduleWarnings.push(
+          "Learned peak time was constrained to your working hours.",
         );
       }
-    } else {
-      // Configured preferred/peak hours are also advisory; working hours
-      // remain the hard boundary.
-      peakStartMin = Math.max(startMin, Math.min(endMin, peakStartMin));
-      peakEndMin = Math.max(
-        peakStartMin,
-        Math.min(endMin, peakEndMin),
-      );
     }
+
+    console.log("generate-schedule window", {
+      user: user.id,
+      work_start: workStart,
+      work_end: workEnd,
+      peak_start: toHHMM(peakStartMin),
+      peak_end: toHHMM(peakEndMin),
+      schedule_date: scheduleDate,
+    });
 
     const isAdaptive = body?.adaptive === true;
 
@@ -1784,7 +1888,53 @@ serve(async (req) => {
       tasks = applied.tasks;
       adaptiveMoves = applied.movesSeed;
 
-      if (applied.unfinishedIds.length > 0) {
+      // When working hours change, previously valid start times may now
+      // fall outside the window. Treat those as needing reschedule so we
+      // never feed invalid blocks into final validation.
+      const outsideWorkIds: string[] = [];
+      for (const t of tasks) {
+        if (!t.start_time) continue;
+        if (String(t.start_time).slice(0, 10) !== scheduleDate) continue;
+        const timePart = normalizeTimeString(
+          String(t.start_time).includes("T")
+            ? String(t.start_time).split("T")[1]
+            : String(t.start_time),
+        );
+        if (!timePart) continue;
+        const sm = parseHHMM(timePart);
+        const em = sm + durationOf(t);
+        if (sm < startMin || em > endMin) {
+          outsideWorkIds.push(t.id);
+          adaptiveMoves.push({
+            task_id: t.id,
+            title: t.title,
+            original_start: timePart,
+            original_end: toHHMM(em),
+            completed_minutes: 0,
+            remaining_minutes: durationOf(t),
+            new_start: null,
+            new_end: null,
+            status: "needs_rescheduling",
+            reason:
+              "Existing start time is outside your current working hours and will be rescheduled.",
+          });
+        }
+      }
+      if (outsideWorkIds.length > 0) {
+        scheduleWarnings.push(
+          `${outsideWorkIds.length} task(s) were outside the current working hours and will be rescheduled.`,
+        );
+        // Clear invalid start_time in memory so full rebuild does not try to keep them
+        tasks = tasks.map((t) =>
+          outsideWorkIds.includes(t.id) ? { ...t, start_time: null } : t,
+        );
+        // Merge into unfinished so local adaptive path does not preserve them
+        for (const id of outsideWorkIds) {
+          if (!applied.unfinishedIds.includes(id)) applied.unfinishedIds.push(id);
+        }
+      }
+
+      if (applied.unfinishedIds.length > 0 || outsideWorkIds.length > 0) {
         /*
          * If an unfinished task outranks a task that currently occupies the
          * schedule, do not simply place it after that task. Rebuild the full
@@ -1834,6 +1984,7 @@ serve(async (req) => {
             local.blocks,
             startMin,
             endMin,
+            scheduleWarnings,
           );
           await persistSchedule(
             supabase,
@@ -1982,7 +2133,8 @@ serve(async (req) => {
       validateBlocks(
         cspResult.blocks,
         startMin,
-        endMin
+        endMin,
+        scheduleWarnings,
       );
 
     const scheduledMinutes = new Map<string, number>();
@@ -2110,6 +2262,8 @@ serve(async (req) => {
         deferred_count:
           deferred.length,
 
+        warnings: scheduleWarnings,
+
         algorithm:
           "priority-aware csp + pso-random-key + behavior-aware peak scheduling",
         behavior_profile: {
@@ -2133,20 +2287,21 @@ serve(async (req) => {
       }
     );
   } catch (error) {
-    console.error(
-      "generate-schedule error:",
-      error
-    );
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
+    console.error("generate-schedule error:", message);
+
+    const isValidation =
+      /working hours|work end|work start|invalid/i.test(message);
 
     return new Response(
       JSON.stringify({
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        error: message,
       }),
       {
-        status: 500,
+        status: isValidation ? 400 : 500,
         headers: {
           ...corsHeaders,
           "Content-Type":

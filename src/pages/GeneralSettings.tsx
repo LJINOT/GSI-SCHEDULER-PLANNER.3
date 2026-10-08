@@ -105,14 +105,37 @@ export default function GeneralSettings() {
     }
   };
 
+  const toMinutes = (t: string) => {
+    const parts = String(t || "").trim().split(":");
+    const h = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return NaN;
+    return h * 60 + m;
+  };
+
   const saveSettings = async () => {
+    const startM = toMinutes(workStart);
+    const endM = toMinutes(workEnd);
+    if (!Number.isFinite(startM) || !Number.isFinite(endM)) {
+      toast.error("Please enter valid working hours.");
+      return;
+    }
+    if (endM <= startM) {
+      toast.error("End time must be later than start time.");
+      return;
+    }
     setSaving(true);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { setSaving(false); return; }
+    // Normalize to HH:MM for consistent scheduler parsing
+    const norm = (t: string) => {
+      const [h, m] = t.split(":").map(Number);
+      return `${String(h).padStart(2, "0")}:${String(m || 0).padStart(2, "0")}`;
+    };
     const { error } = await supabase.from("profiles").upsert({
       id: user.id,
-      work_start: workStart,
-      work_end: workEnd,
+      work_start: norm(workStart),
+      work_end: norm(workEnd),
       theme: darkMode ? "dark" : "light",
       timezone,
     });

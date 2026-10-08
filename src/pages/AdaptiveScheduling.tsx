@@ -494,10 +494,26 @@ export default function AdaptiveScheduling() {
         );
       }
     } catch (err: any) {
-      toast.error(
-        err.message ||
-          "Failed to adapt schedule"
-      );
+      let message =
+        err?.message || "Failed to adapt schedule";
+      // Supabase wraps Edge Function body; surface the real scheduler error.
+      try {
+        const ctx = err?.context;
+        if (ctx && typeof ctx.json === "function") {
+          const body = await ctx.json();
+          if (body?.error) message = String(body.error);
+        } else if (typeof err?.context?.body === "string") {
+          const body = JSON.parse(err.context.body);
+          if (body?.error) message = String(body.error);
+        }
+      } catch {
+        /* keep message */
+      }
+      if (/non-2xx/i.test(message)) {
+        message =
+          "Unable to generate schedule. Check that your working hours end after they start, then try again.";
+      }
+      toast.error(message);
     } finally {
       setGenerating(false);
     }

@@ -23,6 +23,17 @@ export default function GeneralSettings() {
   const [saving, setSaving] = useState(false);
   const [timezone, setTz] = useState(getTimezone());
 
+  /** HTML time inputs need HH:mm — Postgres often returns HH:mm:ss. */
+  const normalizeTimeInput = (value: string | null | undefined) => {
+    if (!value) return "";
+    const match = String(value).trim().match(/(\d{1,2}):(\d{2})/);
+    if (!match) return "";
+    const h = Number(match[1]);
+    const m = Number(match[2]);
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return "";
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  };
+
   useEffect(() => {
     const savedTheme = localStorage.getItem("gsi-theme");
     if (savedTheme === "dark") {
@@ -40,8 +51,14 @@ export default function GeneralSettings() {
       if (user) {
         const { data } = await supabase.from("profiles").select("work_start, work_end, theme").eq("id", user.id).single();
         if (data) {
-          if (data.work_start) setWorkStart(data.work_start);
-          if (data.work_end) setWorkEnd(data.work_end);
+          if (data.work_start) {
+            const s = normalizeTimeInput(data.work_start);
+            if (s) setWorkStart(s);
+          }
+          if (data.work_end) {
+            const e = normalizeTimeInput(data.work_end);
+            if (e) setWorkEnd(e);
+          }
           if (data.theme === "dark") {
             setDarkMode(true);
             document.documentElement.classList.add("dark");

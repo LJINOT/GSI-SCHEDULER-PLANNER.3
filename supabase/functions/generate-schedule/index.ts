@@ -119,30 +119,149 @@ function parseHHMM(value: string | null | undefined): number {
   return hours * 60 + minutes;
 }
 
-function isValidWorkWindow(startMin: number, endMin: number): boolean {
-  return Number.isFinite(startMin) && Number.isFinite(endMin) && endMin > startMin;
+const DAY_MINUTES = 24 * 60;
+
+type WorkWindow = {
+  /** Clock minutes 0–1439 */
+  startMin: number;
+  endMin: number;
+  /** True when the shift crosses midnight (e.g. 22:00 → 06:00). */
+  overnight: boolean;
+  /** Linear shift coordinates: [effectiveStart, effectiveEnd) */
+  effectiveStart: number;
+  effectiveEnd: number;
+};
+
+/**
+ * Build a work window. Supports night shifts:
+ *   same-day:  09:00 → 17:00  (end > start)
+ *   overnight: 22:00 → 06:00  (end < start)
+ * Zero-length (end === start) is invalid.
+ */
+function buildWorkWindow(
+  startMin: number,
+  endMin: number,
+): WorkWindow | null {
+  if (!Number.isFinite(startMin) || !Number.isFinite(endMin)) return null;
+  if (startMin < 0 || startMin >= DAY_MINUTES) return null;
+  if (endMin < 0 || endMin >= DAY_MINUTES) return null;
+  if (startMin === endMin) return null; // zero-length
+
+  const overnight = endMin < startMin;
+  return {
+    startMin,
+    endMin,
+    overnight,
+    effectiveStart: startMin,
+    effectiveEnd: overnight ? endMin + DAY_MINUTES : endMin,
+  };
 }
 
-/** Clamp preferred/peak window into the hard work window. */
+function isValidWorkWindow(startMin: number, endMin: number): boolean {
+  return buildWorkWindow(startMin, endMin) != null;
+}
+
+/** Map a clock time into linear shift coordinates, or -1 if outside the window. */
+function clockToShift(clockMin: number, ww: WorkWindow): number {
+  const c = ((clockMin % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
+  if (!ww.overnight) {
+    if (c < ww.startMin || c > ww.endMin) return -1;
+    return c;
+  }
+  // Overnight: [startMin, 24:00) U [0, endMin]
+  if (c >= ww.startMin) return c;
+  if (c <= ww.endMin) return c + DAY_MINUTES;
+  return -1;
+}
+
+function shiftToClock(shiftMin: number): number {
+  return ((shiftMin % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
+}
+
+function shiftToHHMM(shiftMin: number): string {
+  return toHHMM(shiftToClock(shiftMin));
+}
+
+/** True if [clockStart, clockEnd] lies fully inside the work window (shift-linear). */
+function segmentInWorkWindow(
+  clockStart: number,
+  clockEnd: number,
+  ww: WorkWindow,
+): boolean {
+  // Zero / negative duration in clock space may cross midnight for overnight
+  let s = clockToShift(clockStart, ww);
+  if (s < 0) return false;
+
+  let e: number;
+  if (!ww.overnight) {
+    e = clockEnd;
+    if (e <= clockStart) return false;
+    if (e > ww.endMin || clockStart < ww.startMin) return false;
+    return true;
+  }
+
+  // Overnight: end may be next calendar morning
+  if (clockEnd > clockStart) {
+    // same clock-day segment (e.g. 22:00–23:30)
+    e = clockToShift(clockEnd, ww);
+    if (e < 0) return false;
+    return e > s && e <= ww.effectiveEnd;
+  }
+  // crosses midnight in the block itself (e.g. 23:00–01:00)
+  e = clockToShift(clockEnd, ww);
+  if (e < 0) return false;
+  return e > s && e <= ww.effectiveEnd;
+}
+
+/**
+ * Clamp preferred/peak into the work window.
+ * For overnight shifts the preferred window must also sit inside the shift.
+ */
 function clampPeakToWork(
   peakStartMin: number,
   peakEndMin: number,
   startMin: number,
   endMin: number,
 ): { peakStartMin: number; peakEndMin: number; adjusted: boolean } {
-  let ps = Math.max(startMin, Math.min(endMin, peakStartMin));
-  let pe = Math.max(startMin, Math.min(endMin, peakEndMin));
-  let adjusted = ps !== peakStartMin || pe !== peakEndMin;
-  if (pe <= ps) {
-    ps = startMin;
-    pe = endMin;
-    adjusted = true;
+  const ww = buildWorkWindow(startMin, endMin);
+  if (!ww) {
+    return { peakStartMin: startMin, peakEndMin: endMin, adjusted: true };
   }
-  return { peakStartMin: ps, peakEndMin: pe, adjusted };
+
+  // Default: use full work window
+  const full = {
+    peakStartMin: ww.startMin,
+    peakEndMin: ww.endMin,
+    adjusted: true,
+  };
+
+  const ps = clockToShift(peakStartMin, ww);
+  const pe = clockToShift(peakEndMin, ww);
+
+  if (ps < 0 || pe < 0) return full;
+
+  // Preferred must be a non-empty span in shift space
+  let shiftStart = ps;
+  let shiftEnd = pe;
+  if (shiftEnd <= shiftStart) {
+    // peak might be overnight-style inside a same-day job, or invalid — use full
+    return full;
+  }
+  if (shiftStart < ww.effectiveStart) shiftStart = ww.effectiveStart;
+  if (shiftEnd > ww.effectiveEnd) shiftEnd = ww.effectiveEnd;
+  if (shiftEnd <= shiftStart) return full;
+
+  const outS = shiftToClock(shiftStart);
+  const outE = shiftToClock(shiftEnd);
+  const adjusted =
+    outS !== peakStartMin || outE !== peakEndMin;
+  return { peakStartMin: outS, peakEndMin: outE, adjusted };
 }
 
 function toHHMM(minutes: number): string {
-  const safe = Math.max(0, Math.round(minutes));
+  // Wrap into a single day so overnight shift coordinates still print as clock times.
+  let safe = Math.round(minutes);
+  safe = ((safe % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
 
   const hours = Math.floor(safe / 60);
   const mins = safe % 60;
@@ -392,10 +511,26 @@ function csp(
   const blocks: Block[] = [];
   const scheduledTaskIds: string[] = [];
   const unique = uniqueTasks(tasks);
+  const ww = buildWorkWindow(startMin, endMin);
+  if (!ww) {
+    return { blocks: [], scheduledTaskIds: [] };
+  }
+  const effStart = ww.effectiveStart;
+  const effEnd = ww.effectiveEnd;
+
+  // Breaks only when their full span sits inside the (possibly overnight) window
   const breaks = getBreakBlocks(breakStyle)
-    .filter((b) => b.start >= startMin && b.start + b.dur <= endMin)
+    .map((b) => {
+      const s = clockToShift(b.start, ww);
+      if (s < 0) return null;
+      const e = s + b.dur;
+      if (e > effEnd) return null;
+      return { start: s, dur: b.dur, title: b.title };
+    })
+    .filter((b): b is BreakBlock => b != null)
     .sort((a, b) => a.start - b.start);
 
+  // occupied uses linear shift coordinates
   const occupied: Array<{ start: number; end: number; taskId?: string }> = breaks.map((b) => ({
     start: b.start,
     end: b.start + b.dur,
@@ -405,8 +540,8 @@ function csp(
     blocks.push({
       task_id: task.id,
       title: task.title,
-      start: toHHMM(start),
-      end: toHHMM(end),
+      start: shiftToHHMM(start),
+      end: shiftToHHMM(end),
       category: task.category || "General / Other",
       kind: "task",
     });
@@ -418,8 +553,8 @@ function csp(
     blocks.push({
       task_id: `break-${b.start}`,
       title: b.title,
-      start: toHHMM(b.start),
-      end: toHHMM(b.start + b.dur),
+      start: shiftToHHMM(b.start),
+      end: shiftToHHMM(b.start + b.dur),
       category: "Break",
       kind: "break",
     });
@@ -433,17 +568,31 @@ function csp(
    */
   for (const task of unique) {
     let remaining = durationOf(task);
-    const latestEnd = latestEndForTask(task, scheduleDateForCSP, endMin);
+    // latestEndForTask returns clock-ish cap; for overnight use full effective end
+    const latestEndClock = latestEndForTask(task, scheduleDateForCSP, ww.endMin);
+    let latestEndShift = effEnd;
+    if (!ww.overnight) {
+      latestEndShift = Math.min(effEnd, latestEndClock);
+    } else {
+      const mapped = clockToShift(latestEndClock, ww);
+      if (mapped >= 0) latestEndShift = Math.min(effEnd, mapped);
+    }
 
     while (remaining > 0) {
       const sorted = [...occupied].sort((a, b) => a.start - b.start);
-      let cursor = Math.max(startMin, notBefore);
+      // notBefore may be clock minutes from caller — map into shift space
+      let notBeforeShift = notBefore;
+      if (ww.overnight) {
+        const mapped = clockToShift(notBefore, ww);
+        notBeforeShift = mapped >= 0 ? mapped : effStart;
+      }
+      let cursor = Math.max(effStart, notBeforeShift);
       let placed = false;
 
       for (const blocked of sorted) {
         if (blocked.end <= cursor) continue;
         if (blocked.start > cursor) {
-          const freeEnd = Math.min(blocked.start, latestEnd);
+          const freeEnd = Math.min(blocked.start, latestEndShift);
           const available = Math.max(0, freeEnd - cursor);
           if (available > 0) {
             const take = Math.min(remaining, available);
@@ -454,7 +603,7 @@ function csp(
           }
         }
         cursor = Math.max(cursor, blocked.end);
-        if (cursor >= endMin) break;
+        if (cursor >= effEnd) break;
       }
 
       if (!placed && cursor < latestEnd) {
@@ -1169,26 +1318,29 @@ function validateBlocks(
     const end =
       parseHHMM(block.end);
 
-    if (
-      start < startMin ||
-      end > endMin ||
-      end <= start
-    ) {
-      // Drop invalid blocks instead of crashing the Edge Function.
-      // Callers (adaptive / full rebuild) re-place affected tasks.
-      warnings?.push(
-        `Dropped block outside work window: ${block.title} (${block.start}–${block.end}).`,
-      );
-      console.warn(
-        "validateBlocks: dropped outside-window block",
-        block.title,
-        block.start,
-        block.end,
-        "window",
-        toHHMM(startMin),
-        toHHMM(endMin),
-      );
-      continue;
+    const ww = buildWorkWindow(startMin, endMin);
+    const inWindow = ww
+      ? segmentInWorkWindow(start, end, ww)
+      : false;
+    // Same-day blocks: end must be after start in clock space unless overnight segment
+    const overnightBlock = ww?.overnight && end <= start;
+    if (!inWindow || (!overnightBlock && end <= start && !(ww?.overnight))) {
+      // For overnight same-clock-day (22-23) end>start; for cross-midnight end<start is ok if inWindow
+      if (!inWindow) {
+        warnings?.push(
+          `Dropped block outside work window: ${block.title} (${block.start}–${block.end}).`,
+        );
+        console.warn(
+          "validateBlocks: dropped outside-window block",
+          block.title,
+          block.start,
+          block.end,
+          "window",
+          toHHMM(startMin),
+          toHHMM(endMin),
+        );
+        continue;
+      }
     }
 
     const previous =
@@ -1267,10 +1419,10 @@ function buildOccupiedFromTasks(
     const sm = parseHHMM(timePart);
     const dur = durationOf(task);
     const em = sm + dur;
-    // CRITICAL: never preserve placements outside the configured work window.
-    // Changing work hours must force reschedule of old slots (e.g. 17:30 when
-    // the new window ends at 17:00), not an HTTP 500 in final validation.
-    if (sm < startMin || em > endMin || em <= sm) {
+    // CRITICAL: never preserve placements outside the configured work window
+    // (supports overnight shifts via segmentInWorkWindow).
+    const ww = buildWorkWindow(startMin, endMin);
+    if (!ww || !segmentInWorkWindow(sm, em, ww)) {
       continue;
     }
     occ.push({ start: sm, end: em, taskId: task.id });
@@ -1286,9 +1438,26 @@ function findFreeSlot(
   notBefore: number,
 ): { start: number; end: number } | null {
   if (duration <= 0) return null;
-  let cursor = Math.max(workStart, notBefore);
-  const blocked = [...occupied].sort((a, b) => a.start - b.start);
-  for (let guard = 0; guard < 2000 && cursor + duration <= workEnd; guard++) {
+  const ww = buildWorkWindow(workStart, workEnd);
+  if (!ww) return null;
+  // occupied is in shift coordinates when built from buildOccupiedFromTasks for overnight
+  // For local adaptive, occupied uses clock if same-day — normalize to shift.
+  const toShiftOcc = (o: Occupied): Occupied => {
+    if (!ww.overnight) return o;
+    // If already looks like shift (end > DAY), keep; else map
+    if (o.start >= DAY_MINUTES || o.end > DAY_MINUTES) return o;
+    const s = clockToShift(o.start, ww);
+    if (s < 0) return o;
+    return { start: s, end: s + (o.end - o.start), taskId: o.taskId };
+  };
+  const blocked = occupied.map(toShiftOcc).sort((a, b) => a.start - b.start);
+  let notBeforeShift = notBefore;
+  if (ww.overnight) {
+    const m = clockToShift(notBefore, ww);
+    notBeforeShift = m >= 0 ? m : ww.effectiveStart;
+  }
+  let cursor = Math.max(ww.effectiveStart, notBeforeShift);
+  for (let guard = 0; guard < 2000 && cursor + duration <= ww.effectiveEnd; guard++) {
     let hit: Occupied | null = null;
     for (const b of blocked) {
       if (cursor < b.end && cursor + duration > b.start) {
@@ -1296,7 +1465,13 @@ function findFreeSlot(
         break;
       }
     }
-    if (!hit) return { start: cursor, end: cursor + duration };
+    if (!hit) {
+      // Return clock times for block writers that expect clock HH:MM
+      return {
+        start: shiftToClock(cursor),
+        end: shiftToClock(cursor + duration),
+      };
+    }
     cursor = Math.max(cursor + 1, hit.end);
   }
   return null;
@@ -1808,7 +1983,7 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({
           error:
-            `Invalid working hours (${workStartRaw} → ${workEndRaw}). The end time must be later than the start time. Open General Settings and set End after Start, then save.`,
+            `Invalid working hours (${workStartRaw} → ${workEndRaw}). Start and end cannot be the same time. For night shifts use e.g. 22:00 → 06:00. Open General Settings to fix, then save.`,
           window: {
             start: workStartRaw,
             end: workEndRaw,
@@ -1823,6 +1998,13 @@ serve(async (req) => {
             "Content-Type": "application/json",
           },
         },
+      );
+    }
+
+    const workWindow = buildWorkWindow(startMin, endMin)!;
+    if (workWindow.overnight) {
+      scheduleWarnings.push(
+        `Overnight work window active: ${workStartRaw} → ${workEndRaw} (crosses midnight).`,
       );
     }
 
@@ -1959,7 +2141,8 @@ serve(async (req) => {
         if (!timePart) continue;
         const sm = parseHHMM(timePart);
         const em = sm + durationOf(t);
-        if (sm < startMin || em > endMin) {
+        const wwCheck = buildWorkWindow(startMin, endMin);
+        if (!wwCheck || !segmentInWorkWindow(sm, em, wwCheck)) {
           outsideWorkIds.push(t.id);
           adaptiveMoves.push({
             task_id: t.id,

@@ -182,6 +182,38 @@ function shiftToHHMM(shiftMin: number): string {
   return toHHMM(shiftToClock(shiftMin));
 }
 
+/** Duration of a clock-time block in minutes (shift-aware for overnight). */
+function getBlockDurationMinutes(
+  startClock: number,
+  endClock: number,
+  ww: WorkWindow | null,
+): number {
+  if (ww) {
+    const s = clockToShift(startClock, ww);
+    const e = clockToShift(endClock, ww);
+    if (s >= 0 && e >= 0 && e > s) return e - s;
+  }
+  // Same-day fallback
+  if (endClock > startClock) return endClock - startClock;
+  // Cross-midnight without work window context
+  if (endClock < startClock) return endClock + DAY_MINUTES - startClock;
+  return 0;
+}
+
+function getBlockDurationFromStrings(
+  startHHMM: string,
+  endHHMM: string,
+  startMin: number,
+  endMin: number,
+): number {
+  return getBlockDurationMinutes(
+    parseHHMM(startHHMM),
+    parseHHMM(endHHMM),
+    buildWorkWindow(startMin, endMin),
+  );
+}
+
+
 /** True if [clockStart, clockEnd] lies fully inside the work window (shift-linear). */
 function segmentInWorkWindow(
   clockStart: number,
@@ -518,8 +550,10 @@ function csp(
   const effStart = ww.effectiveStart;
   const effEnd = ww.effectiveEnd;
 
-  // Breaks only when their full span sits inside the (possibly overnight) window
-  const breaks = getBreakBlocks(breakStyle)
+  // Breaks: keep fixed breaks that fit the window; for overnight shifts
+  // fall back to relative placement along the shift so day-only breaks
+  // (09:00 / 12:00 / 15:00) are not forced onto night workers.
+  let breaks: BreakBlock[] = getBreakBlocks(breakStyle)
     .map((b) => {
       const s = clockToShift(b.start, ww);
       if (s < 0) return null;
@@ -529,6 +563,30 @@ function csp(
     })
     .filter((b): b is BreakBlock => b != null)
     .sort((a, b) => a.start - b.start);
+
+  if (breaks.length === 0 && ww.overnight) {
+    const shiftDur = effEnd - effStart;
+    const style = (breakStyle || "pomodoro") as string;
+    const relative: Array<{ frac: number; dur: number; title: string }> =
+      style === "long-focus"
+        ? [{ frac: 0.5, dur: 45, title: "Shift Break" }]
+        : style === "flexible"
+        ? [{ frac: 0.45, dur: 30, title: "Shift Break" }]
+        : [
+            { frac: 0.25, dur: 15, title: "Short Break" },
+            { frac: 0.5, dur: 30, title: "Main Break" },
+            { frac: 0.75, dur: 15, title: "Short Break" },
+          ];
+    for (const r of relative) {
+      if (r.dur + 30 > shiftDur) continue; // need room for work around break
+      const s = Math.round(effStart + shiftDur * r.frac);
+      const e = s + r.dur;
+      if (e <= effEnd) {
+        breaks.push({ start: s, dur: r.dur, title: r.title });
+      }
+    }
+    breaks.sort((a, b) => a.start - b.start);
+  }
 
   // occupied uses linear shift coordinates
   const occupied: Array<{ start: number; end: number; taskId?: string }> = breaks.map((b) => ({
@@ -659,15 +717,25 @@ function csp(
     return diff !== 0 ? diff : parseHHMM(a.end) - parseHHMM(b.end);
   });
 
-  // Final safety validation: overlaps are never returned.
+  // Final safety validation using SHIFT-LINEAR coordinates (overnight-safe).
   const validBlocks: Block[] = [];
   const validTaskIds = new Set<string>();
   for (const block of blocks) {
     const start = parseHHMM(block.start);
     const end = parseHHMM(block.end);
-    if (start < startMin || end > endMin || end <= start) continue;
+    if (start === end) continue;
+
+    const sShift = clockToShift(start, ww);
+    const eShift = clockToShift(end, ww);
+    if (sShift < 0 || eShift < 0 || eShift <= sShift) continue;
+    if (sShift < ww.effectiveStart || eShift > ww.effectiveEnd) continue;
+
     const previous = validBlocks.length ? validBlocks[validBlocks.length - 1] : null;
-    if (previous && start < parseHHMM(previous.end)) continue;
+    if (previous) {
+      const p0 = clockToShift(parseHHMM(previous.start), ww);
+      const p1 = clockToShift(parseHHMM(previous.end), ww);
+      if (p0 >= 0 && p1 >= 0 && sShift < p1 && eShift > p0) continue;
+    }
     validBlocks.push(block);
     if (block.kind === "task") validTaskIds.add(block.task_id);
   }
@@ -679,7 +747,16 @@ function csp(
       if (!task) return false;
       const total = validBlocks
         .filter((b) => b.kind === "task" && b.task_id === id)
-        .reduce((sum, b) => sum + parseHHMM(b.end) - parseHHMM(b.start), 0);
+        .reduce(
+          (sum, b) =>
+            sum +
+            getBlockDurationMinutes(
+              parseHHMM(b.start),
+              parseHHMM(b.end),
+              ww,
+            ),
+          0,
+        );
       return total >= durationOf(task);
     }),
   };
@@ -2396,7 +2473,11 @@ serve(async (req) => {
     const scheduledMinutes = new Map<string, number>();
     for (const block of validatedBlocks) {
       if (block.kind !== "task") continue;
-      const minutes = Math.max(0, parseHHMM(block.end) - parseHHMM(block.start));
+      const minutes = getBlockDurationMinutes(
+        parseHHMM(block.start),
+        parseHHMM(block.end),
+        workWindow,
+      );
       scheduledMinutes.set(block.task_id, (scheduledMinutes.get(block.task_id) || 0) + minutes);
     }
 
@@ -2495,19 +2576,19 @@ serve(async (req) => {
         },
 
         window: {
-          start:
-            workStart,
-          end:
-            workEnd,
-          peak_start:
-            peakStart,
-          peak_end:
-            peakEnd,
-          break_style:
-            breakStyle,
-          schedule_date:
-            scheduleDate,
+          start: workStart,
+          end: workEnd,
+          overnight: workWindow.overnight,
+          duration_minutes: workWindow.effectiveEnd - workWindow.effectiveStart,
+          peak_start: peakStart,
+          peak_end: peakEnd,
+          break_style: breakStyle,
+          schedule_date: scheduleDate,
         },
+
+        note: workWindow.overnight
+          ? `Schedule generated for overnight window ${workStart}–${workEnd} (${workWindow.effectiveEnd - workWindow.effectiveStart} available minutes).`
+          : `Schedule generated for ${workStart}–${workEnd} (${workWindow.effectiveEnd - workWindow.effectiveStart} available minutes).`,
 
         scheduled_count:
           scheduledIds.size,

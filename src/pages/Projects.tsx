@@ -2262,7 +2262,7 @@ export default function Projects() {
                   </div>
                 )}
                 <div>
-                  <p className="text-xs text-muted-foreground">Estimated Duration</p>
+                  <p className="text-xs text-muted-foreground">Duration</p>
                   <p className="font-medium">
                     {viewingTask.estimated_duration != null
                       ? `${viewingTask.estimated_duration} minutes`
@@ -2510,7 +2510,7 @@ export default function Projects() {
               <div className="space-y-2">
 
                 <Label>
-                  Estimated Duration (min)
+                  Duration (min)
                 </Label>
 
                 <Input

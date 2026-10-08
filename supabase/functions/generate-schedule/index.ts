@@ -1203,7 +1203,17 @@ async function persistSchedule(
   userId: string,
   tasks: Task[],
   blocks: Block[],
-  scheduleDate: string
+  scheduleDate: string,
+  meta?: {
+    created_by?: string;
+    fingerprint?: string;
+    work_start?: string;
+    work_end?: string;
+    peak_start?: string;
+    peak_end?: string;
+    break_style?: string;
+    algorithm?: string;
+  },
 ) {
   /*
    * Only task blocks are persisted to
@@ -1333,7 +1343,23 @@ async function persistSchedule(
       await supabase
         .from("schedules")
         .update({
-          timeline: blocks,
+          timeline: {
+            blocks,
+            meta: {
+              version: (existingSchedules?.length || 0) + 1,
+              fingerprint: meta?.fingerprint || null,
+              created_by: meta?.created_by || "auto_schedule",
+              status: "current",
+              schedule_date: scheduleDate,
+              work_start: meta?.work_start || null,
+              work_end: meta?.work_end || null,
+              peak_start: meta?.peak_start || null,
+              peak_end: meta?.peak_end || null,
+              break_style: meta?.break_style || null,
+              algorithm: meta?.algorithm || null,
+              updated_at: new Date().toISOString(),
+            },
+          },
         })
         .eq(
           "user_id",
@@ -1358,8 +1384,23 @@ async function persistSchedule(
             userId,
           schedule_date:
             scheduleDate,
-          timeline:
+          timeline: {
             blocks,
+            meta: {
+              version: 1,
+              fingerprint: meta?.fingerprint || null,
+              created_by: meta?.created_by || "auto_schedule",
+              status: "current",
+              schedule_date: scheduleDate,
+              work_start: meta?.work_start || null,
+              work_end: meta?.work_end || null,
+              peak_start: meta?.peak_start || null,
+              peak_end: meta?.peak_end || null,
+              break_style: meta?.break_style || null,
+              algorithm: meta?.algorithm || null,
+              updated_at: new Date().toISOString(),
+            },
+          },
         });
 
     if (insertError) {
@@ -2177,6 +2218,14 @@ serve(async (req) => {
     });
 
     const isAdaptive = body?.adaptive === true;
+    const isPreview = body?.preview === true;
+    // Persist only when explicitly applying, or adaptive without preview.
+    // Preview never writes. Legacy callers (no preview/apply flags) still apply.
+    const doPersist =
+      !isPreview &&
+      (body?.apply === true ||
+        (isAdaptive && body?.apply !== false) ||
+        (body?.preview === undefined && body?.apply === undefined));
 
     /* =====================================================
        ADAPTIVE: remaining duration + local reschedule
@@ -2319,12 +2368,21 @@ serve(async (req) => {
             endMin,
             scheduleWarnings,
           );
-          await persistSchedule(
+          if (doPersist) await persistSchedule(
             supabase,
             user.id,
             tasks,
             validatedBlocks,
             scheduleDate,
+            {
+              created_by: "adaptive_scheduling",
+              work_start: workStart,
+              work_end: workEnd,
+              peak_start: peakStart,
+              peak_end: peakEnd,
+              break_style: breakStyle,
+              algorithm: "adaptive",
+            },
           );
 
           // Task history notes (best-effort)
@@ -2498,12 +2556,21 @@ serve(async (req) => {
        SAVE
        ===================================================== */
 
-    await persistSchedule(
+    if (doPersist) await persistSchedule(
       supabase,
       user.id,
       tasks,
       validatedBlocks,
-      scheduleDate
+      scheduleDate,
+      {
+        created_by: isAdaptive ? "adaptive_scheduling" : "auto_schedule",
+        work_start: workStart,
+        work_end: workEnd,
+        peak_start: peakStart,
+        peak_end: peakEnd,
+        break_style: breakStyle,
+        algorithm: "priority-aware csp + pso",
+      },
     );
 
     /* =====================================================
@@ -2600,6 +2667,8 @@ serve(async (req) => {
           deferred.length,
 
         warnings: scheduleWarnings,
+        preview: isPreview,
+        applied: doPersist,
 
         algorithm:
           "priority-aware csp + pso-random-key + behavior-aware peak scheduling",

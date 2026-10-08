@@ -493,7 +493,6 @@ Return ONLY one valid JSON object with this exact structure:
   "repetition": boolean,
   "repetition_type": "exact" | "near" | "semantic" | null,
   "category_warning": string | null,
-  "suggested_duration": number | null,
   "suggested_difficulty": "easy" | "medium" | "hard" | null,
   "suggested_category": string | null
 }
@@ -517,7 +516,8 @@ Example: "Your selected category may not match this task."
 reason: one clear sentence a normal user understands. Explain WHAT is wrong or right.
 Do NOT say only "similarity score too low."
 
-Suggestions are OPTIONAL recommendations only — never final values.
+Suggestions are OPTIONAL for difficulty and category only — never final values.
+Do NOT suggest, estimate, or recommend task duration. Duration is set only by the user.
 suggested_category must be exactly one of:
 ${VA_CATEGORIES.join(", ")}
 
@@ -651,12 +651,6 @@ ${userDifficulty || "(none)"}
             categoryWarning = parsed.category_warning.trim();
           }
 
-          const sugDuration = Number(parsed.suggested_duration);
-          if (Number.isFinite(sugDuration)) {
-            suggestions.duration = Math.round(
-              Math.min(480, Math.max(5, sugDuration)),
-            );
-          }
           const sugDiff = String(parsed.suggested_difficulty || "").toLowerCase();
           if (["easy", "medium", "hard"].includes(sugDiff)) {
             suggestions.difficulty = sugDiff as "easy" | "medium" | "hard";
@@ -736,7 +730,11 @@ ${userDifficulty || "(none)"}
       (status === "REVIEW" && !factors.contradiction);
 
     // Legacy fields for older clients (not authoritative)
-    const legacyDuration = suggestions.duration ?? 30;
+    // Duration is never estimated by this function. Legacy field kept for API shape only.
+    const legacyDuration =
+      typeof body.duration === "number" && body.duration > 0
+        ? Math.round(body.duration)
+        : null;
     const legacyDifficulty = suggestions.difficulty ?? "medium";
     const legacyCategory =
       userCategory && VA_CATEGORY_SET.has(userCategory)

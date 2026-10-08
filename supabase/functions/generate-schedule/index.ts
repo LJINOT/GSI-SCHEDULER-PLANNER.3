@@ -568,12 +568,14 @@ function csp(
    */
   for (const task of unique) {
     let remaining = durationOf(task);
-    // latestEndForTask returns clock-ish cap; for overnight use full effective end
-    const latestEndClock = latestEndForTask(task, scheduleDateForCSP, ww.endMin);
+    // Cap placement by due date when it falls inside the work window; otherwise
+    // use the full (possibly overnight) effective end so night shifts still fill.
     let latestEndShift = effEnd;
     if (!ww.overnight) {
+      const latestEndClock = latestEndForTask(task, scheduleDateForCSP, ww.endMin);
       latestEndShift = Math.min(effEnd, latestEndClock);
-    } else {
+    } else if (task.due_date) {
+      const latestEndClock = latestEndForTask(task, scheduleDateForCSP, ww.endMin);
       const mapped = clockToShift(latestEndClock, ww);
       if (mapped >= 0) latestEndShift = Math.min(effEnd, mapped);
     }
@@ -645,6 +647,14 @@ function csp(
   }
 
   blocks.sort((a, b) => {
+    if (ww.overnight) {
+      const as = clockToShift(parseHHMM(a.start), ww);
+      const bs = clockToShift(parseHHMM(b.start), ww);
+      const aKey = as >= 0 ? as : parseHHMM(a.start);
+      const bKey = bs >= 0 ? bs : parseHHMM(b.start);
+      if (aKey !== bKey) return aKey - bKey;
+      return parseHHMM(a.end) - parseHHMM(b.end);
+    }
     const diff = parseHHMM(a.start) - parseHHMM(b.start);
     return diff !== 0 ? diff : parseHHMM(a.end) - parseHHMM(b.end);
   });
@@ -1293,20 +1303,22 @@ function validateBlocks(
   endMin: number,
   warnings?: string[],
 ): Block[] {
+  const wwSort = buildWorkWindow(startMin, endMin);
   const sorted = [...blocks].sort(
     (a, b) => {
-      const startDiff =
-        parseHHMM(a.start) -
-        parseHHMM(b.start);
-
-      if (startDiff !== 0) {
-        return startDiff;
+      const as = parseHHMM(a.start);
+      const bs = parseHHMM(b.start);
+      if (wwSort?.overnight) {
+        const ash = clockToShift(as, wwSort);
+        const bsh = clockToShift(bs, wwSort);
+        const aKey = ash >= 0 ? ash : as;
+        const bKey = bsh >= 0 ? bsh : bs;
+        if (aKey !== bKey) return aKey - bKey;
+        return parseHHMM(a.end) - parseHHMM(b.end);
       }
-
-      return (
-        parseHHMM(a.end) -
-        parseHHMM(b.end)
-      );
+      const startDiff = as - bs;
+      if (startDiff !== 0) return startDiff;
+      return parseHHMM(a.end) - parseHHMM(b.end);
     }
   );
 
@@ -1319,28 +1331,29 @@ function validateBlocks(
       parseHHMM(block.end);
 
     const ww = buildWorkWindow(startMin, endMin);
-    const inWindow = ww
-      ? segmentInWorkWindow(start, end, ww)
-      : false;
-    // Same-day blocks: end must be after start in clock space unless overnight segment
-    const overnightBlock = ww?.overnight && end <= start;
-    if (!inWindow || (!overnightBlock && end <= start && !(ww?.overnight))) {
-      // For overnight same-clock-day (22-23) end>start; for cross-midnight end<start is ok if inWindow
-      if (!inWindow) {
-        warnings?.push(
-          `Dropped block outside work window: ${block.title} (${block.start}–${block.end}).`,
-        );
-        console.warn(
-          "validateBlocks: dropped outside-window block",
-          block.title,
-          block.start,
-          block.end,
-          "window",
-          toHHMM(startMin),
-          toHHMM(endMin),
-        );
-        continue;
-      }
+    if (!ww) {
+      warnings?.push(`No valid work window; dropped ${block.title}`);
+      continue;
+    }
+    // Zero-length only
+    if (start === end) {
+      warnings?.push(`Dropped zero-length block: ${block.title}`);
+      continue;
+    }
+    if (!segmentInWorkWindow(start, end, ww)) {
+      warnings?.push(
+        `Dropped block outside work window: ${block.title} (${block.start}–${block.end}).`,
+      );
+      console.warn(
+        "validateBlocks: dropped outside-window block",
+        block.title,
+        block.start,
+        block.end,
+        "window",
+        toHHMM(startMin),
+        toHHMM(endMin),
+      );
+      continue;
     }
 
     const previous =
@@ -1351,16 +1364,20 @@ function validateBlocks(
         : null;
 
     if (previous) {
-      const previousEnd =
-        parseHHMM(
-          previous.end
-        );
-
-      if (
-        start <
-        previousEnd
-      ) {
-        // Skip overlapping block rather than 500 — prefer earlier block.
+      const prevStart = parseHHMM(previous.start);
+      const prevEnd = parseHHMM(previous.end);
+      if (ww.overnight) {
+        const p0 = clockToShift(prevStart, ww);
+        const p1 = clockToShift(prevEnd, ww);
+        const c0 = clockToShift(start, ww);
+        const c1 = clockToShift(end, ww);
+        if (p0 >= 0 && p1 >= 0 && c0 >= 0 && c1 >= 0 && c0 < p1 && c1 > p0) {
+          warnings?.push(
+            `Dropped overlapping block: "${block.title}" conflicts with "${previous.title}".`,
+          );
+          continue;
+        }
+      } else if (start < prevEnd) {
         warnings?.push(
           `Dropped overlapping block: "${block.title}" conflicts with "${previous.title}".`,
         );

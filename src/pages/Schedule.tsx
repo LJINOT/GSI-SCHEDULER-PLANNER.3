@@ -267,54 +267,65 @@ function normalizeBlocks(
   const result: ScheduleBlock[] =
     [];
 
-  for (const block of sorted) {
-    const start =
-      toMinutes(
-        block.start
-      );
+  // Detect overnight schedule (any block crosses midnight: end < start)
+  const hasOvernight = sorted.some((b) => {
+    const s = toMinutes(b.start);
+    const e = toMinutes(b.end);
+    return e < s;
+  });
 
-    const end =
-      toMinutes(
-        block.end
-      );
+  const DAY = 24 * 60;
+  const shiftKey = (clock: number, overnight: boolean) => {
+    if (!overnight) return clock;
+    // Evening portion sorts after morning of same shift display: use clock as-is
+    // for non-cross blocks; for ordering overnight shifts prefer evening first.
+    // Linearize: times from noon onward stay, early morning get +DAY for sort only
+    // when we already know overnight. Simpler: if overnight, map clock < 12h to +DAY
+    // only if there exists a block starting after 12:00 — use 12:00 threshold.
+    if (clock < 12 * 60) return clock + DAY;
+    return clock;
+  };
 
-    if (
-      end <= start
-    ) {
+  // Re-sort for overnight so 22:00 comes before 01:00
+  const ordered = hasOvernight
+    ? [...sorted].sort((a, b) => {
+        const as = shiftKey(toMinutes(a.start), true);
+        const bs = shiftKey(toMinutes(b.start), true);
+        if (as !== bs) return as - bs;
+        return shiftKey(toMinutes(a.end), true) - shiftKey(toMinutes(b.end), true);
+      })
+    : sorted;
+
+  for (const block of ordered) {
+    const start = toMinutes(block.start);
+    const end = toMinutes(block.end);
+
+    // Allow overnight segments (end < start). Only drop zero-length.
+    if (end === start) {
       continue;
     }
 
-    /*
-     * The same task may intentionally appear in multiple non-overlapping
-     * segments when its duration is longer than one available work period.
-     */
     const previous =
-      result.length > 0
-        ? result[
-            result.length - 1
-          ]
-        : null;
+      result.length > 0 ? result[result.length - 1] : null;
 
     if (previous) {
-      const previousEnd =
-        toMinutes(
-          previous.end
-        );
-
-      /*
-       * Never show an overlapping block.
-       */
-      if (
-        start <
-        previousEnd
-      ) {
+      const prevStart = toMinutes(previous.start);
+      const prevEnd = toMinutes(previous.end);
+      // Overlap check in linearized shift space when overnight
+      const p0 = hasOvernight ? shiftKey(prevStart, true) : prevStart;
+      const p1 = hasOvernight
+        ? (prevEnd < prevStart ? shiftKey(prevEnd, true) : shiftKey(prevEnd, true))
+        : prevEnd;
+      const c0 = hasOvernight ? shiftKey(start, true) : start;
+      const c1 = hasOvernight
+        ? (end < start ? shiftKey(end, true) : shiftKey(end, true))
+        : end;
+      if (c0 < p1 && c1 > p0) {
         continue;
       }
     }
 
-    result.push(
-      block
-    );
+    result.push(block);
   }
 
   return result;

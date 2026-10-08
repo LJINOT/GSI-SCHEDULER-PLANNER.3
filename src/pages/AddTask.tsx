@@ -74,7 +74,6 @@ type AiValidation = {
     repetition_type?: string | null;
   };
   suggestions: {
-    duration?: number;
     difficulty?: string;
     category?: string;
   } | null;
@@ -130,7 +129,6 @@ export default function AddTask({
 
   /** Tracks which optional AI suggestions the user has applied (Use → Used). */
   const [appliedSuggestions, setAppliedSuggestions] = useState<{
-    duration?: boolean;
     difficulty?: boolean;
     category?: boolean;
   }>({});
@@ -298,9 +296,7 @@ export default function AddTask({
           title: title.trim(),
           description: description.trim(),
           category: category || undefined,
-          duration: estimatedDuration
-            ? Number(estimatedDuration)
-            : undefined,
+          // Duration is user-defined only — never sent for AI estimation.
           difficulty: difficulty || undefined,
         },
       });
@@ -394,15 +390,8 @@ export default function AddTask({
     }
   };
 
-  const applySuggestion = (
-    field: "duration" | "difficulty" | "category",
-  ) => {
+  const applySuggestion = (field: "difficulty" | "category") => {
     if (!aiValidation?.suggestions) return;
-    if (field === "duration" && aiValidation.suggestions.duration) {
-      setEstimatedDuration(String(aiValidation.suggestions.duration));
-      setErrors((p) => ({ ...p, duration: undefined }));
-      setAppliedSuggestions((p) => ({ ...p, duration: true }));
-    }
     if (field === "difficulty" && aiValidation.suggestions.difficulty) {
       setDifficulty(aiValidation.suggestions.difficulty);
       setErrors((p) => ({ ...p, difficulty: undefined }));
@@ -411,8 +400,8 @@ export default function AddTask({
     if (field === "category" && aiValidation.suggestions.category) {
       setCategory(aiValidation.suggestions.category);
       setErrors((p) => ({ ...p, category: undefined }));
-      // Category participates in validation — applying suggestion should not
-      // wipe a just-completed validation; only mark as used.
+      // Category is part of description validation — must re-validate.
+      clearValidationOnEdit();
       setAppliedSuggestions((p) => ({ ...p, category: true }));
     }
   };
@@ -452,7 +441,7 @@ export default function AddTask({
     const durationVal = parseDuration();
     if (durationVal === null) {
       validationErrors.duration =
-        "Estimated duration is required (positive number of minutes).";
+        "Duration is required (positive number of minutes).";
     }
 
     if (!difficulty || !["easy", "medium", "hard"].includes(difficulty)) {
@@ -904,9 +893,9 @@ export default function AddTask({
               )}
             </div>
 
-            {/* ESTIMATED DURATION — user input is source of truth */}
+            {/* DURATION — user-defined planned duration (source of truth; never AI-overwritten) */}
             <div className="space-y-2">
-              <Label htmlFor="duration">Estimated Duration (minutes)</Label>
+              <Label htmlFor="duration">Duration (minutes)</Label>
               <div className="flex flex-wrap gap-2 mb-2">
                 {DURATION_PRESETS.map((m) => (
                   <Button
@@ -1173,7 +1162,7 @@ export default function AddTask({
                   {aiValidation.suggestions && (
                     <div className="rounded-lg border overflow-hidden mt-2">
                       <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
-                        Optional AI suggestions (you confirm the final values)
+                        Optional AI suggestions for difficulty/category (duration is always your input)
                       </div>
                       {aiValidation.suggestions.difficulty && (
                         <div className="flex items-center justify-between px-3 py-2 border-b text-sm">
@@ -1196,30 +1185,6 @@ export default function AddTask({
                             onClick={() => applySuggestion("difficulty")}
                           >
                             {appliedSuggestions.difficulty ? "Used" : "Use"}
-                          </Button>
-                        </div>
-                      )}
-                      {aiValidation.suggestions.duration != null && (
-                        <div className="flex items-center justify-between px-3 py-2 border-b text-sm">
-                          <span>
-                            Duration:{" "}
-                            <Badge variant="outline">
-                              {aiValidation.suggestions.duration} min
-                            </Badge>
-                          </span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            disabled={!!appliedSuggestions.duration}
-                            className={
-                              appliedSuggestions.duration
-                                ? "text-muted-foreground cursor-default"
-                                : undefined
-                            }
-                            onClick={() => applySuggestion("duration")}
-                          >
-                            {appliedSuggestions.duration ? "Used" : "Use"}
                           </Button>
                         </div>
                       )}
@@ -1251,10 +1216,10 @@ export default function AddTask({
                   )}
 
                   <p className="text-xs text-muted-foreground">
-                    Validation checks title–description consistency (intent,
-                    actions, domain, and more). Suggestions are optional. AHP
-                    uses only your confirmed duration, difficulty, category,
-                    and deadline.
+                    Validation checks whether the description matches the task
+                    (intent, actions, domain, and more). Duration is set by you
+                    and is never estimated or changed by AI. AHP uses your
+                    confirmed duration, difficulty, category, and deadline.
                   </p>
                 </CardContent>
               </Card>

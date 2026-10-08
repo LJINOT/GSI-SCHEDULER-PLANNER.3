@@ -2,6 +2,7 @@ import {
   useState,
   useEffect,
   useMemo,
+  useRef,
 } from "react";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -56,6 +57,21 @@ import {
 } from "@/lib/status";
 
 import { format } from "date-fns";
+import {
+  extractTimeline,
+  scheduleStatusLabel,
+  type ScheduleStatus,
+} from "@/lib/schedule-state";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const CACHE_KEY =
   "gsi-cache:schedule-blocks";
@@ -344,6 +360,15 @@ export default function Schedule() {
       null
     );
 
+  /** Candidate schedule — never becomes official until user applies. */
+  const [previewPayload, setPreviewPayload] =
+    useState<Payload | null>(null);
+  const [confirmRegenOpen, setConfirmRegenOpen] =
+    useState(false);
+  const [scheduleStatus, setScheduleStatus] =
+    useState<"NO_SCHEDULE" | "CURRENT" | "PREVIEW" | "GENERATING" | "OUTDATED">("NO_SCHEDULE");
+  const generatingLock = useRef(false);
+
   const [
     unscheduled,
     setUnscheduled,
@@ -544,12 +569,8 @@ export default function Schedule() {
         const row =
           scheduleRows[0] as any;
 
-        const rawTimeline =
-          Array.isArray(
-            row.timeline
-          )
-            ? row.timeline
-            : [];
+        const { blocks: rawTimeline, meta: scheduleMeta } =
+          extractTimeline(row.timeline);
 
         const savedBlocks =
           normalizeBlocks(
@@ -564,25 +585,27 @@ export default function Schedule() {
             blocks:
               savedBlocks,
             algorithm:
+              (scheduleMeta as any)?.algorithm ||
               "saved-generated-schedule",
             timestamp:
               row.created_at ||
               new Date().toISOString(),
             window: {
               start:
-                "—",
+                (scheduleMeta as any)?.work_start || "—",
               end:
-                "—",
+                (scheduleMeta as any)?.work_end || "—",
               peak_start:
-                "—",
+                (scheduleMeta as any)?.peak_start || "—",
               peak_end:
-                "—",
+                (scheduleMeta as any)?.peak_end || "—",
               break_style:
-                "—",
+                (scheduleMeta as any)?.break_style || "—",
               schedule_date:
                 today,
             },
-          };
+            schedule_meta: scheduleMeta,
+          } as any;
         }
       }
 
@@ -811,181 +834,160 @@ export default function Schedule() {
      GENERATE SCHEDULE
      ======================================================= */
 
-  const generateSchedule =
-    async () => {
-      if (
-        unscheduled.length ===
-        0
-      ) {
-        /*
-         * Do not prevent regeneration if an existing
-         * schedule is present. Auto Schedule can be
-         * used to regenerate the current schedule.
-         */
-      }
+  const hasOfficialSchedule =
+    (payload?.blocks || []).filter((b: any) => b.kind !== "break").length > 0;
 
-      setGenerating(
-        true
+  const runGenerate = async (opts: {
+    preview: boolean;
+    apply: boolean;
+  }) => {
+    if (generatingLock.current) return;
+    generatingLock.current = true;
+    setGenerating(true);
+    setJustCreated(false);
+    setScheduleStatus("GENERATING");
+
+    try {
+      const scheduleDate = getLocalDateString();
+      const { data, error } = await supabase.functions.invoke(
+        "generate-schedule",
+        {
+          body: {
+            schedule_date: scheduleDate,
+            preview: opts.preview,
+            apply: opts.apply,
+          },
+        },
       );
 
-      setJustCreated(
-        false
-      );
+      if (error) throw error;
 
-      try {
-        const scheduleDate =
-          getLocalDateString();
+      const body =
+        typeof data === "string" ? JSON.parse(data) : data || {};
+      if (body.error) throw new Error(body.error);
 
-        const {
-          data,
-          error,
-        } =
-          await supabase.functions.invoke(
-            "generate-schedule",
-            {
-              body: {
-                schedule_date:
-                  scheduleDate,
-              },
-            }
-          );
+      const rawBlocks = Array.isArray(body.blocks) ? body.blocks : [];
+      const safeBlocks = normalizeBlocks(rawBlocks);
+      const taskBlockCount = safeBlocks.filter(
+        (b: any) => b.kind !== "break",
+      ).length;
 
-        if (error) {
-          throw error;
-        }
+      const next: Payload = {
+        ...body,
+        blocks: safeBlocks,
+        algorithm: body.algorithm || "csp-pso",
+        timestamp: body.timestamp || new Date().toISOString(),
+      };
 
-        const body =
-          typeof data ===
-          "string"
-            ? JSON.parse(data)
-            : data || {};
-
-        if (
-          body.error
-        ) {
-          throw new Error(
-            body.error
-          );
-        }
-
-        /*
-         * IMPORTANT:
-         *
-         * The returned blocks are the
-         * authoritative result.
-         *
-         * We DO NOT reconstruct the schedule
-         * from tasks.start_time afterward.
-         */
-        const rawBlocks =
-          Array.isArray(
-            body.blocks
-          )
-            ? body.blocks
-            : [];
-
-        const safeBlocks =
-          normalizeBlocks(
-            rawBlocks
-          );
-
-        const next: Payload =
-          {
-            ...body,
-            blocks:
-              safeBlocks,
-            algorithm:
-              body.algorithm ||
-              "csp-pso",
-            timestamp:
-              body.timestamp ||
-              new Date().toISOString(),
-          };
-
-        setPayload(
-          next
-        );
-
-        saveCache(
-          CACHE_KEY,
-          next
-        );
-
-        setJustCreated(
-          safeBlocks.length >
-            0
-        );
-
-        /*
-         * Refresh the actual unscheduled
-         * tasks after the backend persisted
-         * the schedule.
-         */
-        await fetchUnscheduled();
-
-        const taskBlockCount = safeBlocks.filter(
-          (b: any) => b.kind !== "break",
-        ).length;
-        const deferredN = Array.isArray(body.deferred)
-          ? body.deferred.length
-          : Number(body.deferred_count) || 0;
-        const win = body.window;
-        const winLabel =
-          win?.start && win?.end
-            ? `${win.start}–${win.end}${win.overnight ? " (overnight)" : ""}`
-            : null;
-
-        if (taskBlockCount === 0) {
-          const capacity = win?.duration_minutes;
+      // Never overwrite an official schedule with an empty generation.
+      if (taskBlockCount === 0) {
+        if (hasOfficialSchedule) {
           toast.message(
-            body.note ||
-              (capacity != null
-                ? `No tasks could be placed in ${winLabel || "your work window"} (${capacity} min available). Check task durations or add active tasks.`
-                : "No schedule slots could be generated. Confirm working hours are set and you have active tasks."),
+            "The new schedule could not be generated. Your current schedule was kept unchanged.",
           );
-        } else {
-          toast.success(
-            winLabel
-              ? `Schedule created for ${winLabel}`
-              : "Schedule created successfully.",
-            deferredN > 0
-              ? {
-                  description: `${deferredN} task(s) deferred — not enough time in the work window.`,
-                }
-              : undefined,
-          );
+          setScheduleStatus("CURRENT");
+          setPreviewPayload(null);
+          return;
         }
-      } catch (error: any) {
-        console.error(
-          "Schedule generation failed:",
-          error
+        toast.message(
+          body.note ||
+            "No schedule slots could be generated. Confirm working hours are set and you have active tasks.",
         );
-
-        let message =
-          error?.message ||
-          "Failed to generate schedule";
-        try {
-          const ctx = error?.context;
-          if (ctx && typeof ctx.json === "function") {
-            const body = await ctx.json();
-            if (body?.error) message = String(body.error);
-          }
-        } catch {
-          /* keep */
-        }
-        if (/non-2xx/i.test(message)) {
-          message =
-            "Unable to generate schedule. Check that working hours end after they start, then try again.";
-        }
-        toast.error(message);
-      } finally {
-        setGenerating(
-          false
-        );
+        setScheduleStatus("NO_SCHEDULE");
+        return;
       }
-    };
 
-  /* =======================================================
+      if (opts.preview && hasOfficialSchedule) {
+        // Show candidate only — official schedule stays until Apply.
+        setPreviewPayload(next);
+        setScheduleStatus("PREVIEW");
+        setConfirmRegenOpen(true);
+        toast.message(
+          "Preview ready. Review the new schedule before applying it.",
+        );
+        return;
+      }
+
+      // First schedule or explicit apply
+      setPayload(next);
+      setPreviewPayload(null);
+      saveCache(CACHE_KEY, next);
+      setJustCreated(true);
+      setScheduleStatus("CURRENT");
+      await fetchUnscheduled();
+
+      const deferredN = Array.isArray(body.deferred)
+        ? body.deferred.length
+        : Number(body.deferred_count) || 0;
+      const win = body.window;
+      const winLabel =
+        win?.start && win?.end
+          ? `${win.start}–${win.end}${win.overnight ? " (overnight)" : ""}`
+          : null;
+      toast.success(
+        winLabel
+          ? `Schedule applied for ${winLabel}`
+          : "Schedule created successfully.",
+        deferredN > 0
+          ? {
+              description: `${deferredN} task(s) deferred — not enough time in the work window.`,
+            }
+          : undefined,
+      );
+    } catch (error: any) {
+      console.error("Schedule generation failed:", error);
+      let message = error?.message || "Failed to generate schedule";
+      try {
+        const ctx = error?.context;
+        if (ctx && typeof ctx.json === "function") {
+          const body = await ctx.json();
+          if (body?.error) message = String(body.error);
+        }
+      } catch {
+        /* keep */
+      }
+      if (/non-2xx/i.test(message)) {
+        message =
+          "Unable to generate schedule. Check your working hours, then try again.";
+      }
+      toast.error(message);
+      setScheduleStatus(hasOfficialSchedule ? "CURRENT" : "NO_SCHEDULE");
+    } finally {
+      setGenerating(false);
+      generatingLock.current = false;
+    }
+  };
+
+  /** Entry: first schedule applies; existing schedule opens confirm → preview. */
+  const generateSchedule = async () => {
+    if (generatingLock.current) return;
+    if (hasOfficialSchedule) {
+      setConfirmRegenOpen(true);
+      return;
+    }
+    await runGenerate({ preview: false, apply: true });
+  };
+
+  const confirmPreviewNew = async () => {
+    setConfirmRegenOpen(false);
+    await runGenerate({ preview: true, apply: false });
+  };
+
+  const applyPreviewSchedule = async () => {
+    if (!previewPayload) return;
+    // Re-run with apply so DB + start_time stay consistent
+    setConfirmRegenOpen(false);
+    await runGenerate({ preview: false, apply: true });
+  };
+
+  const keepCurrentSchedule = () => {
+    setPreviewPayload(null);
+    setConfirmRegenOpen(false);
+    setScheduleStatus(hasOfficialSchedule ? "CURRENT" : "NO_SCHEDULE");
+    toast.message("Current schedule kept unchanged.");
+  };
+
+/* =======================================================
      GROUPING
      ======================================================= */
 
@@ -1031,26 +1033,33 @@ export default function Schedule() {
           </h1>
 
           <p className="text-muted-foreground mt-1">
-            Create an optimized schedule from your unscheduled tasks.
+            {hasOfficialSchedule
+              ? "Your official schedule is active. Regenerate only after confirming a preview."
+              : "Create an optimized schedule from your unscheduled tasks."}
           </p>
+          {scheduleStatus !== "NO_SCHEDULE" && (
+            <p className="text-xs text-muted-foreground mt-1">
+              {scheduleStatus === "PREVIEW"
+                ? "Previewing a new schedule. Apply to replace the current one."
+                : scheduleStatus === "CURRENT"
+                ? "Your schedule is up to date."
+                : scheduleStatus === "GENERATING"
+                ? "Generating schedule…"
+                : ""}
+            </p>
+          )}
         </div>
 
         <Button
-          onClick={
-            generateSchedule
-          }
-          disabled={
-            generating ||
-            loadingTasks
-          }
+          onClick={generateSchedule}
+          disabled={generating || loadingTasks}
         >
           {generating ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : (
             <Wand2 className="mr-2 h-4 w-4" />
           )}
-
-          Auto Schedule
+          {hasOfficialSchedule ? "Regenerate Schedule" : "Auto Schedule"}
         </Button>
       </div>
 
@@ -1440,6 +1449,84 @@ export default function Schedule() {
           </div>
         )}
       </section>
+
+      {/* Confirm before regenerating an existing official schedule */}
+      <AlertDialog open={confirmRegenOpen && !previewPayload} onOpenChange={setConfirmRegenOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Current schedule already exists</AlertDialogTitle>
+            <AlertDialogDescription>
+              Creating a new schedule may change task order and time assignments.
+              Your current schedule will stay active until you apply a preview.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={keepCurrentSchedule}>
+              Keep Current
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={confirmPreviewNew}>
+              Preview New Schedule
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Apply preview */}
+      <AlertDialog
+        open={!!previewPayload}
+        onOpenChange={(open) => {
+          if (!open) keepCurrentSchedule();
+        }}
+      >
+        <AlertDialogContent className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apply new schedule?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  Review the candidate schedule. Applying replaces your current
+                  official schedule.
+                </p>
+                {previewPayload && (
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>
+                      {
+                        (previewPayload.blocks || []).filter(
+                          (b: any) => b.kind !== "break",
+                        ).length
+                      }{" "}
+                      task blocks
+                    </li>
+                    <li>
+                      {Array.isArray((previewPayload as any).deferred)
+                        ? (previewPayload as any).deferred.length
+                        : 0}{" "}
+                      deferred
+                    </li>
+                    {(previewPayload as any).window?.start && (
+                      <li>
+                        Window: {(previewPayload as any).window.start}–
+                        {(previewPayload as any).window.end}
+                        {(previewPayload as any).window?.overnight
+                          ? " (overnight)"
+                          : ""}
+                      </li>
+                    )}
+                  </ul>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={keepCurrentSchedule}>
+              Keep Current
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={applyPreviewSchedule}>
+              Apply New Schedule
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </motion.div>
   );
 }

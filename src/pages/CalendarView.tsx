@@ -714,7 +714,11 @@ function TaskInspector({ task, onClose, onRefresh }: { task: Task; onClose: () =
       toast.success(`Rescheduled "${task.title}"`);
       onRefresh();
     } catch {
-      toast.error("Failed to reschedule selected task");
+      toast.error(
+        (err as any)?.message?.includes("non-2xx")
+          ? "Unable to generate schedule. Check your working hours (end must be after start)."
+          : ((err as any)?.message || "Failed to reschedule selected task")
+      );
     } finally {
       setRescheduling(false);
     }

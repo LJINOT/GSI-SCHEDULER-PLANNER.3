@@ -931,10 +931,23 @@ export default function Schedule() {
           error
         );
 
-        toast.error(
+        let message =
           error?.message ||
-            "Failed to generate schedule"
-        );
+          "Failed to generate schedule";
+        try {
+          const ctx = error?.context;
+          if (ctx && typeof ctx.json === "function") {
+            const body = await ctx.json();
+            if (body?.error) message = String(body.error);
+          }
+        } catch {
+          /* keep */
+        }
+        if (/non-2xx/i.test(message)) {
+          message =
+            "Unable to generate schedule. Check that working hours end after they start, then try again.";
+        }
+        toast.error(message);
       } finally {
         setGenerating(
           false

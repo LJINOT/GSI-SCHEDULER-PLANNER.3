@@ -606,8 +606,8 @@ function csp(
         if (cursor >= effEnd) break;
       }
 
-      if (!placed && cursor < latestEnd) {
-        const available = latestEnd - cursor;
+      if (!placed && cursor < latestEndShift) {
+        const available = latestEndShift - cursor;
         if (available > 0) {
           const take = Math.min(remaining, available);
           addTaskBlock(task, cursor, cursor + take);

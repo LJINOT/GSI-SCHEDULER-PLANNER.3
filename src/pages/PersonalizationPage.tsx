@@ -96,6 +96,17 @@ export default function PersonalizationPage() {
         return;
       }
 
+      // Soft-check preferred window order; scheduler also clamps to work hours.
+      const ps = peakStart.split(":").map(Number);
+      const pe = peakEnd.split(":").map(Number);
+      const psm = (ps[0] || 0) * 60 + (ps[1] || 0);
+      const pem = (pe[0] || 0) * 60 + (pe[1] || 0);
+      if (pem <= psm) {
+        // Still save but user gets a toast; edge function will fall back to work hours.
+        toast.message(
+          "Preferred end time should be later than start. Scheduler will use your working hours as fallback.",
+        );
+      }
       const { error } = await supabase
         .from("profiles")
         .upsert({

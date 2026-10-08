@@ -48,7 +48,7 @@ function mmss(totalSeconds: number) {
 
 /**
  * Focus block duration.
- * Uses the task's estimated duration with a safe range.
+ * Uses the task's planned (user-defined) duration with a safe range.
  */
 function targetMinutes(task: FocusTask | null): number {
   if (!task) return 25;

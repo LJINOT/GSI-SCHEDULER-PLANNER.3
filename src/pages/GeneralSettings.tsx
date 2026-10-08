@@ -137,8 +137,10 @@ export default function GeneralSettings() {
       toast.error("Please enter valid working hours.");
       return;
     }
-    if (endM <= startM) {
-      toast.error("End time must be later than start time.");
+    // Same start and end = zero-length (invalid).
+    // end < start is allowed (overnight / night shift, e.g. 22:00 → 06:00).
+    if (endM === startM) {
+      toast.error("Start and end cannot be the same time. For night shifts use e.g. 22:00 → 06:00.");
       return;
     }
     setSaving(true);
@@ -209,6 +211,12 @@ export default function GeneralSettings() {
               <Input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
             </div>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Supports day and night shifts. Example: 09:00–17:00, or overnight 22:00–06:00.
+            {toMinutes(workEnd) < toMinutes(workStart) && Number.isFinite(toMinutes(workStart))
+              ? " Overnight shift detected (crosses midnight)."
+              : ""}
+          </p>
         </CardContent>
       </Card>
 

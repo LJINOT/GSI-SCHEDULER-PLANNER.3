@@ -272,10 +272,11 @@ serve(async (req) => {
     const peakStartMin = behavior.peakStartMin;
     const peakEndMin = behavior.peakEndMin;
     const workStartMin = parseHHMM(profile?.work_start || "09:00");
-    // Recommendation search window: respect work_end but allow evening if work_end is early
-    // so sequential long tasks can still get non-overlapping slots (recommendation-only).
     const configuredEnd = parseHHMM(profile?.work_end || "17:00");
-    const workEndMin = Math.max(configuredEnd, 22 * 60); // up to 10 PM for suggestion packing
+    // Use the user's actual work window only (supports overnight when end < start).
+    // Do NOT expand to a hardcoded evening cutoff.
+    const workEndMin = configuredEnd;
+    const overnightWork = workEndMin < workStartMin;
     const source: "behavior" | "personalization" | "general" = behavior.evidenceLevel === "learning"
       ? "behavior"
       : profile?.peak_start ? "personalization" : "general";

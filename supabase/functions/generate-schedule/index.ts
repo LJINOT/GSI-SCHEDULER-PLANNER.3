@@ -56,39 +56,67 @@ type PSOResult = {
 };
 
 /**
- * Normalize a daily time value to minutes after midnight.
- * Accepts: "7:00", "07:00", "07:00:00", "07:00:00+08:00", "17:30:00.000Z"
+ * Normalize a daily time value to HH:MM.
+ * Accepts DB/HTML values such as:
+ *   "7:00", "07:00", "07:00:00", "07:00:00.000",
+ *   "07:00:00+08:00", "1970-01-01T09:00:00", "9:00 AM"
  * Does NOT use Date objects for simple HH:MM comparisons.
  */
 function normalizeTimeString(value: string | null | undefined): string | null {
   if (value == null) return null;
   let s = String(value).trim();
   if (!s) return null;
-  // If ISO-like, take the time portion after T
+
+  // Object-like accidental values
+  if (s === "[object Object]") return null;
+
+  // ISO datetime → time portion
   if (s.includes("T")) {
     s = s.split("T")[1] || s;
   }
-  // Drop timezone offset / Z / fractional seconds
+
+  // Strip trailing Z, fractional seconds, timezone offsets
   s = s.replace(/Z$/i, "");
+  s = s.replace(/\.\d+/, ""); // first fractional group
   s = s.replace(/[+-]\d{2}:?\d{2}$/, "");
-  s = s.replace(/\.\d+$/, "");
-  const parts = s.split(":").map((p) => p.trim());
-  if (parts.length < 2) return null;
-  const hours = Number(parts[0]);
-  const minutes = Number(parts[1]);
+  s = s.trim();
+
+  // 12-hour clock: "9:00 AM" / "09:30PM"
+  const ampm = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i);
+  if (ampm) {
+    let hours = Number(ampm[1]);
+    const minutes = Number(ampm[2]);
+    const mer = ampm[3].toUpperCase();
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+    if (mer === "AM") {
+      if (hours === 12) hours = 0;
+    } else {
+      if (hours !== 12) hours += 12;
+    }
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  }
+
+  // Extract first HH:MM anywhere in the string (handles "09:00:00", noise, etc.)
+  const m = s.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  let hours = Number(m[1]);
+  const minutes = Number(m[2]);
   if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  // Allow 24:00 as end-of-day → 23:59 for comparison purposes
+  if (hours === 24 && minutes === 0) {
+    hours = 23;
+    return "23:59";
+  }
   if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
   return `${String(Math.floor(hours)).padStart(2, "0")}:${String(Math.floor(minutes)).padStart(2, "0")}`;
 }
 
 function parseHHMM(value: string | null | undefined): number {
   const norm = normalizeTimeString(value);
-  if (!norm) return 0;
+  if (!norm) return NaN;
   const [hours, minutes] = norm.split(":").map(Number);
-  return (
-    (Number.isFinite(hours) ? hours : 0) * 60 +
-    (Number.isFinite(minutes) ? minutes : 0)
-  );
+  return hours * 60 + minutes;
 }
 
 function isValidWorkWindow(startMin: number, endMin: number): boolean {
@@ -1734,11 +1762,33 @@ serve(async (req) => {
         )
         .maybeSingle();
 
-    // Defaults only — never hard-lock the scheduler to 07:00–19:00.
-    const workStartRaw =
-      normalizeTimeString(profile?.work_start) || "09:00";
-    const workEndRaw =
-      normalizeTimeString(profile?.work_end) || "17:00";
+    // Defaults only when profile values are missing — never hard-lock to 07:00–19:00.
+    const rawStartFromDb = profile?.work_start ?? null;
+    const rawEndFromDb = profile?.work_end ?? null;
+    const parsedStart = normalizeTimeString(rawStartFromDb);
+    const parsedEnd = normalizeTimeString(rawEndFromDb);
+
+    // If BOTH missing → safe default 09:00–17:00.
+    // If only one missing → default the missing side relative to the other
+    // so we do not invent an inverted window.
+    let workStartRaw: string;
+    let workEndRaw: string;
+    if (parsedStart && parsedEnd) {
+      workStartRaw = parsedStart;
+      workEndRaw = parsedEnd;
+    } else if (parsedStart && !parsedEnd) {
+      workStartRaw = parsedStart;
+      // default end = start + 8h (capped at 23:59)
+      const s = parseHHMM(parsedStart);
+      workEndRaw = toHHMM(Math.min(s + 8 * 60, 23 * 60 + 59));
+    } else if (!parsedStart && parsedEnd) {
+      workEndRaw = parsedEnd;
+      const e = parseHHMM(parsedEnd);
+      workStartRaw = toHHMM(Math.max(e - 8 * 60, 0));
+    } else {
+      workStartRaw = "09:00";
+      workEndRaw = "17:00";
+    }
 
     const startMin = parseHHMM(workStartRaw);
     const endMin = parseHHMM(workEndRaw);
@@ -1748,16 +1798,22 @@ serve(async (req) => {
     if (!isValidWorkWindow(startMin, endMin)) {
       console.error("generate-schedule: invalid working hours", {
         user: user.id,
-        work_start: workStartRaw,
-        work_end: workEndRaw,
+        db_work_start: rawStartFromDb,
+        db_work_end: rawEndFromDb,
+        parsed_start: workStartRaw,
+        parsed_end: workEndRaw,
+        startMin,
+        endMin,
       });
       return new Response(
         JSON.stringify({
           error:
-            "Invalid working hours. The end time must be later than the start time.",
+            `Invalid working hours (${workStartRaw} → ${workEndRaw}). The end time must be later than the start time. Open General Settings and set End after Start, then save.`,
           window: {
             start: workStartRaw,
             end: workEndRaw,
+            db_start: rawStartFromDb,
+            db_end: rawEndFromDb,
           },
         }),
         {

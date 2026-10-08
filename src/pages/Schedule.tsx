@@ -923,17 +923,36 @@ export default function Schedule() {
          */
         await fetchUnscheduled();
 
-        if (
-          safeBlocks.length ===
-          0
-        ) {
-          toast.error(
+        const taskBlockCount = safeBlocks.filter(
+          (b: any) => b.kind !== "break",
+        ).length;
+        const deferredN = Array.isArray(body.deferred)
+          ? body.deferred.length
+          : Number(body.deferred_count) || 0;
+        const win = body.window;
+        const winLabel =
+          win?.start && win?.end
+            ? `${win.start}–${win.end}${win.overnight ? " (overnight)" : ""}`
+            : null;
+
+        if (taskBlockCount === 0) {
+          const capacity = win?.duration_minutes;
+          toast.message(
             body.note ||
-              "No schedule slots could be generated. Check your work hours or task durations."
+              (capacity != null
+                ? `No tasks could be placed in ${winLabel || "your work window"} (${capacity} min available). Check task durations or add active tasks.`
+                : "No schedule slots could be generated. Confirm working hours are set and you have active tasks."),
           );
         } else {
           toast.success(
-            "Schedule created successfully."
+            winLabel
+              ? `Schedule created for ${winLabel}`
+              : "Schedule created successfully.",
+            deferredN > 0
+              ? {
+                  description: `${deferredN} task(s) deferred — not enough time in the work window.`,
+                }
+              : undefined,
           );
         }
       } catch (error: any) {

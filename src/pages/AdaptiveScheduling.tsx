@@ -29,6 +29,7 @@ import {
 } from "@/lib/status";
 import { isPast, isToday } from "date-fns";
 import { extractTimeline } from "@/lib/schedule-state";
+import { formatTime12h, formatTimeRange12h } from "@/lib/format-time";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,15 +43,6 @@ import {
 
 const CACHE_KEY = "gsi-cache:adaptive-schedule";
 
-function to12h(hhmm: string): string {
-  if (!hhmm || !hhmm.includes(":")) return hhmm;
-
-  const [h, m] = hhmm.split(":").map(Number);
-  const period = h >= 12 ? "PM" : "AM";
-  const hr = ((h + 11) % 12) + 1;
-
-  return `${hr}:${String(m).padStart(2, "0")} ${period}`;
-}
 
 type TaskRow = {
   id: string;
@@ -778,9 +770,8 @@ export default function AdaptiveScheduling() {
                           Today
                         </TableCell>
 
-                        <TableCell className="py-2 font-mono text-xs">
-                          {to12h(b.start)} –{" "}
-                          {to12h(b.end)}
+                        <TableCell className="py-2 font-mono text-xs whitespace-nowrap">
+                          {formatTimeRange12h(b.start, b.end)}
                         </TableCell>
 
                         <TableCell className="py-2 font-medium max-w-[220px] truncate">
@@ -940,10 +931,9 @@ export default function AdaptiveScheduling() {
                           {m.title}
                         </TableCell>
 
-                        <TableCell className="py-2 font-mono text-xs text-muted-foreground">
-                          {m.original_start &&
-                          m.original_end
-                            ? `${m.original_start} – ${m.original_end}`
+                        <TableCell className="py-2 font-mono text-xs text-muted-foreground whitespace-nowrap">
+                          {m.original_start && m.original_end
+                            ? formatTimeRange12h(m.original_start, m.original_end)
                             : "—"}
                         </TableCell>
 
@@ -959,10 +949,9 @@ export default function AdaptiveScheduling() {
                           min
                         </TableCell>
 
-                        <TableCell className="py-2 font-mono text-xs">
-                          {m.new_start &&
-                          m.new_end
-                            ? `${m.new_start} – ${m.new_end}`
+                        <TableCell className="py-2 font-mono text-xs whitespace-nowrap">
+                          {m.new_start && m.new_end
+                            ? formatTimeRange12h(m.new_start, m.new_end)
                             : "—"}
                         </TableCell>
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,17 @@ import {
   statusLabel,
 } from "@/lib/status";
 import { isPast, isToday } from "date-fns";
+import { extractTimeline } from "@/lib/schedule-state";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const CACHE_KEY = "gsi-cache:adaptive-schedule";
 
@@ -157,6 +168,14 @@ export default function AdaptiveScheduling() {
    * There is intentionally NO separate "Updated Schedule".
    */
   const [payload, setPayload] = useState<Payload | null>(null);
+  /** Candidate adaptive schedule — never official until Apply. */
+  const [previewPayload, setPreviewPayload] = useState<Payload | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [scheduleStatus, setScheduleStatus] = useState<
+    "NO_SCHEDULE" | "CURRENT" | "OUTDATED" | "CONFIRMING" | "GENERATING" | "PREVIEW" | "APPLYING" | "ERROR"
+  >("NO_SCHEDULE");
+  const [loadingSchedule, setLoadingSchedule] = useState(true);
+  const generatingLock = useRef(false);
 
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
@@ -214,48 +233,69 @@ export default function AdaptiveScheduling() {
     fetchTasks();
 
     const loadCurrent = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      setLoadingSchedule(true);
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
 
-      if (!user) return;
+        if (!user) {
+          setScheduleStatus("NO_SCHEDULE");
+          return;
+        }
 
-      const now = new Date();
+        const now = new Date();
+        const scheduleDate =
+          `${now.getFullYear()}-` +
+          `${String(now.getMonth() + 1).padStart(2, "0")}-` +
+          `${String(now.getDate()).padStart(2, "0")}`;
 
-      const scheduleDate =
-        `${now.getFullYear()}-` +
-        `${String(now.getMonth() + 1).padStart(2, "0")}-` +
-        `${String(now.getDate()).padStart(2, "0")}`;
+        // DB is authoritative — never generate on open/refresh.
+        const { data: rows } = await supabase
+          .from("schedules")
+          .select("timeline, schedule_date, created_at")
+          .eq("user_id", user.id)
+          .eq("schedule_date", scheduleDate)
+          .order("created_at", { ascending: false })
+          .limit(1);
 
-      const { data: rows } = await supabase
-        .from("schedules")
-        .select(
-          "timeline, schedule_date, created_at"
-        )
-        .eq("user_id", user.id)
-        .eq("schedule_date", scheduleDate)
-        .order("created_at", {
-          ascending: false,
-        })
-        .limit(1);
+        const row = rows?.[0] as any;
+        if (!row) {
+          setScheduleStatus("NO_SCHEDULE");
+          return;
+        }
 
-      const row = rows?.[0] as any;
+        const { blocks: rawBlocks, meta } = extractTimeline(row.timeline);
+        if (!rawBlocks.length) {
+          setScheduleStatus("NO_SCHEDULE");
+          return;
+        }
 
-      if (!row || !Array.isArray(row.timeline)) {
-        return;
+        const next: Payload = {
+          blocks: sortBlocksChronologically(rawBlocks as ScheduleBlock[]),
+          algorithm:
+            (meta as any)?.algorithm ||
+            "loaded-from-current-user-schedule",
+          timestamp: row.created_at,
+          window: meta
+            ? {
+                start: (meta as any).work_start || "—",
+                end: (meta as any).work_end || "—",
+                peak_start: (meta as any).peak_start || "—",
+                peak_end: (meta as any).peak_end || "—",
+                break_style: (meta as any).break_style || "—",
+              }
+            : undefined,
+        };
+
+        setPayload(next);
+        setPreviewPayload(null);
+        setScheduleStatus("CURRENT");
+        // Cache is display-only; DB remains source of truth.
+        saveCache(CACHE_KEY, next);
+      } finally {
+        setLoadingSchedule(false);
       }
-
-      const next: Payload = {
-        blocks: sortBlocksChronologically(
-          row.timeline
-        ),
-        algorithm:
-          "loaded-from-current-user-schedule",
-        timestamp: row.created_at,
-      };
-
-      setPayload(next);
-      saveCache(CACHE_KEY, next);
     };
 
     void loadCurrent();
@@ -397,121 +437,192 @@ export default function AdaptiveScheduling() {
 
   const hasChanges = changes.length > 0;
 
-  /**
-   * Adapt the current schedule.
-   *
-   * The returned schedule directly replaces the existing
-   * Current Schedule.
-   *
-   * There is no separate Updated Schedule section.
-   */
-  const adaptSchedule = async () => {
-    if (
-      !hasChanges &&
-      blocks.length > 0
-    ) {
-      toast.message(
-        "Your schedule is already up to date."
-      );
+  const hasOfficialSchedule =
+    blocks.filter((b) => b.kind !== "break").length > 0;
 
-      return;
+  const displayStatus =
+    scheduleStatus === "PREVIEW"
+      ? "PREVIEW"
+      : scheduleStatus === "GENERATING" || scheduleStatus === "APPLYING"
+        ? scheduleStatus
+        : !hasOfficialSchedule
+          ? "NO_SCHEDULE"
+          : hasChanges
+            ? "OUTDATED"
+            : "CURRENT";
+
+  const parseError = async (err: any): Promise<string> => {
+    let message = err?.message || "Failed to adapt schedule";
+    try {
+      const ctx = err?.context;
+      if (ctx && typeof ctx.json === "function") {
+        const body = await ctx.json();
+        if (body?.error) message = String(body.error);
+      } else if (typeof err?.context?.body === "string") {
+        const body = JSON.parse(err.context.body);
+        if (body?.error) message = String(body.error);
+      }
+    } catch {
+      /* keep */
     }
+    if (/non-2xx/i.test(message)) {
+      message =
+        "Unable to adapt schedule. Check your working hours, then try again.";
+    }
+    return message;
+  };
 
+  /**
+   * Generate adaptive candidate without writing the official schedule.
+   */
+  const runPreviewAdapt = async () => {
+    if (generatingLock.current) return;
+    generatingLock.current = true;
     setGenerating(true);
+    setScheduleStatus("GENERATING");
+    setConfirmOpen(false);
 
     try {
-      const { data, error } =
-        await supabase.functions.invoke(
-          "generate-schedule",
-          {
-            body: {
-              adaptive: true,
-            },
-          }
-        );
-
-      if (error) {
-        throw error;
-      }
+      const { data, error } = await supabase.functions.invoke(
+        "generate-schedule",
+        {
+          body: {
+            adaptive: true,
+            preview: true,
+            apply: false,
+          },
+        },
+      );
+      if (error) throw error;
 
       const body =
-        typeof data === "string"
-          ? JSON.parse(data)
-          : data || {};
+        typeof data === "string" ? JSON.parse(data) : data || {};
+      if (body.error) throw new Error(body.error);
 
-      const rawBlocks = Array.isArray(
-        body.blocks
-      )
-        ? body.blocks
-        : [];
-
+      const rawBlocks = Array.isArray(body.blocks) ? body.blocks : [];
       const next: Payload = {
         ...body,
-        blocks:
-          sortBlocksChronologically(
-            rawBlocks
-          ),
+        blocks: sortBlocksChronologically(rawBlocks),
       };
+      const taskBlocks = next.blocks.filter((b) => b.kind !== "break");
 
-      const taskBlocks = next.blocks.filter(
-        (b: any) => b.kind !== "break",
-      );
-
-      /**
-       * Never replace a valid official schedule with an empty result.
-       */
       if (taskBlocks.length === 0) {
         toast.message(
           body.note ||
-            "The adapted schedule could not be generated. Your current schedule was kept unchanged.",
+            "No adaptive changes could be generated. Your current schedule was kept unchanged.",
         );
+        setPreviewPayload(null);
+        setScheduleStatus(hasOfficialSchedule ? "CURRENT" : "NO_SCHEDULE");
         return;
       }
 
-      /**
-       * Adaptive update becomes the official Current Schedule.
-       */
-      setPayload(next);
-
-      saveCache(
-        CACHE_KEY,
-        next
-      );
-
-      await fetchTasks();
-
-      toast.success(
-        "Schedule Updated",
-        {
-          description:
-            "Your current schedule has been adapted to the latest task and settings changes.",
-          duration: 4500,
-        }
+      setPreviewPayload(next);
+      setScheduleStatus("PREVIEW");
+      toast.message(
+        "Preview ready. Review proposed changes before applying.",
       );
     } catch (err: any) {
-      let message =
-        err?.message || "Failed to adapt schedule";
-      // Supabase wraps Edge Function body; surface the real scheduler error.
-      try {
-        const ctx = err?.context;
-        if (ctx && typeof ctx.json === "function") {
-          const body = await ctx.json();
-          if (body?.error) message = String(body.error);
-        } else if (typeof err?.context?.body === "string") {
-          const body = JSON.parse(err.context.body);
-          if (body?.error) message = String(body.error);
-        }
-      } catch {
-        /* keep message */
-      }
-      if (/non-2xx/i.test(message)) {
-        message =
-          "Unable to generate schedule. Check that your working hours end after they start, then try again.";
-      }
-      toast.error(message);
+      toast.error(await parseError(err));
+      setScheduleStatus(hasOfficialSchedule ? "CURRENT" : "NO_SCHEDULE");
+      setPreviewPayload(null);
     } finally {
       setGenerating(false);
+      generatingLock.current = false;
     }
+  };
+
+  /**
+   * Commit the exact previewed candidate (no re-generation).
+   */
+  const applyPreview = async () => {
+    if (!previewPayload || generatingLock.current) return;
+    generatingLock.current = true;
+    setGenerating(true);
+    setScheduleStatus("APPLYING");
+
+    try {
+      const { data, error } = await supabase.functions.invoke(
+        "generate-schedule",
+        {
+          body: {
+            adaptive: true,
+            apply: true,
+            preview: false,
+            commit_blocks: previewPayload.blocks,
+            adaptive_moves: previewPayload.adaptive_moves || [],
+            deferred: previewPayload.deferred || [],
+          },
+        },
+      );
+      if (error) throw error;
+
+      const body =
+        typeof data === "string" ? JSON.parse(data) : data || {};
+      if (body.error) throw new Error(body.error);
+
+      const rawBlocks = Array.isArray(body.blocks)
+        ? body.blocks
+        : previewPayload.blocks;
+      const next: Payload = {
+        ...previewPayload,
+        ...body,
+        blocks: sortBlocksChronologically(rawBlocks),
+      };
+      const taskBlocks = next.blocks.filter((b) => b.kind !== "break");
+      if (taskBlocks.length === 0) {
+        toast.message(
+          "The previewed schedule could not be applied. Your current schedule was kept unchanged.",
+        );
+        setScheduleStatus("CURRENT");
+        return;
+      }
+
+      setPayload(next);
+      setPreviewPayload(null);
+      saveCache(CACHE_KEY, next);
+      await fetchTasks();
+      setScheduleStatus("CURRENT");
+      toast.success("Schedule Updated", {
+        description:
+          "Your current schedule was adapted using the previewed changes.",
+        duration: 4500,
+      });
+    } catch (err: any) {
+      toast.error(await parseError(err));
+      setScheduleStatus("CURRENT");
+    } finally {
+      setGenerating(false);
+      generatingLock.current = false;
+    }
+  };
+
+  const keepCurrent = () => {
+    setConfirmOpen(false);
+    setPreviewPayload(null);
+    setScheduleStatus(hasOfficialSchedule ? (hasChanges ? "OUTDATED" : "CURRENT") : "NO_SCHEDULE");
+    toast.message("Current schedule kept unchanged.");
+  };
+
+  /**
+   * Entry: confirm first when an official schedule exists.
+   */
+  const adaptSchedule = () => {
+    if (generatingLock.current || generating) return;
+
+    if (!hasOfficialSchedule) {
+      toast.message(
+        "No existing schedule found. Create one first from Auto Schedule.",
+      );
+      return;
+    }
+
+    if (!hasChanges) {
+      toast.message("Your schedule is already up to date.");
+      return;
+    }
+
+    setConfirmOpen(true);
+    setScheduleStatus("CONFIRMING");
   };
 
   return (
@@ -535,22 +646,40 @@ export default function AdaptiveScheduling() {
 
           <p className="text-muted-foreground mt-1">
             Adjust your existing schedule when tasks
-            or deadlines change.
+            or deadlines change. Changes apply only after you confirm a preview.
           </p>
+          {displayStatus === "CURRENT" && (
+            <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+              <CheckCircle2 className="h-3 w-3 text-success" />
+              Your schedule is up to date.
+            </p>
+          )}
+          {displayStatus === "OUTDATED" && (
+            <p className="text-xs text-amber-700 dark:text-amber-400 mt-1 flex items-center gap-1">
+              <AlertTriangle className="h-3 w-3" />
+              Your schedule may need updating. Review changes before adapting.
+            </p>
+          )}
+          {displayStatus === "PREVIEW" && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Preview ready — apply to replace the current schedule, or keep current.
+            </p>
+          )}
         </div>
 
         <Button
           onClick={adaptSchedule}
-          disabled={generating}
+          disabled={generating || loadingSchedule}
         >
           {generating ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : (
             <RefreshCw className="mr-2 h-4 w-4" />
           )}
-
           {generating
-            ? "Adapting..."
+            ? scheduleStatus === "APPLYING"
+              ? "Applying..."
+              : "Previewing..."
             : "Adapt Schedule"}
         </Button>
       </div>
@@ -575,14 +704,12 @@ export default function AdaptiveScheduling() {
             </h2>
 
             <p className="text-xs text-muted-foreground mt-1">
-              This always shows your latest schedule. When
-              you adapt the schedule, this section is
-              automatically updated.
+              Official schedule from the database. It only changes after you apply a preview.
             </p>
           </div>
         </div>
 
-        {loadingTasks &&
+        {(loadingTasks || loadingSchedule) &&
         blocks.length === 0 ? (
           <div className="flex justify-center py-8">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -762,12 +889,13 @@ export default function AdaptiveScheduling() {
           UNFINISHED TASK MOVES
           ===================================================== */}
 
-      {payload?.adaptive_moves &&
-        payload.adaptive_moves.length >
+      {((previewPayload?.adaptive_moves || payload?.adaptive_moves)?.length ?? 0) >
           0 && (
           <section className="space-y-2">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Unfinished Task Moves
+              {previewPayload
+                ? "Proposed Moves (Preview)"
+                : "Unfinished Task Moves"}
             </h2>
 
             <div className="rounded-lg border overflow-hidden max-h-[320px] overflow-y-auto">
@@ -801,8 +929,9 @@ export default function AdaptiveScheduling() {
                 </TableHeader>
 
                 <TableBody>
-                  {payload.adaptive_moves.map(
-                    (m) => (
+                  {(previewPayload?.adaptive_moves ||
+                    payload!.adaptive_moves!
+                  ).map((m) => (
                       <TableRow
                         key={m.task_id}
                         className="text-sm"
@@ -856,6 +985,81 @@ export default function AdaptiveScheduling() {
             </div>
           </section>
         )}
+
+      <AlertDialog
+        open={confirmOpen && !previewPayload}
+        onOpenChange={(open) => {
+          if (!open) keepCurrent();
+          else setConfirmOpen(true);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Adapt Your Current Schedule?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Adaptive Scheduling may change task times based on unfinished
+              tasks, deadlines, completed work, and scheduling settings. Your
+              current schedule will remain unchanged until you confirm.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={keepCurrent}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={runPreviewAdapt}>
+              Preview Changes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!previewPayload}
+        onOpenChange={(open) => {
+          if (!open) keepCurrent();
+        }}
+      >
+        <AlertDialogContent className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apply adaptive changes?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  Review the proposed schedule. Applying replaces your current
+                  official schedule with this preview.
+                </p>
+                {previewPayload && (
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>
+                      {
+                        previewPayload.blocks.filter((b) => b.kind !== "break")
+                          .length
+                      }{" "}
+                      task blocks
+                    </li>
+                    <li>
+                      {(previewPayload.adaptive_moves || []).length} adaptive
+                      move(s)
+                    </li>
+                    <li>
+                      {Array.isArray(previewPayload.deferred)
+                        ? previewPayload.deferred.length
+                        : 0}{" "}
+                      deferred
+                    </li>
+                  </ul>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={keepCurrent}>
+              Keep Current Schedule
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={applyPreview} disabled={generating}>
+              Apply Changes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </motion.div>
   );
 }

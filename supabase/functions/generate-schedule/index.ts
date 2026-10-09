@@ -2219,13 +2219,86 @@ serve(async (req) => {
 
     const isAdaptive = body?.adaptive === true;
     const isPreview = body?.preview === true;
-    // Persist only when explicitly applying, or adaptive without preview.
-    // Preview never writes. Legacy callers (no preview/apply flags) still apply.
+    // Preview never writes.
+    // Apply when apply=true, or legacy callers with no preview/apply flags.
+    // Adaptive with explicit apply:false (preview) does not persist.
     const doPersist =
       !isPreview &&
       (body?.apply === true ||
-        (isAdaptive && body?.apply !== false) ||
         (body?.preview === undefined && body?.apply === undefined));
+
+    // Commit a previously previewed candidate without re-running PSO/CSP.
+    if (
+      body?.apply === true &&
+      Array.isArray(body?.commit_blocks) &&
+      body.commit_blocks.length > 0
+    ) {
+      const commitBlocks = body.commit_blocks as Block[];
+      const validated = validateBlocks(
+        commitBlocks,
+        startMin,
+        endMin,
+        [],
+      );
+      const taskCount = validated.filter((b) => b.kind !== "break").length;
+      if (taskCount === 0) {
+        return new Response(
+          JSON.stringify({
+            error:
+              "The previewed schedule is no longer valid for your current work hours. Your current schedule was kept unchanged.",
+            blocks: [],
+            applied: false,
+          }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
+        );
+      }
+      await persistSchedule(
+        supabase,
+        user.id,
+        tasks,
+        validated,
+        scheduleDate,
+        {
+          created_by: isAdaptive ? "adaptive_scheduling" : "auto_schedule",
+          work_start: workStart,
+          work_end: workEnd,
+          peak_start: peakStart,
+          peak_end: peakEnd,
+          break_style: breakStyle,
+          algorithm: isAdaptive ? "adaptive-commit" : "commit",
+        },
+      );
+      return new Response(
+        JSON.stringify({
+          blocks: validated,
+          adaptive_moves: body.adaptive_moves || [],
+          deferred: body.deferred || [],
+          window: {
+            start: workStart,
+            end: workEnd,
+            overnight: workWindow.overnight,
+            duration_minutes: workWindow.effectiveEnd - workWindow.effectiveStart,
+            peak_start: peakStart,
+            peak_end: peakEnd,
+            break_style: breakStyle,
+            schedule_date: scheduleDate,
+          },
+          applied: true,
+          preview: false,
+          note: "Previewed schedule applied successfully.",
+          algorithm: isAdaptive
+            ? "adaptive-commit"
+            : "schedule-commit",
+          timestamp: new Date().toISOString(),
+        }),
+        {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      );
+    }
 
     /* =====================================================
        ADAPTIVE: remaining duration + local reschedule

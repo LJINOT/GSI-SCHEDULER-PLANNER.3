@@ -57,6 +57,7 @@ import {
 } from "@/lib/status";
 
 import { format } from "date-fns";
+import { formatTime12h, formatTimeRange12h } from "@/lib/format-time";
 import {
   extractTimeline,
   scheduleStatusLabel,
@@ -79,34 +80,6 @@ const CACHE_KEY =
 /* =========================================================
    HELPERS
    ========================================================= */
-
-function to12h(
-  hhmm: string
-): string {
-  if (
-    !hhmm ||
-    !hhmm.includes(":")
-  ) {
-    return hhmm;
-  }
-
-  const [h, m] =
-    hhmm
-      .split(":")
-      .map(Number);
-
-  const period =
-    h >= 12
-      ? "PM"
-      : "AM";
-
-  const hr =
-    ((h + 11) % 12) + 1;
-
-  return `${hr}:${String(
-    m
-  ).padStart(2, "0")} ${period}`;
-}
 
 function toMinutes(
   value: string
@@ -1196,13 +1169,10 @@ export default function Schedule() {
                                 }
                               </TableCell>
 
-                              <TableCell className="py-2 font-mono text-xs">
-                                {to12h(
-                                  block.start
-                                )}{" "}
-                                –{" "}
-                                {to12h(
-                                  block.end
+                              <TableCell className="py-2 font-mono text-xs whitespace-nowrap">
+                                {formatTimeRange12h(
+                                  block.start,
+                                  block.end,
                                 )}
                               </TableCell>
 
@@ -1566,13 +1536,10 @@ export function ScheduleDevPanel({
           label="Work window"
           value={
             payload.window
-              ? `${to12h(
-                  payload.window
-                    .start
-                )}–${to12h(
-                  payload.window
-                    .end
-                )}`
+              ? formatTimeRange12h(
+                  payload.window.start,
+                  payload.window.end,
+                )
               : "—"
           }
         />
@@ -1581,13 +1548,10 @@ export function ScheduleDevPanel({
           label="Peak window"
           value={
             payload.window
-              ? `${to12h(
-                  payload.window
-                    .peak_start
-                )}–${to12h(
-                  payload.window
-                    .peak_end
-                )}`
+              ? formatTimeRange12h(
+                  payload.window.peak_start,
+                  payload.window.peak_end,
+                )
               : "—"
           }
         />

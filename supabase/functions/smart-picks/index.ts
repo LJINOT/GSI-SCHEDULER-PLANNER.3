@@ -250,6 +250,203 @@ type BehavioralProfile = {
   evidenceLevel: "limited" | "learning";
 };
 
+/** Minimum distinct days of Focus/task activity before extending work hours. */
+const MIN_ACTIVITY_DAYS = 3;
+/** Minimum Focus sessions before trusting a learned extension. */
+const MIN_SESSIONS_FOR_EXTENSION = 5;
+/** Ignore activity older than this many days when learning. */
+const ACTIVITY_LOOKBACK_DAYS = 28;
+/** Do not extend if latest task activity is older than this. */
+const STALE_ACTIVITY_DAYS = 14;
+/** Cap how far past configured end we may extend (minutes). */
+const MAX_EXTENSION_MINUTES = 4 * 60;
+
+type EffectiveWorkWindow = {
+  startMin: number;
+  endMin: number;
+  overnight: boolean;
+  configuredStartMin: number;
+  configuredEndMin: number;
+  extended: boolean;
+  learnedEndMin: number | null;
+  activityDays: number;
+  reason: string;
+};
+
+function localDayKey(iso: string, timeZone: string): string | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date(iso));
+    const g = (t: string) => parts.find((p) => p.type === t)?.value ?? "0";
+    return `${g("year")}-${g("month")}-${g("day")}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Learn an effective recommendation window from Focus Mode time_entries
+ * (task activity) and completed_at timestamps. App-only activity is not used.
+ *
+ * Configured hours are the default. Extension past work_end requires repeated
+ * multi-day evidence of task sessions ending later.
+ */
+function learnEffectiveWorkWindow(
+  timeEntries: any[],
+  completedTasks: any[],
+  timeZone: string,
+  configuredStartMin: number,
+  configuredEndMin: number,
+): EffectiveWorkWindow {
+  const configuredOvernight = configuredEndMin < configuredStartMin;
+  const base: EffectiveWorkWindow = {
+    startMin: configuredStartMin,
+    endMin: configuredEndMin,
+    overnight: configuredOvernight,
+    configuredStartMin,
+    configuredEndMin,
+    extended: false,
+    learnedEndMin: null,
+    activityDays: 0,
+    reason: "This time is within your configured work hours.",
+  };
+
+  const now = Date.now();
+  const lookbackMs = ACTIVITY_LOOKBACK_DAYS * 86_400_000;
+  const staleMs = STALE_ACTIVITY_DAYS * 86_400_000;
+
+  // Per-day max end minute of task activity (Focus sessions)
+  const dayEnd = new Map<string, number>();
+  const dayStart = new Map<string, number>();
+  let sessionCount = 0;
+  let latestActivityMs = 0;
+
+  for (const e of timeEntries || []) {
+    if (!e.start_time) continue;
+    const startMs = new Date(e.start_time).getTime();
+    if (!Number.isFinite(startMs) || now - startMs > lookbackMs) continue;
+
+    const mins = Number(e.duration) || (
+      e.end_time
+        ? Math.max(0, Math.round((new Date(e.end_time).getTime() - startMs) / 60000))
+        : 0
+    );
+    if (mins <= 0) continue;
+
+    const endMs = e.end_time
+      ? new Date(e.end_time).getTime()
+      : startMs + mins * 60_000;
+    if (Number.isFinite(endMs)) latestActivityMs = Math.max(latestActivityMs, endMs);
+
+    const day = localDayKey(e.start_time, timeZone);
+    const startHm = localHourMinute(e.start_time, timeZone);
+    if (!day || !startHm) continue;
+
+    const startMinOfDay = startHm.hour * 60 + startHm.minute;
+    const endMinOfDay = (startMinOfDay + mins) % (24 * 60);
+    // For learning "works late", use session end clock (may wrap past midnight)
+    const endClock = e.end_time
+      ? (localHourMinute(e.end_time, timeZone)
+        ? localHourMinute(e.end_time, timeZone)!.hour * 60 + localHourMinute(e.end_time, timeZone)!.minute
+        : endMinOfDay)
+      : endMinOfDay;
+
+    sessionCount += 1;
+    const prevEnd = dayEnd.get(day);
+    // Prefer later end on same calendar day; for overnight sessions ending after midnight,
+    // treat end clocks in 0–6h as "late" by adding 24h for comparison within that day key
+    let endScore = endClock;
+    if (endClock < startMinOfDay) endScore = endClock + 24 * 60;
+    const prevScore = prevEnd == null ? -1 : (prevEnd < 6 * 60 && startMinOfDay > 12 * 60 ? prevEnd + 24 * 60 : prevEnd);
+    if (endScore > prevScore) dayEnd.set(day, endClock);
+
+    const prevStart = dayStart.get(day);
+    if (prevStart == null || startMinOfDay < prevStart) dayStart.set(day, startMinOfDay);
+  }
+
+  // Completions only reinforce days already seen or add weak signal — prefer Focus data
+  for (const t of completedTasks || []) {
+    const when = t.completed_at || t.updated_at;
+    if (!when) continue;
+    const ms = new Date(when).getTime();
+    if (!Number.isFinite(ms) || now - ms > lookbackMs) continue;
+    latestActivityMs = Math.max(latestActivityMs, ms);
+    const day = localDayKey(when, timeZone);
+    const hm = localHourMinute(when, timeZone);
+    if (!day || !hm) continue;
+    const m = hm.hour * 60 + hm.minute;
+    // Only boost end if we already have Focus data that day, or count as light evidence
+    if (dayEnd.has(day)) {
+      const prev = dayEnd.get(day)!;
+      if (m > prev) dayEnd.set(day, m);
+    }
+  }
+
+  const activityDays = dayEnd.size;
+  base.activityDays = activityDays;
+
+  if (sessionCount < MIN_SESSIONS_FOR_EXTENSION || activityDays < MIN_ACTIVITY_DAYS) {
+    base.reason =
+      sessionCount === 0
+        ? "Limited recent activity data is available, so recommendations use your configured work window."
+        : "Limited recent activity data is available, so recommendations use your configured work window.";
+    return base;
+  }
+
+  if (latestActivityMs > 0 && now - latestActivityMs > staleMs) {
+    base.reason =
+      "Recent task activity is stale, so recommendations stay within your configured work window.";
+    return base;
+  }
+
+  // Median / upper-quartile of daily end times (same-day comparison)
+  const ends = [...dayEnd.values()].sort((a, b) => a - b);
+  // For extension past configured end on same-day schedules, compare ends that are
+  // later than configured end (including post-midnight as late)
+  const configuredOvernight = configuredEndMin < configuredStartMin;
+  if (configuredOvernight) {
+    // Overnight configured: do not auto-extend further without separate logic
+    base.reason = "This time is within your configured work hours.";
+    return base;
+  }
+
+  // Use 75th percentile of daily activity end clocks
+  const idx = Math.min(ends.length - 1, Math.floor(ends.length * 0.75));
+  let learnedEnd = ends[idx];
+
+  // Isolated late outlier: if only 1 day is far past median, use median instead
+  const median = ends[Math.floor(ends.length / 2)];
+  const lateDays = ends.filter((e) => e > configuredEndMin + 30).length;
+  if (lateDays < 2) {
+    // Need at least 2 distinct days working past configured end
+    base.reason = "This time is within your configured work hours.";
+    return base;
+  }
+  // Cap learned end: not more than median+90 if one day is extreme
+  if (learnedEnd > median + 90) learnedEnd = median + 90;
+
+  if (learnedEnd <= configuredEndMin + 15) {
+    // Consistently at or before configured end — do not extend
+    base.reason = "This time is within your configured work hours.";
+    return base;
+  }
+
+  const extension = Math.min(learnedEnd - configuredEndMin, MAX_EXTENSION_MINUTES);
+  const effectiveEnd = configuredEndMin + Math.max(0, extension);
+
+  base.endMin = effectiveEnd;
+  base.learnedEndMin = learnedEnd;
+  base.extended = effectiveEnd > configuredEndMin;
+  base.reason = base.extended
+    ? "Your activity history indicates that you often work into the evening."
+    : "This time is within your configured work hours.";
+  return base;
+}
+
 function localHourMinute(iso: string, timeZone: string): { hour: number; minute: number } | null {
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -370,14 +567,26 @@ serve(async (req) => {
     const peakEndMin = behavior.peakEndMin;
     const workStartMin = parseHHMM(profile?.work_start || "09:00");
     const configuredEnd = parseHHMM(profile?.work_end || "17:00");
-    // Use the user's actual work window only (supports overnight when end < start).
-    // Do NOT expand to a hardcoded evening cutoff.
-    const workEndMin = configuredEnd;
-    const overnightWork = workEndMin < workStartMin;
-    const source: "behavior" | "personalization" | "general" = behavior.evidenceLevel === "learning"
-      ? "behavior"
-      : profile?.peak_start ? "personalization" : "general";
     const { hour: localHour, minOfDay: localMin, todayStr } = localNow(userTz);
+
+    // Behavior-aware effective window (configured default + optional extension)
+    const effective = learnEffectiveWorkWindow(
+      timeEntries || [],
+      completedTasks || [],
+      userTz,
+      workStartMin,
+      configuredEnd,
+    );
+    const workEndMin = effective.endMin;
+    const overnightWork = effective.overnight;
+    const source: "behavior" | "personalization" | "general" =
+      effective.extended
+        ? "behavior"
+        : behavior.evidenceLevel === "learning"
+        ? "behavior"
+        : profile?.peak_start
+        ? "personalization"
+        : "general";
 
     const workWindow = buildWin(workStartMin, workEndMin);
 
@@ -406,6 +615,7 @@ serve(async (req) => {
       id: string;
       title: string;
       reason: string;
+      _windowReason?: string;
       priority: string;
       score: number;
       duration: number;
@@ -452,6 +662,7 @@ serve(async (req) => {
           id: t.id,
           title: t.title,
           reason: reasons.join("; "),
+          _windowReason: effective.reason,
           priority,
           score: Math.round(score * 10) / 10,
           duration,
@@ -518,10 +729,28 @@ serve(async (req) => {
       // CRITICAL: reserve immediately so next recommendation cannot start at the same time
       occupied.push({ start: slot.start, end: slot.end });
 
+      // Explain flexible hours when the slot starts after the configured work end
+      let reason = item.reason;
+      if (
+        effective.extended &&
+        slot.start >= effective.configuredEndMin &&
+        item._windowReason
+      ) {
+        reason = `${item.reason}; ${item._windowReason}`;
+      } else if (item._windowReason && !effective.extended) {
+        // keep AHP reasons primary; optional short window note only if limited data
+        if (
+          item._windowReason.includes("Limited") ||
+          item._windowReason.includes("stale")
+        ) {
+          reason = `${item.reason}; ${item._windowReason}`;
+        }
+      }
+
       picks.push({
         id: item.id,
         title: item.title,
-        reason: item.reason,
+        reason,
         priority: item.priority,
         score: item.score,
         suggested_time: `${to12h(toHHMM(slot.start))} – ${to12h(toHHMM(slot.end))}`,
@@ -597,10 +826,18 @@ serve(async (req) => {
         work_window: {
           start: toHHMM(workStartMin),
           end: toHHMM(workEndMin),
+          configured_start: toHHMM(effective.configuredStartMin),
+          configured_end: toHHMM(effective.configuredEndMin),
           overnight: !!(workWindow && workWindow.overnight),
+          extended: effective.extended,
+          learned_end: effective.learnedEndMin != null
+            ? toHHMM(effective.learnedEndMin)
+            : null,
+          activity_days: effective.activityDays,
           duration_minutes: workWindow
             ? workWindow.effEnd - workWindow.effStart
             : null,
+          reason: effective.reason,
         },
         behavior_profile: {
           evidence_level: behavior.evidenceLevel,

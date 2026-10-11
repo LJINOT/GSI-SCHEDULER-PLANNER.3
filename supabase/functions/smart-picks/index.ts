@@ -66,9 +66,49 @@ function intervalsOverlap(a0: number, a1: number, b0: number, b1: number): boole
   return a0 < b1 && a1 > b0;
 }
 
+const DAY = 24 * 60;
+
+type WorkWin = {
+  start: number;
+  end: number;
+  overnight: boolean;
+  effStart: number;
+  effEnd: number;
+};
+
+function buildWin(start: number, end: number): WorkWin | null {
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start === end) return null;
+  const overnight = end < start;
+  return {
+    start,
+    end,
+    overnight,
+    effStart: start,
+    effEnd: overnight ? end + DAY : end,
+  };
+}
+
+/** Map clock minutes into shift-linear coords, or -1 if outside window. */
+function clockToShift(clock: number, ww: WorkWin): number {
+  const c = ((clock % DAY) + DAY) % DAY;
+  if (!ww.overnight) {
+    if (c < ww.start || c > ww.end) return -1;
+    return c;
+  }
+  if (c >= ww.start) return c;
+  if (c <= ww.end) return c + DAY;
+  return -1;
+}
+
+function shiftToClock(shift: number): number {
+  return ((shift % DAY) + DAY) % DAY;
+}
+
 /**
- * Single allocation function used for all recommendations.
- * Finds earliest free [start, end) of length `duration` at/after preferredStart.
+ * Find earliest free slot of `duration` minutes at/after preferredStart
+ * inside the (possibly overnight) work window.
+ * Returns clock-minute start/end (end may be < start when crossing midnight).
  */
 function findNextAvailableSlot(
   preferredStart: number,
@@ -76,14 +116,46 @@ function findNextAvailableSlot(
   occupiedIntervals: { start: number; end: number }[],
   workStart: number,
   workEnd: number,
-): { start: number; end: number } | null {
+): { start: number; end: number; unavailable_reason?: string } | null {
   if (duration <= 0) return null;
-  let cursor = Math.max(preferredStart, workStart);
-  if (cursor + duration > workEnd) return null;
+  const ww = buildWin(workStart, workEnd);
+  if (!ww) return null;
 
-  const blocked = [...occupiedIntervals].sort((a, b) => a.start - b.start);
+  const shiftDur = ww.effEnd - ww.effStart;
+  if (duration > shiftDur) {
+    return null; // task longer than entire work window
+  }
 
-  for (let i = 0; i < 1000 && cursor + duration <= workEnd; i++) {
+  // Map preferred start into shift space (or window start if outside / before)
+  let prefShift = clockToShift(preferredStart, ww);
+  if (prefShift < 0) {
+    // Outside window: if before shift starts today, use shift start; else no slot today
+    if (!ww.overnight) {
+      if (preferredStart < ww.start) prefShift = ww.effStart;
+      else return null; // after work end
+    } else {
+      // overnight: preferred in the daytime gap → next shift start
+      prefShift = ww.effStart;
+    }
+  }
+  let cursor = Math.max(prefShift, ww.effStart);
+  if (cursor + duration > ww.effEnd) return null;
+
+  // Occupied → shift coordinates
+  const blocked = occupiedIntervals
+    .map((o) => {
+      const s = clockToShift(o.start, ww);
+      if (s < 0) return null;
+      const len = Math.max(1, o.end - o.start);
+      // overnight occupied may already span; use duration in clock if end>start else wrap
+      let d = o.end > o.start ? o.end - o.start : o.end + DAY - o.start;
+      if (!Number.isFinite(d) || d <= 0) d = len;
+      return { start: s, end: s + d };
+    })
+    .filter((x): x is { start: number; end: number } => x != null)
+    .sort((a, b) => a.start - b.start);
+
+  for (let i = 0; i < 2000 && cursor + duration <= ww.effEnd; i++) {
     let hit: { start: number; end: number } | null = null;
     for (const b of blocked) {
       if (intervalsOverlap(cursor, cursor + duration, b.start, b.end)) {
@@ -91,11 +163,36 @@ function findNextAvailableSlot(
         break;
       }
     }
-    if (!hit) return { start: cursor, end: cursor + duration };
-    // Jump past the conflicting interval (not a fixed +30)
+    if (!hit) {
+      const startClock = shiftToClock(cursor);
+      const endClock = shiftToClock(cursor + duration);
+      return { start: startClock, end: endClock };
+    }
     cursor = Math.max(cursor + 1, hit.end);
   }
   return null;
+}
+
+function unavailableMessage(
+  duration: number,
+  workStart: number,
+  workEnd: number,
+  localMin: number,
+): string {
+  const ww = buildWin(workStart, workEnd);
+  if (!ww) return "Invalid working hours — set start and end in General Settings.";
+  const capacity = ww.effEnd - ww.effStart;
+  if (duration > capacity) {
+    return `Needs ${duration} min but work window is only ${capacity} min.`;
+  }
+  if (!ww.overnight && localMin >= ww.end) {
+    return `Work day ended (${toHHMM(ww.end)}). Try again in the next work window (${toHHMM(ww.start)}–${toHHMM(ww.end)}).`;
+  }
+  if (!ww.overnight && localMin < ww.start) {
+    return `Work starts at ${to12h(toHHMM(ww.start))}.`;
+  }
+  // Inside window but no free contiguous slot
+  return `No free ${duration}-min slot left in ${to12h(toHHMM(ww.start))}–${to12h(toHHMM(ww.end))}.`;
 }
 
 function localNow(tz: string): { hour: number; minOfDay: number; todayStr: string } {
@@ -282,16 +379,25 @@ serve(async (req) => {
       : profile?.peak_start ? "personalization" : "general";
     const { hour: localHour, minOfDay: localMin, todayStr } = localNow(userTz);
 
-    // Occupied: fixed breaks + existing scheduled tasks today
-    const occupied: { start: number; end: number; taskId?: string }[] = FIXED_BREAKS.map((b) => ({
-      start: b.start,
-      end: b.end,
-    }));
+    const workWindow = buildWin(workStartMin, workEndMin);
+
+    // Occupied: breaks only if they fall inside the work window + scheduled tasks today
+    const occupied: { start: number; end: number; taskId?: string }[] = [];
+    if (workWindow) {
+      for (const b of FIXED_BREAKS) {
+        const s = clockToShift(b.start, workWindow);
+        if (s < 0) continue;
+        const breakDur = b.end - b.start;
+        if (s + breakDur > workWindow.effEnd) continue;
+        occupied.push({ start: b.start, end: b.end });
+      }
+    }
     for (const t of tasks as any[]) {
       if (!t.start_time) continue;
       const sm = taskStartOnToday(t.start_time, userTz, todayStr);
       if (sm == null) continue;
       const dur = Math.max(5, Math.min(480, Number(t.estimated_duration) || 30));
+      // Keep occupied even if slightly outside — findNextAvailableSlot maps via clockToShift
       occupied.push({ start: sm, end: sm + dur, taskId: t.id });
     }
 
@@ -315,11 +421,24 @@ serve(async (req) => {
         const c = cognitiveFitScore(t.difficulty, localHour, peakStartMin, peakEndMin);
         const score = (u * W.urgency + q * W.quickWin + f * W.flow + c * W.cognitive) * 100;
         const priority = score >= 70 ? "high" : score >= 45 ? "medium" : "low";
-        const duration = Math.max(15, Math.min(180, Number(t.estimated_duration) || 30));
+        // User planned duration (same field as scheduling) — do not invent a different length
+        const duration = Math.max(5, Math.min(480, Number(t.estimated_duration) || 30));
 
-        let preferredStart = Math.max(localMin, workStartMin);
-        if ((t.difficulty || "medium") === "hard") preferredStart = Math.max(preferredStart, peakStartMin);
-        else if ((t.difficulty || "medium") === "easy") preferredStart = Math.max(preferredStart, peakEndMin);
+        // Prefer "now" when inside the work window; otherwise window start (handles overnight)
+        let preferredStart = localMin;
+        if (workWindow) {
+          preferredStart =
+            clockToShift(localMin, workWindow) >= 0 ? localMin : workStartMin;
+          // Soft peak preference only when peak falls inside the work window
+          const diff = (t.difficulty || "medium").toLowerCase();
+          if (diff === "hard" && clockToShift(peakStartMin, workWindow) >= 0) {
+            preferredStart = Math.max(preferredStart, peakStartMin);
+          } else if (diff === "easy" && clockToShift(peakEndMin, workWindow) >= 0) {
+            preferredStart = Math.max(preferredStart, peakEndMin);
+          }
+        } else {
+          preferredStart = Math.max(localMin, workStartMin);
+        }
 
         const reasons: string[] = [];
         if (u >= 0.9) reasons.push("deadline is critical");
@@ -374,13 +493,19 @@ serve(async (req) => {
       );
 
       if (!slot) {
+        const msg = unavailableMessage(
+          item.duration,
+          workStartMin,
+          workEndMin,
+          localMin,
+        );
         picks.push({
           id: item.id,
           title: item.title,
           reason: item.reason,
           priority: item.priority,
           score: item.score,
-          suggested_time: "No available time slot",
+          suggested_time: msg,
           recommended_start: null,
           recommended_end: null,
           duration: item.duration,
@@ -469,6 +594,14 @@ serve(async (req) => {
         algorithm: "ahp-immediate-tasks + sequential-non-overlapping-slots",
         timestamp: recommendationTimestamp,
         timezone: userTz,
+        work_window: {
+          start: toHHMM(workStartMin),
+          end: toHHMM(workEndMin),
+          overnight: !!(workWindow && workWindow.overnight),
+          duration_minutes: workWindow
+            ? workWindow.effEnd - workWindow.effStart
+            : null,
+        },
         behavior_profile: {
           evidence_level: behavior.evidenceLevel,
           actual_minutes: behavior.actualMinutes,

@@ -349,11 +349,11 @@ function learnEffectiveWorkWindow(
     const startMinOfDay = startHm.hour * 60 + startHm.minute;
     const endMinOfDay = (startMinOfDay + mins) % (24 * 60);
     // For learning "works late", use session end clock (may wrap past midnight)
-    const endClock = e.end_time
-      ? (localHourMinute(e.end_time, timeZone)
-        ? localHourMinute(e.end_time, timeZone)!.hour * 60 + localHourMinute(e.end_time, timeZone)!.minute
-        : endMinOfDay)
-      : endMinOfDay;
+    let endClock = endMinOfDay;
+    if (e.end_time) {
+      const endHm = localHourMinute(e.end_time, timeZone);
+      if (endHm) endClock = endHm.hour * 60 + endHm.minute;
+    }
 
     sessionCount += 1;
     const prevEnd = dayEnd.get(day);
@@ -570,13 +570,29 @@ serve(async (req) => {
     const { hour: localHour, minOfDay: localMin, todayStr } = localNow(userTz);
 
     // Behavior-aware effective window (configured default + optional extension)
-    const effective = learnEffectiveWorkWindow(
-      timeEntries || [],
-      completedTasks || [],
-      userTz,
-      workStartMin,
-      configuredEnd,
-    );
+    let effective: EffectiveWorkWindow;
+    try {
+      effective = learnEffectiveWorkWindow(
+        timeEntries || [],
+        completedTasks || [],
+        userTz,
+        workStartMin,
+        configuredEnd,
+      );
+    } catch (learnErr) {
+      console.warn("learnEffectiveWorkWindow failed, using configured hours:", learnErr);
+      effective = {
+        startMin: workStartMin,
+        endMin: configuredEnd,
+        overnight: configuredEnd < workStartMin,
+        configuredStartMin: workStartMin,
+        configuredEndMin: configuredEnd,
+        extended: false,
+        learnedEndMin: null,
+        activityDays: 0,
+        reason: "This time is within your configured work hours.",
+      };
+    }
     const workEndMin = effective.endMin;
     const overnightWork = effective.overnight;
     const source: "behavior" | "personalization" | "general" =
@@ -851,9 +867,17 @@ serve(async (req) => {
     );
   } catch (e) {
     console.error("smart-picks error:", e);
-    return new Response(JSON.stringify({ error: (e as Error).message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    const message =
+      e instanceof Error ? e.message : typeof e === "string" ? e : "Smart picks failed";
+    return new Response(
+      JSON.stringify({
+        error: message,
+        picks: [],
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
+    );
   }
 });

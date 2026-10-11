@@ -13,12 +13,12 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { PlusCircle, Search, Archive, Pencil, ChevronDown, ChevronUp, FolderKanban, FileText, History, Folder } from "lucide-react";
+import { PlusCircle, Search, Archive, Pencil, ChevronDown, ChevronUp, FolderKanban, FileText, History, Folder, Trash2, RotateCcw, Loader2 } from "lucide-react";
 import { useSearchParams, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { formatPH } from "@/lib/date-utils";
-import { STATUS_OPTIONS, statusLabel } from "@/lib/status";
+import { STATUS_OPTIONS, statusLabel, priorityFromScore, PRIORITY_STYLES } from "@/lib/status";
 import AddTask from "@/pages/AddTask";
 
 type Task = {
@@ -33,6 +33,8 @@ type Task = {
   start_time: string | null;
   estimated_duration: number | null;
   project_id: string | null;
+  archived?: boolean | null;
+  archived_at?: string | null;
 };
 
 type Project = { id: string; name: string; color: string };
@@ -58,6 +60,12 @@ export default function Tasks() {
   const [editErrors, setEditErrors] = useState<{ title?: string }>({});
   const [savingEdit, setSavingEdit] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<Task | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [listView, setListView] = useState<"active" | "archived">("active");
+  const [archivedTasks, setArchivedTasks] = useState<Task[]>([]);
   const [editNote, setEditNote] = useState("");
   const [history, setHistory] = useState<Record<string, { id: string; note: string; created_at: string }[]>>({});
 
@@ -78,6 +86,7 @@ export default function Tasks() {
     const { data: { user }, error: authErr } = await supabase.auth.getUser();
     if (authErr || !user) {
       setTasks([]);
+      setArchivedTasks([]);
       setProjects([]);
       setHistory({});
       setLoading(false);
@@ -87,25 +96,32 @@ export default function Tasks() {
 
     // Same ownership model as Dashboard: user_id = auth user.
     // Active lists exclude archived; treat null archived as active (legacy rows).
-    const [{ data: t, error: tErr }, { data: p, error: pErr }, { data: h }] = await Promise.all([
-      supabase
-        .from("tasks")
-        .select("*")
-        .eq("user_id", uid)
-        .or("archived.eq.false,archived.is.null")
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("projects")
-        .select("id, name, color")
-        .eq("user_id", uid)
-        .or("archived.eq.false,archived.is.null")
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("task_history")
-        .select("id, task_id, note, created_at")
-        .eq("user_id", uid)
-        .order("created_at", { ascending: false }),
-    ]);
+    const [{ data: t, error: tErr }, { data: archived, error: aErr }, { data: p, error: pErr }, { data: h }] =
+      await Promise.all([
+        supabase
+          .from("tasks")
+          .select("*")
+          .eq("user_id", uid)
+          .or("archived.eq.false,archived.is.null")
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("tasks")
+          .select("*")
+          .eq("user_id", uid)
+          .eq("archived", true)
+          .order("archived_at", { ascending: false }),
+        supabase
+          .from("projects")
+          .select("id, name, color")
+          .eq("user_id", uid)
+          .or("archived.eq.false,archived.is.null")
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("task_history")
+          .select("id, task_id, note, created_at")
+          .eq("user_id", uid)
+          .order("created_at", { ascending: false }),
+      ]);
 
     if (tErr) {
       console.error("[Tasks] fetch tasks failed", tErr.message, "user", uid);
@@ -113,6 +129,13 @@ export default function Tasks() {
       setTasks([]);
     } else {
       setTasks(t || []);
+    }
+    if (aErr) {
+      console.error("[Tasks] fetch archived failed", aErr.message);
+      toast.error(aErr.message);
+      setArchivedTasks([]);
+    } else {
+      setArchivedTasks(archived || []);
     }
     if (pErr) {
       console.error("[Projects list on Tasks] fetch failed", pErr.message);
@@ -201,16 +224,68 @@ export default function Tasks() {
   };
 
   const confirmArchive = async () => {
-    if (!archiveTarget) return;
+    if (!archiveTarget || archiving) return;
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { setArchiveTarget(null); return; }
-    const { error } = await supabase.from("tasks")
-      .update({ archived: true, archived_at: new Date().toISOString() })
-      .eq("id", archiveTarget.id)
-      .eq("user_id", user.id);
-    if (error) toast.error(error.message);
-    else { toast.success("Task archived — it can be restored later"); fetchAll(); }
-    setArchiveTarget(null);
+    setArchiving(true);
+    try {
+      const { error } = await supabase.from("tasks")
+        .update({ archived: true, archived_at: new Date().toISOString() })
+        .eq("id", archiveTarget.id)
+        .eq("user_id", user.id);
+      if (error) toast.error(error.message);
+      else {
+        toast.success("Task archived — it can be restored later");
+        await fetchAll();
+      }
+    } finally {
+      setArchiving(false);
+      setArchiveTarget(null);
+    }
+  };
+
+  const restoreTask = async (task: Task) => {
+    if (restoringId) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { toast.error("You are not signed in."); return; }
+    setRestoringId(task.id);
+    try {
+      const { error } = await supabase.from("tasks")
+        .update({ archived: false, archived_at: null })
+        .eq("id", task.id)
+        .eq("user_id", user.id);
+      if (error) toast.error(error.message);
+      else {
+        toast.success(`"${task.title}" restored to active tasks.`);
+        await fetchAll();
+      }
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { setDeleteTarget(null); return; }
+    setDeleting(true);
+    try {
+      // Permanent delete: RLS scopes to owner. Related time_entries / history
+      // cascade or stay user-scoped per existing schema.
+      const { error } = await supabase.from("tasks")
+        .delete()
+        .eq("id", deleteTarget.id)
+        .eq("user_id", user.id);
+      if (error) toast.error(error.message || "Could not delete task.");
+      else {
+        toast.success(`"${deleteTarget.title}" permanently deleted.`);
+        setExpandedTaskId((id) => (id === deleteTarget.id ? null : id));
+        await fetchAll();
+      }
+    } finally {
+      setDeleting(false);
+      setDeleteTarget(null);
+    }
   };
 
   const toInput = (iso: string | null) => (iso ? formatPH(iso, "yyyy-MM-dd'T'HH:mm") : "");
@@ -312,13 +387,25 @@ export default function Tasks() {
 
   const q = search.trim().toLowerCase();
 
-  // Single filter pipeline: non-archived tasks (from fetch) → search → status
-  // "All Status" means all non-archived statuses including completed (done).
+  // Active pipeline: non-archived tasks (from fetch) → search → status
   const filtered = tasks.filter((t) => {
     const projName = projects.find((p) => p.id === t.project_id)?.name?.toLowerCase() || "";
     const matchSearch =
       !q ||
       t.title.toLowerCase().includes(q) ||
+      (t.description || "").toLowerCase().includes(q) ||
+      projName.includes(q);
+    const matchStatus = statusFilter === "all" || t.status === statusFilter;
+    return matchSearch && matchStatus;
+  });
+
+  const filteredArchived = archivedTasks.filter((t) => {
+    const projName = projects.find((p) => p.id === t.project_id)?.name?.toLowerCase() || "";
+    const matchSearch =
+      !q ||
+      t.title.toLowerCase().includes(q) ||
+      (t.description || "").toLowerCase().includes(q) ||
+      (t.category || "").toLowerCase().includes(q) ||
       projName.includes(q);
     const matchStatus = statusFilter === "all" || t.status === statusFilter;
     return matchSearch && matchStatus;
@@ -406,6 +493,15 @@ export default function Tasks() {
             >
               <Archive className="h-4 w-4 text-muted-foreground" />
             </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              title="Delete task permanently"
+              onClick={() => setDeleteTarget(task)}
+            >
+              <Trash2 className="h-4 w-4 text-muted-foreground" />
+            </Button>
             <span className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground">
               {expandedTaskId === task.id ? (
                 <ChevronUp className="h-4 w-4" />
@@ -492,9 +588,36 @@ export default function Tasks() {
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-display text-3xl font-bold">Tasks</h1>
-        <Button onClick={() => setAddOpen(true)}>
-          <PlusCircle className="mr-2 h-4 w-4" /> Add Task
-        </Button>
+        {listView === "active" && (
+          <Button onClick={() => setAddOpen(true)}>
+            <PlusCircle className="mr-2 h-4 w-4" /> Add Task
+          </Button>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setListView("active")}
+          className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${
+            listView === "active"
+              ? "bg-primary text-primary-foreground border-primary"
+              : "bg-card text-muted-foreground border-border hover:bg-accent"
+          }`}
+        >
+          Active Tasks <span className="opacity-70">({tasks.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setListView("archived")}
+          className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${
+            listView === "archived"
+              ? "bg-primary text-primary-foreground border-primary"
+              : "bg-card text-muted-foreground border-border hover:bg-accent"
+          }`}
+        >
+          Archived Tasks <span className="opacity-70">({archivedTasks.length})</span>
+        </button>
       </div>
 
       <div className="flex flex-wrap gap-3">
@@ -520,6 +643,101 @@ export default function Tasks() {
 
       {loading ? (
         <p className="text-muted-foreground text-center py-12">Loading…</p>
+      ) : listView === "archived" ? (
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Archived tasks are kept on record and excluded from active lists, scheduling, and recommendations. Restore to bring them back without creating a duplicate.
+          </p>
+          {filteredArchived.length === 0 ? (
+            <Card>
+              <CardContent className="py-12 text-center text-muted-foreground text-sm">
+                {archivedTasks.length === 0
+                  ? "No archived tasks yet."
+                  : "No archived tasks match your search or filter."}
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+              {filteredArchived.map((task) => {
+                const pr = priorityFromScore(task.priority_score);
+                const prStyle = PRIORITY_STYLES[pr];
+                const proj = projects.find((p) => p.id === task.project_id);
+                return (
+                  <Card key={task.id} className="border-dashed">
+                    <CardContent className="py-3 px-3 sm:px-4 space-y-2">
+                      <div className="flex items-start gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium leading-snug break-words">
+                            {task.title}
+                          </p>
+                          {task.description && (
+                            <p className="text-xs text-muted-foreground mt-1 line-clamp-2 whitespace-pre-wrap">
+                              {task.description}
+                            </p>
+                          )}
+                          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[11px] text-muted-foreground">
+                            {task.due_date && (
+                              <span>
+                                Deadline: {formatPH(task.due_date, "MMM d, yyyy h:mm a")}
+                              </span>
+                            )}
+                            {task.archived_at && (
+                              <span>
+                                Archived: {formatPH(task.archived_at, "MMM d, yyyy h:mm a")}
+                              </span>
+                            )}
+                            {proj && <span>Project: {proj.name}</span>}
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            <Badge variant="secondary" className="text-[10px]">
+                              {statusLabel(task.status)}
+                            </Badge>
+                            {prStyle && (
+                              <Badge variant="outline" className={`text-[10px] ${prStyle.className}`}>
+                                {prStyle.label}
+                              </Badge>
+                            )}
+                            {task.category && (
+                              <Badge variant="outline" className="text-[10px]">
+                                {task.category}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8"
+                            disabled={restoringId === task.id || deleting}
+                            onClick={() => restoreTask(task)}
+                          >
+                            {restoringId === task.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                            ) : (
+                              <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                            )}
+                            Restore
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            title="Delete permanently"
+                            disabled={deleting || restoringId === task.id}
+                            onClick={() => setDeleteTarget(task)}
+                          >
+                            <Trash2 className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
       ) : (
         <div className="space-y-6">
           {/* PROJECTS — folder grid with internal scroll */}
@@ -721,17 +939,52 @@ export default function Tasks() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={!!archiveTarget} onOpenChange={(o) => { if (!o) setArchiveTarget(null); }}>
+      <AlertDialog
+        open={!!archiveTarget}
+        onOpenChange={(o) => {
+          if (!o && !archiving) setArchiveTarget(null);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Archive task?</AlertDialogTitle>
             <AlertDialogDescription>
-              "{archiveTarget?.title}" will be moved out of your lists but kept on record, so nothing is lost.
+              "{archiveTarget?.title}" will be moved out of your active lists but kept on
+              record. You can restore it anytime from Archived Tasks.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmArchive}>Archive</AlertDialogAction>
+            <AlertDialogCancel disabled={archiving}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmArchive} disabled={archiving}>
+              {archiving ? "Archiving…" : "Archive"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => {
+          if (!o && !deleting) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete task permanently?</AlertDialogTitle>
+            <AlertDialogDescription>
+              "{deleteTarget?.title}" will be permanently deleted. Related session history
+              may also be removed by database rules. This cannot be undone from the Archive.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -35,8 +35,7 @@ import { motion } from "framer-motion";
 import {
   Loader2,
   Wand2,
-  CheckCircle2,
-} from "lucide-react";
+  CheckCircle2, FileText } from "lucide-react";
 
 import {
   loadCache,
@@ -63,6 +62,7 @@ import {
   scheduleStatusLabel,
   type ScheduleStatus,
 } from "@/lib/schedule-state";
+import { ScheduleGenerationReport } from "@/components/ScheduleGenerationReport";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -341,6 +341,7 @@ export default function Schedule() {
   const [scheduleStatus, setScheduleStatus] =
     useState<"NO_SCHEDULE" | "CURRENT" | "PREVIEW" | "GENERATING" | "OUTDATED">("NO_SCHEDULE");
   const generatingLock = useRef(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   const [
     unscheduled,
@@ -561,6 +562,7 @@ export default function Schedule() {
               (scheduleMeta as any)?.algorithm ||
               "saved-generated-schedule",
             timestamp:
+              (scheduleMeta as any)?.updated_at ||
               row.created_at ||
               new Date().toISOString(),
             window: {
@@ -575,8 +577,17 @@ export default function Schedule() {
               break_style:
                 (scheduleMeta as any)?.break_style || "—",
               schedule_date:
-                today,
+                (scheduleMeta as any)?.schedule_date || today,
+              overnight: !!(scheduleMeta as any)?.overnight,
+              duration_minutes:
+                (scheduleMeta as any)?.duration_minutes ?? null,
             },
+            deferred: (scheduleMeta as any)?.deferred || [],
+            task_summary: (scheduleMeta as any)?.task_summary || [],
+            scheduled_count: (scheduleMeta as any)?.scheduled_count,
+            deferred_count: (scheduleMeta as any)?.deferred_count,
+            partial_count: (scheduleMeta as any)?.partial_count,
+            note: (scheduleMeta as any)?.note,
             schedule_meta: scheduleMeta,
           } as any;
         }
@@ -1050,24 +1061,36 @@ export default function Schedule() {
           =================================================== */}
 
       <section className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
           <h2 className="text-base font-semibold tracking-tight text-foreground">
             Generated Schedule
           </h2>
 
-          {blocks.length >
-            0 && (
-            <span className="text-xs text-muted-foreground">
-              {
-                blocks.length
-              }{" "}
-              block
-              {blocks.length !==
-              1
-                ? "s"
-                : ""}
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {blocks.length > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {blocks.length} block{blocks.length !== 1 ? "s" : ""}
+              </span>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              onClick={() => {
+                if (!hasOfficialSchedule) {
+                  toast.message(
+                    "Generate a schedule first, then open the Generation Report.",
+                  );
+                  return;
+                }
+                setReportOpen(true);
+              }}
+            >
+              <FileText className="h-3.5 w-3.5 mr-1.5" />
+              Generation Report
+            </Button>
+          </div>
         </div>
 
         {justCreated &&
@@ -1421,6 +1444,14 @@ export default function Schedule() {
       </section>
 
       {/* Confirm before regenerating an existing official schedule */}
+      
+      <ScheduleGenerationReport
+        open={reportOpen}
+        onOpenChange={setReportOpen}
+        payload={payload}
+        scheduleDateFallback={getLocalDateString()}
+      />
+
       <AlertDialog open={confirmRegenOpen && !previewPayload} onOpenChange={setConfirmRegenOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>

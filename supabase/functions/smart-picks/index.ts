@@ -407,7 +407,6 @@ function learnEffectiveWorkWindow(
   const ends = [...dayEnd.values()].sort((a, b) => a - b);
   // For extension past configured end on same-day schedules, compare ends that are
   // later than configured end (including post-midnight as late)
-  const configuredOvernight = configuredEndMin < configuredStartMin;
   if (configuredOvernight) {
     // Overnight configured: do not auto-extend further without separate logic
     base.reason = "This time is within your configured work hours.";

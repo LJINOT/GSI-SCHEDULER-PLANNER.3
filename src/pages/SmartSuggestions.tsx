@@ -268,8 +268,33 @@ export default function SmartSuggestions() {
         setPrevPayload(payload);
       }
 
-      const { data, error } = await supabase.functions.invoke("smart-picks", { body: {} });
-      if (error) throw error;
+      const { data, error } = await supabase.functions.invoke("smart-picks", {
+        body: {},
+      });
+
+      // Prefer structured body error when the function responded with non-2xx
+      if (error) {
+        let detail = error.message || "Failed to get suggestions";
+        try {
+          const ctx = (error as any)?.context;
+          if (ctx && typeof ctx.json === "function") {
+            const body = await ctx.json();
+            if (body?.error) detail = String(body.error);
+          }
+        } catch {
+          /* keep detail */
+        }
+        if (/failed to send a request/i.test(detail)) {
+          detail =
+            "Could not reach the smart-picks Edge Function. Deploy it with: supabase functions deploy smart-picks";
+        }
+        throw new Error(detail);
+      }
+
+      if (data?.error) {
+        throw new Error(String(data.error));
+      }
+
       const rawPicks = (data?.picks || []) as Suggestion[];
       const next: Payload = { ...(data || {}), picks: trustServerPicks(rawPicks) };
       setPayload(next);
@@ -277,7 +302,7 @@ export default function SmartSuggestions() {
       if (next.timestamp) setLastAnalyzedAt(next.timestamp);
       toast.success("Recommendations updated from your activity patterns.");
     } catch (err: any) {
-      toast.error(err.message || "Failed to get suggestions");
+      toast.error(err?.message || "Failed to get suggestions");
     }
     setLoading(false);
   };

@@ -1213,6 +1213,14 @@ async function persistSchedule(
     peak_end?: string;
     break_style?: string;
     algorithm?: string;
+    overnight?: boolean;
+    duration_minutes?: number;
+    task_summary?: unknown;
+    deferred?: unknown;
+    scheduled_count?: number;
+    deferred_count?: number;
+    partial_count?: number;
+    note?: string;
   },
 ) {
   /*
@@ -1357,6 +1365,14 @@ async function persistSchedule(
               peak_end: meta?.peak_end || null,
               break_style: meta?.break_style || null,
               algorithm: meta?.algorithm || null,
+              overnight: meta?.overnight ?? null,
+              duration_minutes: meta?.duration_minutes ?? null,
+              task_summary: meta?.task_summary ?? null,
+              deferred: meta?.deferred ?? null,
+              scheduled_count: meta?.scheduled_count ?? null,
+              deferred_count: meta?.deferred_count ?? null,
+              partial_count: meta?.partial_count ?? null,
+              note: meta?.note ?? null,
               updated_at: new Date().toISOString(),
             },
           },
@@ -1398,6 +1414,14 @@ async function persistSchedule(
               peak_end: meta?.peak_end || null,
               break_style: meta?.break_style || null,
               algorithm: meta?.algorithm || null,
+              overnight: meta?.overnight ?? null,
+              duration_minutes: meta?.duration_minutes ?? null,
+              task_summary: meta?.task_summary ?? null,
+              deferred: meta?.deferred ?? null,
+              scheduled_count: meta?.scheduled_count ?? null,
+              deferred_count: meta?.deferred_count ?? null,
+              partial_count: meta?.partial_count ?? null,
+              note: meta?.note ?? null,
               updated_at: new Date().toISOString(),
             },
           },
@@ -2629,6 +2653,44 @@ serve(async (req) => {
        SAVE
        ===================================================== */
 
+    const deferredPayload = deferred.map((task) => ({
+      task_id: task.id,
+      title: task.title,
+      duration: Math.max(0, durationOf(task) - (scheduledMinutes.get(task.id) || 0)),
+      priority: task.priority_score ?? null,
+      priority_label: priorityLabel(task),
+      due_date: task.due_date || null,
+      overdue: isOverdue(task),
+      scheduled_minutes: scheduledMinutes.get(task.id) || 0,
+      status: partial.some((t) => t.id === task.id)
+        ? "partially_scheduled"
+        : "deferred",
+    }));
+
+    const taskSummaryPayload = ordered.map((task) => {
+      const scheduled = scheduledMinutes.get(task.id) || 0;
+      return {
+        task_id: task.id,
+        title: task.title,
+        duration: durationOf(task),
+        scheduled_minutes: scheduled,
+        remaining_minutes: Math.max(0, durationOf(task) - scheduled),
+        priority: task.priority_score ?? null,
+        priority_label: priorityLabel(task),
+        due_date: task.due_date || null,
+        overdue: isOverdue(task),
+        status: scheduled >= durationOf(task)
+          ? "scheduled"
+          : scheduled > 0
+            ? "partially_scheduled"
+            : "deferred",
+      };
+    });
+
+    const scheduleNote = workWindow.overnight
+      ? `Schedule generated for overnight window ${workStart}–${workEnd} (${workWindow.effectiveEnd - workWindow.effectiveStart} available minutes).`
+      : `Schedule generated for ${workStart}–${workEnd} (${workWindow.effectiveEnd - workWindow.effectiveStart} available minutes).`;
+
     if (doPersist) await persistSchedule(
       supabase,
       user.id,
@@ -2643,6 +2705,14 @@ serve(async (req) => {
         peak_end: peakEnd,
         break_style: breakStyle,
         algorithm: "priority-aware csp + pso",
+        overnight: workWindow.overnight,
+        duration_minutes: workWindow.effectiveEnd - workWindow.effectiveStart,
+        task_summary: taskSummaryPayload,
+        deferred: deferredPayload,
+        scheduled_count: scheduledIds.size,
+        deferred_count: deferred.length,
+        partial_count: partial.length,
+        note: scheduleNote,
       },
     );
 
@@ -2655,52 +2725,9 @@ serve(async (req) => {
         blocks:
           validatedBlocks,
 
-        deferred:
-          deferred.map(
-            (task) => ({
-              task_id:
-                task.id,
-              title:
-                task.title,
-              duration:
-                Math.max(0, durationOf(task) - (scheduledMinutes.get(task.id) || 0)),
-              priority:
-                task.priority_score ??
-                null,
-              priority_label:
-                priorityLabel(task),
-              due_date:
-                task.due_date || null,
-              overdue:
-                isOverdue(task),
-              scheduled_minutes:
-                scheduledMinutes.get(task.id) || 0,
-              status:
-                partial.some((t) => t.id === task.id)
-                  ? "partially_scheduled"
-                  : "deferred",
-            })
-          ),
+        deferred: deferredPayload,
 
-        task_summary: ordered.map((task) => {
-          const scheduled = scheduledMinutes.get(task.id) || 0;
-          return {
-            task_id: task.id,
-            title: task.title,
-            duration: durationOf(task),
-            scheduled_minutes: scheduled,
-            remaining_minutes: Math.max(0, durationOf(task) - scheduled),
-            priority: task.priority_score ?? null,
-            priority_label: priorityLabel(task),
-            due_date: task.due_date || null,
-            overdue: isOverdue(task),
-            status: scheduled >= durationOf(task)
-              ? "scheduled"
-              : scheduled > 0
-                ? "partially_scheduled"
-                : "deferred",
-          };
-        }),
+        task_summary: taskSummaryPayload,
 
         pso: {
           fitness:
@@ -2726,9 +2753,7 @@ serve(async (req) => {
           schedule_date: scheduleDate,
         },
 
-        note: workWindow.overnight
-          ? `Schedule generated for overnight window ${workStart}–${workEnd} (${workWindow.effectiveEnd - workWindow.effectiveStart} available minutes).`
-          : `Schedule generated for ${workStart}–${workEnd} (${workWindow.effectiveEnd - workWindow.effectiveStart} available minutes).`,
+        note: scheduleNote,
 
         scheduled_count:
           scheduledIds.size,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, Fragment } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, Fragment } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,12 @@ type Suggestion = {
   priority: string;
   score?: number;
   suggested_time?: string;
+  recommended_start?: string | null;
+  recommended_end?: string | null;
+  duration?: number | null;
+  available?: boolean;
+  in_progress?: boolean;
+  stale?: boolean;
   breakdown?: Breakdown;
   estimated_duration?: number | null;
 };
@@ -39,6 +45,14 @@ type Payload = {
   break_style?: string;
   algorithm?: string;
   timestamp?: string;
+  earliest_start?: string;
+  generated_at_local?: string;
+  schedule_step_minutes?: number;
+  work_window?: {
+    start?: string;
+    end?: string;
+    overnight?: boolean;
+  };
 };
 
 type TimeEntry = {
@@ -63,19 +77,96 @@ function to12hRange(suggested?: string): string {
 }
 
 
+const SCHEDULE_STEP = 5;
+
+/** Parse "HH:MM" or "h:mm AM/PM" into minutes-from-midnight. */
+function parseClockToMinutes(s: string | null | undefined): number | null {
+  if (!s) return null;
+  const raw = String(s).trim();
+  const m24 = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (m24) {
+    const h = parseInt(m24[1], 10);
+    const min = parseInt(m24[2], 10);
+    if (h >= 0 && h < 24 && min >= 0 && min < 60) return h * 60 + min;
+  }
+  const m12 = raw.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (m12) {
+    let h = parseInt(m12[1], 10);
+    const min = parseInt(m12[2], 10);
+    const ap = m12[3].toUpperCase();
+    if (ap === "PM" && h < 12) h += 12;
+    if (ap === "AM" && h === 12) h = 0;
+    return h * 60 + min;
+  }
+  return null;
+}
+
+function localMinOfDay(): number {
+  const n = new Date();
+  return n.getHours() * 60 + n.getMinutes();
+}
+
 /**
- * Edge Function is the authoritative source of recommended slots.
- * Do NOT re-allocate with different work hours/breaks — that was converting
- * valid server slots into false "No available time slot" results.
- * Pass picks through unchanged; only normalize missing labels.
+ * Mark slots whose start is already in the past as stale.
+ * Does not invent new times — only validates server candidates.
  */
-function trustServerPicks(picks: Suggestion[]): Suggestion[] {
+function validatePicksAgainstNow(picks: Suggestion[], nowMin: number): {
+  picks: Suggestion[];
+  staleCount: number;
+  hasFuture: boolean;
+} {
+  let staleCount = 0;
+  let hasFuture = false;
+  const next = picks.map((p) => {
+    const start =
+      parseClockToMinutes(p.recommended_start || null) ??
+      (() => {
+        const part = (p.suggested_time || "").split(/[–-]/)[0]?.trim();
+        return parseClockToMinutes(part || null);
+      })();
+
+    const unavailableText =
+      !p.suggested_time ||
+      /no (available|free|valid)|work day ended|could not|no slot/i.test(
+        p.suggested_time,
+      );
+
+    if (unavailableText || p.available === false) {
+      return { ...p, available: false, stale: false };
+    }
+
+    if (start == null) {
+      return p;
+    }
+
+    // Past start (same calendar day heuristic): start < now and not a late overnight wrap
+    const isPast = start < nowMin && !(start < 6 * 60 && nowMin > 18 * 60);
+    if (isPast || p.in_progress) {
+      staleCount += 1;
+      return {
+        ...p,
+        stale: true,
+        available: false,
+        suggested_time: p.in_progress
+          ? `${p.suggested_time} (in progress)`
+          : `Outdated — was ${p.suggested_time}. Refresh for a current slot.`,
+      };
+    }
+
+    hasFuture = true;
+    return { ...p, stale: false, available: p.available !== false };
+  });
+  return { picks: next, staleCount, hasFuture };
+}
+
+function normalizeServerPicks(picks: Suggestion[]): Suggestion[] {
   return picks.map((p) => {
     const t = (p.suggested_time || "").trim();
     if (!t) {
       return {
         ...p,
         suggested_time: "No slot assigned — refresh recommendations.",
+        available: false,
       };
     }
     return p;
@@ -107,9 +198,16 @@ export default function SmartSuggestions() {
   const [tasks, setTasks] = useState<TaskLite[]>([]);
   const [lastAnalyzedAt, setLastAnalyzedAt] = useState<string | null>(null);
   const [loadingPatterns, setLoadingPatterns] = useState(true);
+  const [nowMin, setNowMin] = useState(() => localMinOfDay());
+  const requestLock = useRef(false);
   const { devMode } = useDevMode();
 
-  const suggestions = payload?.picks || [];
+  const validated = useMemo(() => {
+    const picks = payload?.picks || [];
+    return validatePicksAgainstNow(picks, nowMin);
+  }, [payload?.picks, nowMin]);
+
+  const suggestions = validated.picks;
   const w = payload?.weights;
 
   useEffect(() => {
@@ -260,19 +358,23 @@ export default function SmartSuggestions() {
     return changes;
   }, [payload, prevPayload, workPattern.peakHourLabel]);
 
-  const getSuggestions = async () => {
-    setLoading(true);
+  const getSuggestions = useCallback(async (opts?: { silent?: boolean }) => {
+    if (requestLock.current) return;
+    requestLock.current = true;
+    if (!opts?.silent) setLoading(true);
     try {
-      if (payload) {
+      if (payload && !opts?.silent) {
         saveCache(PREV_CACHE_KEY, payload);
         setPrevPayload(payload);
       }
 
       const { data, error } = await supabase.functions.invoke("smart-picks", {
-        body: {},
+        body: {
+          // Hint only — server uses its own timezone-aware clock as source of truth
+          client_local_min: localMinOfDay(),
+        },
       });
 
-      // Prefer structured body error when the function responded with non-2xx
       if (error) {
         let detail = error.message || "Failed to get suggestions";
         try {
@@ -296,21 +398,73 @@ export default function SmartSuggestions() {
       }
 
       const rawPicks = (data?.picks || []) as Suggestion[];
-      const next: Payload = { ...(data || {}), picks: trustServerPicks(rawPicks) };
+      const now = localMinOfDay();
+      setNowMin(now);
+      const normalized = normalizeServerPicks(rawPicks);
+      const { picks: checked } = validatePicksAgainstNow(normalized, now);
+      const next: Payload = { ...(data || {}), picks: checked };
       setPayload(next);
       saveCache(CACHE_KEY, next);
       if (next.timestamp) setLastAnalyzedAt(next.timestamp);
-      toast.success("Recommendations updated from your activity patterns.");
+      if (!opts?.silent) {
+        toast.success("Recommendations updated from your activity patterns.");
+      }
     } catch (err: any) {
-      toast.error(err?.message || "Failed to get suggestions");
+      // On failure, re-validate existing picks so past slots are not shown as available
+      setNowMin(localMinOfDay());
+      if (!opts?.silent) {
+        toast.error(err?.message || "Failed to get suggestions");
+      }
+    } finally {
+      setLoading(false);
+      requestLock.current = false;
     }
-    setLoading(false);
-  };
+  }, [payload]);
 
+  // Initial load
   useEffect(() => {
-    if (!payload?.picks?.length) void getSuggestions();
+    if (!payload?.picks?.length) void getSuggestions({ silent: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Tick local clock every minute; invalidate past slots without always hitting the server
+  useEffect(() => {
+    const tick = () => {
+      const n = localMinOfDay();
+      setNowMin((prev) => (prev !== n ? n : prev));
+    };
+    const id = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // When many recommendations are stale, refresh from server (throttled)
+  useEffect(() => {
+    if (!payload?.picks?.length) return;
+    if (validated.staleCount === 0) return;
+    const availableFuture = validated.picks.filter(
+      (p) => p.available !== false && !p.stale,
+    ).length;
+    // Refresh if everything with a slot is stale, or majority are stale
+    if (availableFuture === 0 || validated.staleCount >= Math.ceil(validated.picks.length / 2)) {
+      void getSuggestions({ silent: true });
+    }
+  }, [validated.staleCount, validated.picks, payload?.picks?.length, getSuggestions]);
+
+  // Refresh when tab becomes visible again
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        setNowMin(localMinOfDay());
+        void getSuggestions({ silent: true });
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onVis);
+    };
+  }, [getSuggestions]);
 
 
   const lastAnalyzedLabel = useMemo(() => {
@@ -359,10 +513,10 @@ export default function SmartSuggestions() {
         <div>
           <h1 className="font-display text-3xl font-bold">Smart Suggestions</h1>
           <p className="text-muted-foreground mt-1">
-            Recommend the best time for a task based on your behavior patterns. Does not create or change your schedule.
+            Recommend the best upcoming time for a task based on your behavior patterns. Starts from the current time and stays up to date while this page is open. Does not create or change your schedule.
           </p>
         </div>
-        <Button onClick={getSuggestions} disabled={loading}>
+        <Button onClick={() => void getSuggestions()} disabled={loading}>
           {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Lightbulb className="mr-2 h-4 w-4" />}
           Refresh Recommendations
         </Button>
@@ -456,6 +610,11 @@ export default function SmartSuggestions() {
                         </TableCell>
                         <TableCell className="py-2.5 font-mono text-xs whitespace-nowrap">
                           {to12hRange(s.suggested_time)}
+                          {s.stale && (
+                            <Badge variant="outline" className="ml-2 text-[10px] text-muted-foreground">
+                              Outdated
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell className="py-2.5 text-xs text-muted-foreground">
                           {dur ? `${dur} min` : "—"}

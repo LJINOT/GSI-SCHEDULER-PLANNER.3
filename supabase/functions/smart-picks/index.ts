@@ -47,6 +47,14 @@ function toHHMM(min: number): string {
   const m = min % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
+
+/** Round clock minutes forward to the next scheduling boundary (default 5 min). */
+function ceilToIncrement(minOfDay: number, step = 5): number {
+  const m = ((Math.floor(minOfDay) % (24 * 60)) + 24 * 60) % (24 * 60);
+  const rem = m % step;
+  if (rem === 0) return m;
+  return (m + (step - rem)) % (24 * 60);
+}
 function to12h(hhmm: string): string {
   const [h, m] = hhmm.split(":").map(Number);
   const period = h >= 12 ? "PM" : "AM";
@@ -568,6 +576,14 @@ serve(async (req) => {
     const configuredEnd = parseHHMM(profile?.work_end || "17:00");
     const { hour: localHour, minOfDay: localMin, todayStr } = localNow(userTz);
 
+    // Earliest recommendable start = now, rounded forward to 5-minute boundary.
+    const SCHEDULE_STEP = 5;
+    let earliestStart = ceilToIncrement(localMin, SCHEDULE_STEP);
+    if (earliestStart < localMin) {
+      // rare wrap edge: stay at localMin (findNextAvailableSlot handles window)
+      earliestStart = localMin;
+    }
+
     // Behavior-aware effective window (configured default + optional extension)
     let effective: EffectiveWorkWindow;
     try {
@@ -649,20 +665,23 @@ serve(async (req) => {
         // User planned duration (same field as scheduling) — do not invent a different length
         const duration = Math.max(5, Math.min(480, Number(t.estimated_duration) || 30));
 
-        // Prefer "now" when inside the work window; otherwise window start (handles overnight)
-        let preferredStart = localMin;
+        // Prefer "now" (rounded) when inside the work window; never before current time.
+        let preferredStart = earliestStart;
         if (workWindow) {
           preferredStart =
-            clockToShift(localMin, workWindow) >= 0 ? localMin : workStartMin;
-          // Soft peak preference only when peak falls inside the work window
+            clockToShift(earliestStart, workWindow) >= 0
+              ? earliestStart
+              : workStartMin;
+          // Soft peak preference only when peak is still in the future and inside the window
           const diff = (t.difficulty || "medium").toLowerCase();
           if (diff === "hard" && clockToShift(peakStartMin, workWindow) >= 0) {
-            preferredStart = Math.max(preferredStart, peakStartMin);
+            preferredStart = Math.max(preferredStart, peakStartMin, earliestStart);
           } else if (diff === "easy" && clockToShift(peakEndMin, workWindow) >= 0) {
-            preferredStart = Math.max(preferredStart, peakEndMin);
+            preferredStart = Math.max(preferredStart, peakEndMin, earliestStart);
           }
+          preferredStart = Math.max(preferredStart, earliestStart);
         } else {
-          preferredStart = Math.max(localMin, workStartMin);
+          preferredStart = Math.max(earliestStart, workStartMin);
         }
 
         const reasons: string[] = [];
@@ -694,10 +713,14 @@ serve(async (req) => {
     for (const item of scored) {
       const already = occupied.find((o) => o.taskId === item.id);
       if (already) {
+        const stillUpcoming = already.end > localMin || (already.end < already.start); // overnight end
+        const started = already.start <= localMin && already.end > localMin;
         picks.push({
           id: item.id,
           title: item.title,
-          reason: item.reason + "; already scheduled today",
+          reason: item.reason + (started
+            ? "; scheduled block is in progress"
+            : "; already scheduled today"),
           priority: item.priority,
           score: item.score,
           suggested_time: `${to12h(toHHMM(already.start))} – ${to12h(toHHMM(already.end))}`,
@@ -705,7 +728,8 @@ serve(async (req) => {
           recommended_end: toHHMM(already.end),
           duration: item.duration,
           breakdown: item.breakdown,
-          available: true,
+          available: stillUpcoming && !started,
+          in_progress: started,
         });
         continue;
       }
@@ -838,6 +862,9 @@ serve(async (req) => {
         algorithm: "ahp-immediate-tasks + sequential-non-overlapping-slots",
         timestamp: recommendationTimestamp,
         timezone: userTz,
+        generated_at_local: toHHMM(localMin),
+        earliest_start: toHHMM(earliestStart),
+        schedule_step_minutes: 5,
         work_window: {
           start: toHHMM(workStartMin),
           end: toHHMM(workEndMin),

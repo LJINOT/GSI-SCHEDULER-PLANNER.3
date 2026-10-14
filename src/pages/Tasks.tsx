@@ -17,7 +17,7 @@ import { PlusCircle, Search, Archive, Pencil, ChevronDown, ChevronUp, FolderKanb
 import { useSearchParams, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { formatPH } from "@/lib/date-utils";
+import { formatPH, formatTaskSchedule } from "@/lib/date-utils";
 import { STATUS_OPTIONS, statusLabel, priorityFromScore, PRIORITY_STYLES } from "@/lib/status";
 import AddTask from "@/pages/AddTask";
 
@@ -425,12 +425,7 @@ export default function Tasks() {
 
   const renderTask = (task: Task) => {
     const highlighted = searchParams.get("task") === task.id;
-    const startLabel = task.start_time
-      ? formatPH(task.start_time, "MMM d · h:mm a")
-      : null;
-    const dueLabel = task.due_date
-      ? formatPH(task.due_date, "MMM d · h:mm a")
-      : null;
+    const schedule = formatTaskSchedule(task.start_time, task.due_date);
     return (
     <Card
       key={task.id}
@@ -512,29 +507,41 @@ export default function Tasks() {
           </div>
         </div>
 
-        {/* Row 2: dates + badges — single compact line, no mid-word wrapping */}
+        {/* Row 2: dates + badges — Start and Due always shown consistently */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-0 sm:pl-[7.5rem]">
-          {(startLabel || dueLabel) && (
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] sm:text-xs text-muted-foreground">
-              {startLabel && (
-                <span className="whitespace-nowrap tabular-nums">
-                  <span className="text-muted-foreground/80">Start</span>{" "}
-                  {startLabel}
-                </span>
-              )}
-              {startLabel && dueLabel && (
-                <span className="text-border hidden sm:inline" aria-hidden>
-                  ·
-                </span>
-              )}
-              {dueLabel && (
-                <span className="whitespace-nowrap tabular-nums">
-                  <span className="text-muted-foreground/80">Due</span>{" "}
-                  {dueLabel}
-                </span>
-              )}
-            </div>
-          )}
+          <div
+            className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] sm:text-xs ${
+              schedule.empty ? "text-muted-foreground/70 italic" : "text-muted-foreground"
+            }`}
+            title={schedule.line}
+          >
+            {schedule.start && (
+              <span className="whitespace-nowrap tabular-nums">
+                <span className="text-muted-foreground/80 not-italic">Start</span>{" "}
+                {schedule.start}
+              </span>
+            )}
+            {!schedule.start && !schedule.empty && (
+              <span className="whitespace-nowrap">No start date set</span>
+            )}
+            {!schedule.empty && (
+              <span className="text-border hidden sm:inline" aria-hidden>
+                ·
+              </span>
+            )}
+            {schedule.due && (
+              <span className="whitespace-nowrap tabular-nums">
+                <span className="text-muted-foreground/80 not-italic">Due</span>{" "}
+                {schedule.due}
+              </span>
+            )}
+            {!schedule.due && !schedule.empty && (
+              <span className="whitespace-nowrap">No due date set</span>
+            )}
+            {schedule.empty && (
+              <span className="whitespace-nowrap">No start or due date set</span>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-1.5 min-w-0">
             {task.category && (
               <Badge
@@ -676,11 +683,9 @@ export default function Tasks() {
                             </p>
                           )}
                           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[11px] text-muted-foreground">
-                            {task.due_date && (
-                              <span>
-                                Deadline: {formatPH(task.due_date, "MMM d, yyyy h:mm a")}
-                              </span>
-                            )}
+                            <span className="min-w-0">
+                              {formatTaskSchedule(task.start_time, task.due_date).line}
+                            </span>
                             {task.archived_at && (
                               <span>
                                 Archived: {formatPH(task.archived_at, "MMM d, yyyy h:mm a")}

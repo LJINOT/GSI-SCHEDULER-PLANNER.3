@@ -41,9 +41,32 @@ type Project = {
   id: string;
   name: string;
   color: string;
+  description?: string | null;
 };
 
 type ValidationStatus = "VALID" | "REVIEW" | "INVALID" | null;
+
+type RelationshipStatus = "consistent" | "mismatch" | "uncertain";
+
+type RelationshipResult = {
+  status: RelationshipStatus;
+  score: number;
+  explanation: string;
+};
+
+type FieldSuggestion = {
+  field: "title" | "description" | "category";
+  current: string;
+  suggested: string;
+  reason: string;
+};
+
+type ProjectMatchResult = {
+  project_id: string;
+  project_name: string;
+  relevance: number;
+  reason: string;
+};
 
 type AiValidation = {
   validation: ValidationStatus;
@@ -58,6 +81,18 @@ type AiValidation = {
   contradiction?: boolean;
   repetition?: boolean;
   category_warning?: string | null;
+  relationships?: {
+    title_description: RelationshipResult;
+    title_category: RelationshipResult;
+    description_category: RelationshipResult;
+  };
+  field_suggestion?: FieldSuggestion | null;
+  project_match?: ProjectMatchResult | null;
+  project_message?: string;
+  selected_project_consistent?: boolean | null;
+  ai_degraded?: boolean;
+  embedding_degraded?: boolean;
+  uncertain?: boolean;
   validation_detail?: {
     status?: string;
     score?: number;
@@ -76,6 +111,8 @@ type AiValidation = {
   suggestions: {
     difficulty?: string;
     category?: string;
+    title?: string;
+    description?: string;
   } | null;
 };
 
@@ -131,6 +168,9 @@ export default function AddTask({
   const [appliedSuggestions, setAppliedSuggestions] = useState<{
     difficulty?: boolean;
     category?: boolean;
+    title?: boolean;
+    description?: boolean;
+    project?: boolean;
   }>({});
 
   const [errors, setErrors] = useState<{
@@ -155,8 +195,9 @@ export default function AddTask({
       if (!user || cancelled) return;
       const { data, error } = await supabase
         .from("projects")
-        .select("id, name, color")
+        .select("id, name, color, description")
         .eq("user_id", user.id)
+        .eq("archived", false)
         .order("created_at", { ascending: false });
       if (error) {
         console.error("AddTask: failed to load projects:", error);
@@ -177,6 +218,13 @@ export default function AddTask({
     } else {
       setShowNewProject(false);
       setProjectId(val);
+    }
+    // Project assignment is part of validation context
+    if (aiValidation) {
+      setAiValidation(null);
+      setDescriptionValidated(false);
+      setForceContinue(false);
+      setAppliedSuggestions({});
     }
   };
 
@@ -298,6 +346,13 @@ export default function AddTask({
           category: category || undefined,
           // Duration is user-defined only — never sent for AI estimation.
           difficulty: difficulty || undefined,
+          project_id: projectId || "none",
+          task_type: projectId && projectId !== "none" ? "project" : "standalone",
+          projects: projects.map((p) => ({
+            id: p.id,
+            name: p.name,
+            description: p.description ?? null,
+          })),
         },
       });
 
@@ -336,6 +391,21 @@ export default function AddTask({
           ? (payload.validation_detail as AiValidation["validation_detail"])
           : undefined;
 
+      const relationships =
+        payload.relationships && typeof payload.relationships === "object"
+          ? (payload.relationships as AiValidation["relationships"])
+          : undefined;
+
+      const fieldSuggestion =
+        payload.field_suggestion && typeof payload.field_suggestion === "object"
+          ? (payload.field_suggestion as FieldSuggestion)
+          : null;
+
+      const projectMatch =
+        payload.project_match && typeof payload.project_match === "object"
+          ? (payload.project_match as ProjectMatchResult)
+          : null;
+
       const result: AiValidation = {
         validation,
         related: Boolean(payload.related),
@@ -362,6 +432,20 @@ export default function AddTask({
           typeof payload.category_warning === "string"
             ? payload.category_warning
             : null,
+        relationships,
+        field_suggestion: fieldSuggestion,
+        project_match: projectMatch,
+        project_message:
+          typeof payload.project_message === "string"
+            ? payload.project_message
+            : undefined,
+        selected_project_consistent:
+          typeof payload.selected_project_consistent === "boolean"
+            ? payload.selected_project_consistent
+            : null,
+        ai_degraded: Boolean(payload.ai_degraded),
+        embedding_degraded: Boolean(payload.embedding_degraded),
+        uncertain: Boolean(payload.uncertain),
         validation_detail: detail,
         suggestions:
           payload.suggestions && typeof payload.suggestions === "object"
@@ -390,19 +474,47 @@ export default function AddTask({
     }
   };
 
-  const applySuggestion = (field: "difficulty" | "category") => {
-    if (!aiValidation?.suggestions) return;
-    if (field === "difficulty" && aiValidation.suggestions.difficulty) {
+  const applySuggestion = (
+    field: "difficulty" | "category" | "title" | "description" | "project",
+  ) => {
+    if (field === "difficulty" && aiValidation?.suggestions?.difficulty) {
       setDifficulty(aiValidation.suggestions.difficulty);
       setErrors((p) => ({ ...p, difficulty: undefined }));
       setAppliedSuggestions((p) => ({ ...p, difficulty: true }));
+      return;
     }
-    if (field === "category" && aiValidation.suggestions.category) {
-      setCategory(aiValidation.suggestions.category);
-      setErrors((p) => ({ ...p, category: undefined }));
-      // Category is part of description validation — must re-validate.
+    if (field === "category") {
+      const cat =
+        aiValidation?.field_suggestion?.field === "category"
+          ? aiValidation.field_suggestion.suggested
+          : aiValidation?.suggestions?.category;
+      if (cat) {
+        setCategory(cat);
+        setErrors((p) => ({ ...p, category: undefined }));
+        clearValidationOnEdit();
+        setAppliedSuggestions((p) => ({ ...p, category: true }));
+      }
+      return;
+    }
+    if (field === "title" && aiValidation?.field_suggestion?.field === "title") {
+      setTitle(aiValidation.field_suggestion.suggested);
+      setErrors((p) => ({ ...p, title: undefined }));
       clearValidationOnEdit();
-      setAppliedSuggestions((p) => ({ ...p, category: true }));
+      return;
+    }
+    if (
+      field === "description" &&
+      aiValidation?.field_suggestion?.field === "description"
+    ) {
+      setDescription(aiValidation.field_suggestion.suggested);
+      setErrors((p) => ({ ...p, description: undefined }));
+      clearValidationOnEdit();
+      return;
+    }
+    if (field === "project" && aiValidation?.project_match) {
+      setProjectId(aiValidation.project_match.project_id);
+      setShowNewProject(false);
+      clearValidationOnEdit();
     }
   };
 
@@ -1066,9 +1178,7 @@ export default function AddTask({
                 : descriptionValidated
                   ? "Description Validated"
                   : "Validate Description"}
-            </Button>
-
-            {/* Validation result */}
+            </Button>            {/* Validation result — three-way consistency report */}
             {aiValidation && (
               <Card
                 className={
@@ -1093,18 +1203,18 @@ export default function AddTask({
                     <div className="space-y-1">
                       <p className="text-sm font-semibold">
                         {aiValidation.validation === "VALID" &&
-                          "Description matches the task."}
+                          "VALID — Title, description, and category are consistent."}
                         {aiValidation.validation === "REVIEW" &&
-                          "Please review your description. It may not fully match the task title."}
+                          "REVIEW — Please review the title, description, and category."}
                         {aiValidation.validation === "INVALID" &&
-                          "Description does not match the task title."}
+                          "INVALID — Fields conflict or description is missing."}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {aiValidation.reason}
                       </p>
-                      {aiValidation.category_warning && (
-                        <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-                          {aiValidation.category_warning}
+                      {aiValidation.ai_degraded && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Reduced analysis confidence (AI unavailable).
                         </p>
                       )}
                       {aiValidation.repetition && (
@@ -1118,34 +1228,137 @@ export default function AddTask({
                           The description conflicts with the task title.
                         </p>
                       )}
-                      {aiValidation.validation === "INVALID" && (
-                        <p className="text-xs text-destructive mt-1">
-                          Please describe the work involved in this task,
-                          then validate again.
-                        </p>
-                      )}
                     </div>
                   </div>
+
+                  {/* Field consistency relationships */}
+                  {aiValidation.relationships && (
+                    <div className="rounded-lg border overflow-hidden">
+                      <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
+                        Field consistency
+                      </div>
+                      {(
+                        [
+                          ["Title ↔ Description", aiValidation.relationships.title_description],
+                          ["Title ↔ Category", aiValidation.relationships.title_category],
+                          ["Description ↔ Category", aiValidation.relationships.description_category],
+                        ] as [string, { status: string; score: number; explanation: string }][]
+                      ).map(([label, rel]) => (
+                        <div
+                          key={label}
+                          className="flex items-start justify-between gap-2 px-3 py-2 border-b last:border-b-0 text-sm"
+                        >
+                          <div className="min-w-0">
+                            <p className="font-medium text-xs">{label}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {rel.explanation}
+                            </p>
+                          </div>
+                          <Badge
+                            variant="outline"
+                            className={
+                              rel.status === "consistent"
+                                ? "border-primary/40 text-primary shrink-0"
+                                : rel.status === "mismatch"
+                                  ? "border-destructive/40 text-destructive shrink-0"
+                                  : "border-amber-500/40 text-amber-700 dark:text-amber-400 shrink-0"
+                            }
+                          >
+                            {rel.status === "consistent"
+                              ? "Consistent"
+                              : rel.status === "mismatch"
+                                ? "Mismatch"
+                                : "Uncertain"}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Evidence-based field suggestion */}
+                  {aiValidation.field_suggestion && (
+                    <div className="rounded-lg border overflow-hidden">
+                      <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
+                        Suggested correction
+                      </div>
+                      <div className="px-3 py-2 space-y-2 text-sm">
+                        <p className="text-xs text-muted-foreground">
+                          {aiValidation.field_suggestion.reason}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs capitalize font-medium">
+                            {aiValidation.field_suggestion.field}:
+                          </span>
+                          <Badge variant="outline" className="line-through opacity-70 max-w-[40%] truncate">
+                            {aiValidation.field_suggestion.current}
+                          </Badge>
+                          <span className="text-xs">→</span>
+                          <Badge variant="secondary" className="max-w-[50%] truncate">
+                            {aiValidation.field_suggestion.suggested}
+                          </Badge>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() =>
+                              applySuggestion(
+                                aiValidation.field_suggestion!.field,
+                              )
+                            }
+                          >
+                            Use Suggestion
+                          </Button>
+                          <Button type="button" size="sm" variant="outline">
+                            Keep Current
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Project matching */}
+                  {(aiValidation.project_match || aiValidation.project_message) && (
+                    <div className="rounded-lg border overflow-hidden">
+                      <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
+                        Project matching
+                      </div>
+                      <div className="px-3 py-2 space-y-2 text-sm">
+                        <p className="text-xs text-muted-foreground">
+                          {aiValidation.project_message}
+                        </p>
+                        {aiValidation.project_match && (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="secondary">
+                              {aiValidation.project_match.project_name}
+                            </Badge>
+                            {projectId !== aiValidation.project_match.project_id && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={() => applySuggestion("project")}
+                              >
+                                Use This Project
+                              </Button>
+                            )}
+                            {projectId === aiValidation.project_match.project_id && (
+                              <Badge variant="outline">Currently selected</Badge>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {aiValidation.validation === "REVIEW" && !forceContinue && (
                     <div className="flex flex-wrap gap-2">
                       <Button
                         type="button"
                         size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          /* user edits description — validation clears on change */
-                        }}
-                      >
-                        Edit Description
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
                         onClick={() => {
                           setForceContinue(true);
                           toast.message(
-                            "You can create the task with the current description.",
+                            "You can create the task with the current values.",
                           );
                         }}
                       >
@@ -1157,6 +1370,35 @@ export default function AddTask({
                   {forceContinue && aiValidation.validation !== "VALID" && (
                     <Badge variant="outline">Continuing with review override</Badge>
                   )}
+
+                  {/* Optional difficulty suggestion — never auto-applied */}
+                  {aiValidation.suggestions?.difficulty && (
+                    <div className="rounded-lg border overflow-hidden mt-2">
+                      <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
+                        Optional difficulty suggestion (duration is always your input)
+                      </div>
+                      <div className="flex items-center justify-between px-3 py-2 text-sm">
+                        <span>
+                          Difficulty:{" "}
+                          <Badge variant="outline" className="capitalize">
+                            {aiValidation.suggestions.difficulty}
+                          </Badge>
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={appliedSuggestions.difficulty}
+                          onClick={() => applySuggestion("difficulty")}
+                        >
+                          {appliedSuggestions.difficulty ? "Used" : "Use"}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )
 
                   {/* Optional AI suggestions — never auto-applied */}
                   {aiValidation.suggestions && (

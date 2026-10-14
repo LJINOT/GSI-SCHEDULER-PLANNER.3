@@ -26,7 +26,7 @@ const MATRIX_THRESHOLDS = {
   mismatch_max: 0.42,
   correction_min: 0.62,
   max_alternatives_per_input: 2,
-  project_match_min: 0.68,
+  project_match_min: 0.55,
   project_match_margin: 0.08,
 };
 
@@ -1293,12 +1293,13 @@ ${userDifficulty || "(none)"}
       fingerprint,
     });
 
-    // Second consistency check: if primary correction would reintroduce contradiction, drop it
+    // --- Second-pass consistency check (deterministic + optional embeddings) ---
+    // Applies candidate to a temporary task copy, re-checks relatedness,
+    // category validity, and contradiction heuristics. Does not claim full
+    // semantic revalidation unless embedding re-score is available.
+    let secondPassMethod: "deterministic" | "hybrid" = "deterministic";
     if (decision.primary_correction) {
       const c = decision.primary_correction;
-      if (c.field === "title" && isSemanticallySame(c.value, description) === false) {
-        // light guard: empty or identical to current already filtered
-      }
       if (c.confidence < MATRIX_THRESHOLDS.correction_min) {
         decision.primary_correction = null;
         decision.overall = "needs_clarification";
@@ -1306,6 +1307,74 @@ ${userDifficulty || "(none)"}
         decision.clarification_message =
           "A possible correction was considered but confidence is too low. Please clarify the task fields.";
         decision.legacy_validation = "REVIEW";
+      } else {
+        let tmpTitle = title;
+        let tmpDesc = description;
+        let tmpCat = userCategory;
+        if (c.field === "title") tmpTitle = c.value;
+        if (c.field === "description") tmpDesc = c.value;
+        if (c.field === "category") tmpCat = c.value;
+
+        // Category validity
+        if (c.field === "category" && !isValidCategory(normalizeVACategory(tmpCat))) {
+          decision.primary_correction = null;
+          decision.overall = "needs_clarification";
+          decision.clarification_required = true;
+          decision.clarification_message =
+            "Candidate category is not a supported GSI category.";
+          decision.legacy_validation = "REVIEW";
+        } else if (c.field === "description" && tmpDesc.trim().length < 12) {
+          decision.primary_correction = null;
+          decision.overall = "needs_clarification";
+          decision.clarification_required = true;
+          decision.clarification_message =
+            "Candidate description is too short or incomplete.";
+          decision.legacy_validation = "REVIEW";
+        } else {
+          // Optional embedding re-score of candidate title vs description
+          let postSemantic: number | null = null;
+          if (GEMINI_API_KEY && !embeddingDegraded) {
+            try {
+              const [e1, e2] = await Promise.all([
+                embedText(GEMINI_API_KEY, tmpTitle),
+                embedText(GEMINI_API_KEY, tmpDesc),
+              ]);
+              if (e1 && e2) {
+                postSemantic = cosineSimilarity(e1, e2);
+                secondPassMethod = "hybrid";
+              }
+            } catch {
+              /* keep deterministic */
+            }
+          }
+          const postLex = basicTextRelatedness(tmpTitle, tmpDesc);
+          const postScore =
+            postSemantic != null
+              ? clamp01(0.45 * postLex + 0.55 * postSemantic)
+              : postLex;
+
+          // Candidate must not remain a clear contradiction with low relatedness
+          const stillBad =
+            postScore < 0.22 &&
+            (c.field === "title" || c.field === "description");
+          // Candidate should not be worse than original when original was already related
+          const originalScore = factors.semantic_similarity;
+          const worsens =
+            postScore + 0.08 < originalScore &&
+            originalScore >= 0.4 &&
+            (c.field === "title" || c.field === "description");
+
+          if (stillBad || worsens) {
+            decision.primary_correction = null;
+            decision.overall = "needs_clarification";
+            decision.clarification_required = true;
+            decision.clarification_message =
+              "A candidate correction failed the second consistency check and was discarded. Please clarify the intended task.";
+            decision.legacy_validation = "REVIEW";
+          } else {
+            c.second_check_passed = true;
+          }
+        }
       }
     }
 
@@ -1333,20 +1402,86 @@ ${userDifficulty || "(none)"}
     const related =
       status === "VALID" || (status === "REVIEW" && !factors.contradiction);
 
-    // Project match ONLY when consistent
+    // Project match ONLY when consistent — hybrid lexical + embeddings when available
     let projectMatch: {
       project_id: string;
       project_name: string;
       reason: string;
       relevance: number;
+      method?: string;
     } | null = null;
     if (decision.overall === "consistent" && userProjects.length > 0) {
-      projectMatch = selectProjectMatch(
-        title,
-        description,
-        userProjects,
-        rejectedProjectIds,
+      // Validate every project id against the authorized list (never trust model IDs)
+      const authorized = new Map(userProjects.map((p) => [p.id, p]));
+      const candidates = userProjects.filter(
+        (p) => authorized.has(p.id) && !rejectedProjectIds.includes(p.id),
       );
+
+      const embeddingScores: Record<string, number> = {};
+      if (GEMINI_API_KEY && !embeddingDegraded && candidates.length > 0) {
+        try {
+          const taskText = `${title}\n${description}`.slice(0, 4000);
+          const taskEmb = await embedText(GEMINI_API_KEY, taskText);
+          if (taskEmb) {
+            // Limit concurrent project embeds to control cost
+            const maxProjects = Math.min(candidates.length, 12);
+            for (let i = 0; i < maxProjects; i++) {
+              const p = candidates[i];
+              const pText = `${p.name}\n${p.description || ""}`.slice(0, 2000);
+              const pEmb = await embedText(GEMINI_API_KEY, pText);
+              if (pEmb) {
+                embeddingScores[p.id] = cosineSimilarity(taskEmb, pEmb);
+              }
+            }
+          }
+        } catch {
+          /* lexical fallback */
+        }
+      }
+
+      // Rank with hybrid scores if any embeddings present
+      const hasEmb = Object.keys(embeddingScores).length > 0;
+      const embW = hasEmb ? 0.55 : 0;
+      const lexW = 1 - embW;
+      const scored = candidates
+        .map((p) => {
+          const lexical = scoreProjectRelevance(
+            title,
+            description,
+            p.name,
+            p.description,
+          );
+          const semantic = embeddingScores[p.id] ?? 0;
+          const relevance = hasEmb
+            ? clamp01(lexW * lexical + embW * semantic)
+            : lexical;
+          return { ...p, relevance };
+        })
+        .sort((a, b) => b.relevance - a.relevance);
+
+      if (scored.length) {
+        const best = scored[0];
+        const second = scored[1];
+        if (
+          best.relevance >= MATRIX_THRESHOLDS.project_match_min &&
+          !(
+            second &&
+            best.relevance - second.relevance <
+              MATRIX_THRESHOLDS.project_match_margin
+          )
+        ) {
+          // Final ownership check
+          if (authorized.has(best.id)) {
+            projectMatch = {
+              project_id: best.id,
+              project_name: best.name,
+              reason: `Task intent aligns with project “${best.name}”.`,
+              relevance: Math.round(best.relevance * 1000) / 1000,
+              method: hasEmb ? "hybrid" : "lexical",
+            };
+          }
+        }
+      }
     }
 
     // Legacy suggestions object for difficulty/category (UI already supports)

@@ -477,11 +477,17 @@ export default function AddTask({
   const applySuggestion = (
     field: "difficulty" | "category" | "title" | "description" | "project",
   ) => {
+    // Apply the value, mark Used, and mark validation stale without
+    // immediately removing the cards so the user can see the Used state.
+    const markStale = () => {
+      setDescriptionValidated(false);
+      if (forceContinue) setForceContinue(false);
+    };
+
     if (field === "difficulty" && aiValidation?.suggestions?.difficulty) {
       setDifficulty(aiValidation.suggestions.difficulty);
       setErrors((p) => ({ ...p, difficulty: undefined }));
       setAppliedSuggestions((p) => ({ ...p, difficulty: true }));
-      // Difficulty does not affect semantic validation; keep result but mark used.
       return;
     }
     if (field === "category") {
@@ -493,10 +499,7 @@ export default function AddTask({
         setCategory(cat);
         setErrors((p) => ({ ...p, category: undefined }));
         setAppliedSuggestions((p) => ({ ...p, category: true }));
-        // Invalidate previous validation — fields changed.
-        if (aiValidation) setAiValidation(null);
-        if (forceContinue) setForceContinue(false);
-        setDescriptionValidated(false);
+        markStale();
       }
       return;
     }
@@ -504,9 +507,7 @@ export default function AddTask({
       setTitle(aiValidation.field_suggestion.suggested);
       setErrors((p) => ({ ...p, title: undefined }));
       setAppliedSuggestions((p) => ({ ...p, title: true }));
-      if (aiValidation) setAiValidation(null);
-      if (forceContinue) setForceContinue(false);
-      setDescriptionValidated(false);
+      markStale();
       return;
     }
     if (
@@ -516,19 +517,14 @@ export default function AddTask({
       setDescription(aiValidation.field_suggestion.suggested);
       setErrors((p) => ({ ...p, description: undefined }));
       setAppliedSuggestions((p) => ({ ...p, description: true }));
-      if (aiValidation) setAiValidation(null);
-      if (forceContinue) setForceContinue(false);
-      setDescriptionValidated(false);
+      markStale();
       return;
     }
     if (field === "project" && aiValidation?.project_match) {
       setProjectId(aiValidation.project_match.project_id);
       setShowNewProject(false);
       setAppliedSuggestions((p) => ({ ...p, project: true }));
-      // Project assignment changed; clear validation so user re-validates context.
-      if (aiValidation) setAiValidation(null);
-      if (forceContinue) setForceContinue(false);
-      setDescriptionValidated(false);
+      markStale();
     }
   };
 
@@ -1315,265 +1311,29 @@ export default function AddTask({
                     </div>
                   )}
 
-                  {/* Optional suggestion rows — shown directly under field consistency */}
-                  {(aiValidation.field_suggestion ||
-                    aiValidation.suggestions?.difficulty ||
-                    aiValidation.suggestions?.category ||
-                    aiValidation.project_match ||
+                  {/* Project / Stand-alone result (analysis only — no action button here) */}
+                  {(aiValidation.project_match ||
                     aiValidation.project_message) && (
                     <div className="rounded-lg border overflow-hidden">
-                      {/* Title suggestion */}
-                      {aiValidation.field_suggestion?.field === "title" && (
-                        <div className="px-3 py-2 border-b last:border-b-0 space-y-1.5 text-sm">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium capitalize">
-                              Title
-                            </span>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              disabled={!!appliedSuggestions.title}
-                              className={
-                                appliedSuggestions.title
-                                  ? "text-muted-foreground cursor-default"
-                                  : undefined
-                              }
-                              onClick={() => applySuggestion("title")}
-                            >
-                              {appliedSuggestions.title ? "Used" : "Use suggestion"}
-                            </Button>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                            <Badge
-                              variant="outline"
-                              className="line-through opacity-70 max-w-[45%] truncate"
-                            >
-                              {aiValidation.field_suggestion.current}
+                      <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
+                        Project / Stand-alone
+                      </div>
+                      <div className="px-3 py-2 space-y-1 text-sm">
+                        <p className="text-xs text-muted-foreground">
+                          {aiValidation.project_message ||
+                            (aiValidation.project_match
+                              ? aiValidation.project_match.reason
+                              : "No strong project match found. This task can remain stand-alone.")}
+                        </p>
+                        {aiValidation.project_match &&
+                          projectId ===
+                            aiValidation.project_match.project_id && (
+                            <Badge variant="outline" className="text-xs">
+                              Currently selected:{" "}
+                              {aiValidation.project_match.project_name}
                             </Badge>
-                            <span>→</span>
-                            <Badge
-                              variant="secondary"
-                              className="max-w-[50%] truncate"
-                            >
-                              {aiValidation.field_suggestion.suggested}
-                            </Badge>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            {aiValidation.field_suggestion.reason}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Description suggestion */}
-                      {aiValidation.field_suggestion?.field ===
-                        "description" && (
-                        <div className="px-3 py-2 border-b last:border-b-0 space-y-1.5 text-sm">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium capitalize">
-                              Description
-                            </span>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              disabled={!!appliedSuggestions.description}
-                              className={
-                                appliedSuggestions.description
-                                  ? "text-muted-foreground cursor-default"
-                                  : undefined
-                              }
-                              onClick={() => applySuggestion("description")}
-                            >
-                              {appliedSuggestions.description
-                                ? "Used"
-                                : "Use suggestion"}
-                            </Button>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                            <Badge
-                              variant="outline"
-                              className="line-through opacity-70 max-w-[45%] truncate"
-                            >
-                              {aiValidation.field_suggestion.current}
-                            </Badge>
-                            <span>→</span>
-                            <Badge
-                              variant="secondary"
-                              className="max-w-[50%] truncate"
-                            >
-                              {aiValidation.field_suggestion.suggested}
-                            </Badge>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            {aiValidation.field_suggestion.reason}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Category suggestion (from field_suggestion or legacy suggestions) */}
-                      {(aiValidation.field_suggestion?.field === "category" ||
-                        (!aiValidation.field_suggestion &&
-                          aiValidation.suggestions?.category)) && (
-                        <div className="px-3 py-2 border-b last:border-b-0 space-y-1.5 text-sm">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium">
-                              Category
-                            </span>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              disabled={!!appliedSuggestions.category}
-                              className={
-                                appliedSuggestions.category
-                                  ? "text-muted-foreground cursor-default"
-                                  : undefined
-                              }
-                              onClick={() => applySuggestion("category")}
-                            >
-                              {appliedSuggestions.category ? "Used" : "Use suggestion"}
-                            </Button>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                            <Badge
-                              variant="outline"
-                              className="line-through opacity-70 max-w-[45%] truncate"
-                            >
-                              {aiValidation.field_suggestion?.field ===
-                              "category"
-                                ? aiValidation.field_suggestion.current
-                                : category || "(none)"}
-                            </Badge>
-                            <span>→</span>
-                            <Badge
-                              variant="secondary"
-                              className="max-w-[50%] truncate"
-                            >
-                              {aiValidation.field_suggestion?.field ===
-                              "category"
-                                ? aiValidation.field_suggestion.suggested
-                                : aiValidation.suggestions?.category}
-                            </Badge>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            {aiValidation.field_suggestion?.field === "category"
-                              ? aiValidation.field_suggestion.reason
-                              : "Suggested category based on title and description."}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Difficulty suggestion */}
-                      {aiValidation.suggestions?.difficulty && (
-                        <div className="px-3 py-2 border-b last:border-b-0 space-y-1.5 text-sm">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium">
-                              Difficulty
-                            </span>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              disabled={!!appliedSuggestions.difficulty}
-                              className={
-                                appliedSuggestions.difficulty
-                                  ? "text-muted-foreground cursor-default"
-                                  : undefined
-                              }
-                              onClick={() => applySuggestion("difficulty")}
-                            >
-                              {appliedSuggestions.difficulty
-                                ? "Used"
-                                : "Use suggestion"}
-                            </Button>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                            <Badge
-                              variant="outline"
-                              className="line-through opacity-70 capitalize"
-                            >
-                              {difficulty || "(not set)"}
-                            </Badge>
-                            <span>→</span>
-                            <Badge
-                              variant="secondary"
-                              className="capitalize"
-                            >
-                              {aiValidation.suggestions.difficulty}
-                            </Badge>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            Optional difficulty suggestion. Duration is always
-                            your input and is never changed by AI.
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Project / task-type assessment */}
-                      {(aiValidation.project_match ||
-                        aiValidation.project_message) && (
-                        <div className="px-3 py-2 border-b last:border-b-0 space-y-1.5 text-sm">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium">
-                              Project / Stand-alone
-                            </span>
-                            {aiValidation.project_match &&
-                              projectId !==
-                                aiValidation.project_match.project_id && (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  disabled={!!appliedSuggestions.project}
-                                  className={
-                                    appliedSuggestions.project
-                                      ? "text-muted-foreground cursor-default"
-                                      : undefined
-                                  }
-                                  onClick={() => applySuggestion("project")}
-                                >
-                                  {appliedSuggestions.project
-                                    ? "Used"
-                                    : "Use this project"}
-                                </Button>
-                              )}
-                            {aiValidation.project_match &&
-                              projectId ===
-                                aiValidation.project_match.project_id && (
-                                <Badge variant="outline" className="text-xs">
-                                  Currently selected
-                                </Badge>
-                              )}
-                          </div>
-                          {aiValidation.project_match && (
-                            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                              <Badge
-                                variant="outline"
-                                className="opacity-70 max-w-[45%] truncate"
-                              >
-                                {projectId && projectId !== "none"
-                                  ? projects.find((p) => p.id === projectId)
-                                      ?.name || "Selected project"
-                                  : "Stand-alone"}
-                              </Badge>
-                              <span>→</span>
-                              <Badge
-                                variant="secondary"
-                                className="max-w-[50%] truncate"
-                              >
-                                {aiValidation.project_match.project_name}
-                              </Badge>
-                            </div>
                           )}
-                          <p className="text-xs text-muted-foreground">
-                            {aiValidation.project_message ||
-                              (aiValidation.project_match
-                                ? aiValidation.project_match.reason
-                                : "No strong project match found. This task can remain stand-alone.")}
-                          </p>
-                        </div>
-                      )}
+                      </div>
                     </div>
                   )}
 
@@ -1602,6 +1362,230 @@ export default function AddTask({
                 </CardContent>
               </Card>
             )}
+
+            {/* Suggestion cards — match screenshot layout, below full validation analysis */}
+            {aiValidation &&
+              (aiValidation.field_suggestion ||
+                aiValidation.suggestions?.difficulty ||
+                aiValidation.suggestions?.category ||
+                (aiValidation.project_match &&
+                  projectId !== aiValidation.project_match.project_id)) && (
+                <div className="space-y-3">
+                  {/* Title */}
+                  {aiValidation.field_suggestion?.field === "title" && (
+                    <div className="rounded-lg border bg-card p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium">Title</span>
+                        <Badge variant="secondary" className="text-xs font-normal">
+                          Suggestion
+                        </Badge>
+                      </div>
+                      <div className="space-y-1 text-sm">
+                        <p>
+                          <span className="text-muted-foreground">Current: </span>
+                          {aiValidation.field_suggestion.current}
+                        </p>
+                        <p>
+                          <span className="text-muted-foreground">
+                            Possible correction:{" "}
+                          </span>
+                          {aiValidation.field_suggestion.suggested}
+                        </p>
+                        <p className="text-xs text-muted-foreground pt-1">
+                          {aiValidation.field_suggestion.reason}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full"
+                        disabled={!!appliedSuggestions.title}
+                        onClick={() => applySuggestion("title")}
+                      >
+                        {appliedSuggestions.title ? "Used" : "Use suggestion"}
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Description */}
+                  {aiValidation.field_suggestion?.field === "description" && (
+                    <div className="rounded-lg border bg-card p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium">Description</span>
+                        <Badge variant="secondary" className="text-xs font-normal">
+                          Suggestion
+                        </Badge>
+                      </div>
+                      <div className="space-y-1 text-sm">
+                        <p>
+                          <span className="text-muted-foreground">Current: </span>
+                          {aiValidation.field_suggestion.current}
+                        </p>
+                        <p>
+                          <span className="text-muted-foreground">
+                            Possible correction:{" "}
+                          </span>
+                          {aiValidation.field_suggestion.suggested}
+                        </p>
+                        <p className="text-xs text-muted-foreground pt-1">
+                          {aiValidation.field_suggestion.reason}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full"
+                        disabled={!!appliedSuggestions.description}
+                        onClick={() => applySuggestion("description")}
+                      >
+                        {appliedSuggestions.description
+                          ? "Used"
+                          : "Use suggestion"}
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Category */}
+                  {(aiValidation.field_suggestion?.field === "category" ||
+                    (!aiValidation.field_suggestion &&
+                      aiValidation.suggestions?.category)) && (
+                    <div className="rounded-lg border bg-card p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium">Category</span>
+                        <Badge variant="secondary" className="text-xs font-normal">
+                          Suggestion
+                        </Badge>
+                      </div>
+                      <div className="space-y-1 text-sm">
+                        <p>
+                          <span className="text-muted-foreground">Current: </span>
+                          {aiValidation.field_suggestion?.field === "category"
+                            ? aiValidation.field_suggestion.current
+                            : category || "(none)"}
+                        </p>
+                        <p>
+                          <span className="text-muted-foreground">
+                            Possible correction:{" "}
+                          </span>
+                          {aiValidation.field_suggestion?.field === "category"
+                            ? aiValidation.field_suggestion.suggested
+                            : aiValidation.suggestions?.category}
+                        </p>
+                        <p className="text-xs text-muted-foreground pt-1">
+                          {aiValidation.field_suggestion?.field === "category"
+                            ? aiValidation.field_suggestion.reason
+                            : "Choose the category that matches the task the user actually intends to perform."}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full"
+                        disabled={!!appliedSuggestions.category}
+                        onClick={() => applySuggestion("category")}
+                      >
+                        {appliedSuggestions.category
+                          ? "Used"
+                          : "Use suggestion"}
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Difficulty */}
+                  {aiValidation.suggestions?.difficulty && (
+                    <div className="rounded-lg border bg-card p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium">Difficulty</span>
+                        <Badge variant="secondary" className="text-xs font-normal">
+                          Suggestion
+                        </Badge>
+                      </div>
+                      <div className="space-y-1 text-sm">
+                        <p>
+                          <span className="text-muted-foreground">Current: </span>
+                          <span className="capitalize">
+                            {difficulty || "(not set)"}
+                          </span>
+                        </p>
+                        <p>
+                          <span className="text-muted-foreground">
+                            Possible correction:{" "}
+                          </span>
+                          <span className="capitalize">
+                            {aiValidation.suggestions.difficulty}
+                          </span>
+                        </p>
+                        <p className="text-xs text-muted-foreground pt-1">
+                          Optional difficulty suggestion. Duration is always
+                          your input and is never changed by AI.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full"
+                        disabled={!!appliedSuggestions.difficulty}
+                        onClick={() => applySuggestion("difficulty")}
+                      >
+                        {appliedSuggestions.difficulty
+                          ? "Used"
+                          : "Use suggestion"}
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Project assignment (only when a different project is recommended) */}
+                  {aiValidation.project_match &&
+                    projectId !== aiValidation.project_match.project_id && (
+                      <div className="rounded-lg border bg-card p-4 space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium">
+                            Project / Stand-alone
+                          </span>
+                          <Badge
+                            variant="secondary"
+                            className="text-xs font-normal"
+                          >
+                            Suggestion
+                          </Badge>
+                        </div>
+                        <div className="space-y-1 text-sm">
+                          <p>
+                            <span className="text-muted-foreground">
+                              Current:{" "}
+                            </span>
+                            {projectId && projectId !== "none"
+                              ? projects.find((p) => p.id === projectId)
+                                  ?.name || "Selected project"
+                              : "Stand-alone"}
+                          </p>
+                          <p>
+                            <span className="text-muted-foreground">
+                              Possible correction:{" "}
+                            </span>
+                            {aiValidation.project_match.project_name}
+                          </p>
+                          <p className="text-xs text-muted-foreground pt-1">
+                            {aiValidation.project_match.reason ||
+                              aiValidation.project_message ||
+                              "This existing project appears related to the task."}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="w-full"
+                          disabled={!!appliedSuggestions.project}
+                          onClick={() => applySuggestion("project")}
+                        >
+                          {appliedSuggestions.project
+                            ? "Used"
+                            : "Use suggestion"}
+                        </Button>
+                      </div>
+                    )}
+                </div>
+              )}
 
             {/* CREATE TASK */}
             <Button

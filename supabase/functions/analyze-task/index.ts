@@ -1074,19 +1074,34 @@ ${userDifficulty || "(none)"}
             },
             body: JSON.stringify(requestBody),
           });
+          // Auth / rate-limit: do not hard-fail the whole validation.
+          // Fall through to the next model, then degraded deterministic path.
           if (res.status === 401 || res.status === 403) {
-            return jsonResponse(
-              { error: "Gemini API authorization failed. Check GEMINI_API_KEY." },
-              502,
+            console.warn(
+              "analyze-task: Gemini auth failed for model",
+              model,
+              res.status,
             );
+            // Auth failure is key-wide — skip remaining models
+            aiDegraded = true;
+            break;
           }
           if (res.status === 429) {
-            return jsonResponse(
-              { error: "Gemini rate limit reached. Please try again shortly." },
-              429,
+            console.warn(
+              "analyze-task: Gemini rate limit for model",
+              model,
             );
+            // Try next model; if all limited, degrade
+            continue;
           }
-          if (!res.ok) continue;
+          if (!res.ok) {
+            console.warn(
+              "analyze-task: Gemini non-OK",
+              model,
+              res.status,
+            );
+            continue;
+          }
 
           const aiJson = JSON.parse(await res.text());
           const parts = aiJson?.candidates?.[0]?.content?.parts;
@@ -1424,7 +1439,7 @@ ${userDifficulty || "(none)"}
           const taskEmb = await embedText(GEMINI_API_KEY, taskText);
           if (taskEmb) {
             // Limit concurrent project embeds to control cost
-            const maxProjects = Math.min(candidates.length, 12);
+            const maxProjects = Math.min(candidates.length, 6); // cap embeds to avoid edge timeouts
             for (let i = 0; i < maxProjects; i++) {
               const p = candidates[i];
               const pText = `${p.name}\n${p.description || ""}`.slice(0, 2000);

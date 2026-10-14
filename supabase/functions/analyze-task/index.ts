@@ -174,11 +174,11 @@ async function embedText(apiKey: string, text: string): Promise<number[] | null>
   const truncated = text.slice(0, 8000);
   for (const model of models) {
     try {
-      const url = \`https://generativelanguage.googleapis.com/v1beta/models/\${encodeURIComponent(model)}:embedContent\`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:embedContent`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify({ model: \`models/\${model}\`, content: { parts: [{ text: truncated }] } }),
+        body: JSON.stringify({ model: `models/${model}`, content: { parts: [{ text: truncated }] } }),
       });
       if (!res.ok) continue;
       const json = await res.json();
@@ -308,15 +308,15 @@ function matchProjects(
           reason: aiProjectMatch.reason || "The task purpose appears related to this existing project." },
         selected_consistent: selectedProjectId && selectedProjectId !== "none" ? selectedProjectId === found.id : null,
         message: taskType === "standalone" || selectedProjectId === "none"
-          ? \`Possible matching project: \${found.name}\`
+          ? `Possible matching project: ${found.name}`
           : selectedProjectId === found.id
             ? "The task appears related to the selected project."
-            : \`This task may fit the project "\${found.name}" better.\`,
+            : `This task may fit the project "${found.name}" better.`,
       };
     }
   }
 
-  const taskText = normalizeText(\`\${title} \${description} \${category}\`);
+  const taskText = normalizeText(`${title} ${description} ${category}`);
   const scored = projects.map((p) => {
     const nameNorm = normalizeText(p.name);
     const descNorm = normalizeText(p.description || "");
@@ -342,8 +342,8 @@ function matchProjects(
     message: selectedConsistent === true
       ? "The task appears related to the selected project."
       : selectedConsistent === false
-        ? \`This task may not fit the selected project's purpose. Consider "\${best.project.name}".\`
-        : \`Possible matching project: \${best.project.name}\`,
+        ? `This task may not fit the selected project's purpose. Consider "${best.project.name}".`
+        : `Possible matching project: ${best.project.name}`,
   };
 }
 
@@ -424,10 +424,10 @@ serve(async (req) => {
 
     if (GEMINI_API_KEY) {
       const projectListForPrompt = projects.length > 0
-        ? projects.slice(0, 30).map((p) => \`- id:\${p.id} | name:"\${p.name}"\${p.description ? \` | desc:"\${p.description.slice(0, 120)}"\` : ""}\`).join("\\n")
+        ? projects.slice(0, 30).map((p) => `- id:${p.id} | name:"${p.name}"${p.description ? ` | desc:"${p.description.slice(0, 120)}"` : ""}`).join("\\n")
         : "(no projects provided)";
 
-      const systemPrompt = \`You are the Advanced Context-Aware Task Consistency Validator for the GSI Schedule Planner (Virtual Assistant tasks).
+      const systemPrompt = `You are the Advanced Context-Aware Task Consistency Validator for the GSI Schedule Planner (Virtual Assistant tasks).
 Evaluate THREE relationships and recommend a correction ONLY when evidence is strong.
 RELATIONSHIPS: 1. Title ↔ Description  2. Title ↔ Category  3. Description ↔ Category
 DECISION RULES:
@@ -456,21 +456,21 @@ Return ONLY one valid JSON object:
   "project_match": { "id": string, "name": string, "reason": string } | null
 }
 field_suggestion: suggest title only when desc+category agree but conflict with title; category only when title+desc agree but conflict with category; description only when title+category agree but description is wrong/vague. Else null.
-suggested category must be exactly one of: \${VA_CATEGORIES.join(", ")}
+suggested category must be exactly one of: ${VA_CATEGORIES.join(", ")}
 Do NOT suggest duration. project_match only from provided list when strong. Else null.
-reason: one clear sentence. No Markdown. JSON only.\`;
+reason: one clear sentence. No Markdown. JSON only.`;
 
-      const userPrompt = \`TASK TITLE:\\n\${title}\\n\\nTASK DESCRIPTION:\\n\${description}\\n\\nUSER SELECTED CATEGORY:\\n\${userCategory || "(none)"}\\n\\nUSER SELECTED DURATION (minutes):\\n\${userDuration ?? "(none)"}\\n\\nUSER SELECTED DIFFICULTY:\\n\${userDifficulty || "(none)"}\\n\\nTASK TYPE:\\n\${taskType}\\n\\nSELECTED PROJECT ID:\\n\${selectedProjectId || "(none / stand-alone)"}\\n\\nEXISTING USER PROJECTS (only recommend from this list):\\n\${projectListForPrompt}\`;
+      const userPrompt = `TASK TITLE:\\n${title}\\n\\nTASK DESCRIPTION:\\n${description}\\n\\nUSER SELECTED CATEGORY:\\n${userCategory || "(none)"}\\n\\nUSER SELECTED DURATION (minutes):\\n${userDuration ?? "(none)"}\\n\\nUSER SELECTED DIFFICULTY:\\n${userDifficulty || "(none)"}\\n\\nTASK TYPE:\\n${taskType}\\n\\nSELECTED PROJECT ID:\\n${selectedProjectId || "(none / stand-alone)"}\\n\\nEXISTING USER PROJECTS (only recommend from this list):\\n${projectListForPrompt}`;
 
       const requestBody = {
-        contents: [{ role: "user", parts: [{ text: \`\${systemPrompt}\\n\\n\${userPrompt}\` }] }],
+        contents: [{ role: "user", parts: [{ text: `${systemPrompt}\\n\\n${userPrompt}` }] }],
         generationConfig: { temperature: 0.05, responseMimeType: "application/json" },
       };
 
       let gotAi = false;
       for (const model of modelCandidates()) {
         try {
-          const url = \`https://generativelanguage.googleapis.com/v1beta/models/\${encodeURIComponent(model)}:generateContent\`;
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
           const res = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },

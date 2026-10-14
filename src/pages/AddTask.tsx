@@ -1315,20 +1315,13 @@ export default function AddTask({
                     </div>
                   )}
 
-                  {/* ── Restored optional suggestion cards (compact style) ── */}
+                  {/* Optional suggestion rows — shown directly under field consistency */}
                   {(aiValidation.field_suggestion ||
                     aiValidation.suggestions?.difficulty ||
                     aiValidation.suggestions?.category ||
                     aiValidation.project_match ||
                     aiValidation.project_message) && (
                     <div className="rounded-lg border overflow-hidden">
-                      <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
-                        Optional suggestions
-                        {aiValidation.ai_degraded
-                          ? " (rule-based)"
-                          : " (AI + rules)"}
-                      </div>
-
                       {/* Title suggestion */}
                       {aiValidation.field_suggestion?.field === "title" && (
                         <div className="px-3 py-2 border-b last:border-b-0 space-y-1.5 text-sm">
@@ -1348,7 +1341,7 @@ export default function AddTask({
                               }
                               onClick={() => applySuggestion("title")}
                             >
-                              {appliedSuggestions.title ? "Used" : "Use"}
+                              {appliedSuggestions.title ? "Used" : "Use suggestion"}
                             </Button>
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 text-xs">
@@ -1394,7 +1387,7 @@ export default function AddTask({
                             >
                               {appliedSuggestions.description
                                 ? "Used"
-                                : "Use"}
+                                : "Use suggestion"}
                             </Button>
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 text-xs">
@@ -1439,7 +1432,7 @@ export default function AddTask({
                               }
                               onClick={() => applySuggestion("category")}
                             >
-                              {appliedSuggestions.category ? "Used" : "Use"}
+                              {appliedSuggestions.category ? "Used" : "Use suggestion"}
                             </Button>
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 text-xs">
@@ -1492,7 +1485,7 @@ export default function AddTask({
                             >
                               {appliedSuggestions.difficulty
                                 ? "Used"
-                                : "Use"}
+                                : "Use suggestion"}
                             </Button>
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 text-xs">
@@ -1542,7 +1535,7 @@ export default function AddTask({
                                 >
                                   {appliedSuggestions.project
                                     ? "Used"
-                                    : "Use"}
+                                    : "Use this project"}
                                 </Button>
                               )}
                             {aiValidation.project_match &&

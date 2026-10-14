@@ -128,7 +128,7 @@ export const MATRIX_THRESHOLDS = {
   /** Max automatic alternatives per unchanged input fingerprint. */
   max_alternatives_per_input: 2,
   /** Project match relevance floor. */
-  project_match_min: 0.68,
+  project_match_min: 0.55,
   /** Best project must beat second-best by this margin. */
   project_match_margin: 0.08,
 };
@@ -796,25 +796,47 @@ export function selectProjectMatch(
   taskTitle: string,
   taskDescription: string,
   projects: { id: string; name: string; description?: string | null }[],
+  options?: {
+    /** Optional precomputed cosine similarities task↔project (0–1), keyed by project id. */
+    embeddingScores?: Record<string, number>;
+    /** Blend weight for embedding score vs lexical (default 0.55 embedding when present). */
+    embeddingWeight?: number;
+    rejectedProjectIds?: string[];
+  },
 ): {
   project_id: string;
   project_name: string;
   reason: string;
   relevance: number;
+  method: "lexical" | "hybrid";
 } | null {
   if (!projects.length) return null;
+  const rejected = new Set(options?.rejectedProjectIds || []);
+  const emb = options?.embeddingScores;
+  const embW =
+    emb && Object.keys(emb).length > 0
+      ? clamp01(options?.embeddingWeight ?? 0.55)
+      : 0;
+  const lexW = 1 - embW;
+  const method: "lexical" | "hybrid" = embW > 0 ? "hybrid" : "lexical";
+
   const scored = projects
-    .map((p) => ({
-      ...p,
-      relevance: scoreProjectRelevance(
+    .filter((p) => p.id && !rejected.has(p.id))
+    .map((p) => {
+      const lexical = scoreProjectRelevance(
         taskTitle,
         taskDescription,
         p.name,
         p.description,
-      ),
-    }))
+      );
+      const semantic = emb && typeof emb[p.id] === "number" ? clamp01(emb[p.id]) : 0;
+      const relevance =
+        embW > 0 ? clamp01(lexW * lexical + embW * semantic) : lexical;
+      return { ...p, relevance, lexical, semantic };
+    })
     .sort((a, b) => b.relevance - a.relevance);
 
+  if (!scored.length) return null;
   const best = scored[0];
   const second = scored[1];
   if (best.relevance < MATRIX_THRESHOLDS.project_match_min) return null;
@@ -829,5 +851,401 @@ export function selectProjectMatch(
     project_name: best.name,
     reason: `Task intent aligns with project “${best.name}”.`,
     relevance: Math.round(best.relevance * 1000) / 1000,
+    method,
   };
+}
+
+/**
+ * Second-pass consistency check for a proposed correction.
+ *
+ * Applies the candidate to a temporary copy of the task, re-evaluates the
+ * three relationships using deterministic/local signals (and optional
+ * semantic scores if provided), and rejects candidates that introduce a
+ * new mismatch or fail category validity.
+ *
+ * When full semantic re-embedding is unavailable, uses conservative
+ * lexical relatedness + contradiction heuristics. Callers must not claim
+ * full semantic revalidation if semantic scores were not supplied.
+ */
+export function secondPassConsistencyCheck(input: {
+  title: string;
+  description: string;
+  category: string;
+  correction: PrimaryCorrection;
+  /** Optional semantic title↔description score after applying candidate (0–1). */
+  semantic_title_desc?: number;
+  /** Optional title↔category / description↔category scores after candidate. */
+  semantic_title_cat?: number;
+  semantic_desc_cat?: number;
+  history?: SuggestionHistoryEntry[];
+  fingerprint?: string;
+}): {
+  passed: boolean;
+  reason: string;
+  method: "deterministic" | "hybrid";
+  relationships?: RelationshipResult[];
+} {
+  const { correction } = input;
+  let title = input.title;
+  let description = input.description;
+  let category = input.category;
+
+  if (correction.field === "title") title = correction.value;
+  else if (correction.field === "description") description = correction.value;
+  else if (correction.field === "category") category = correction.value;
+
+  // History / duplicate guard
+  const fp = input.fingerprint || inputFingerprint(input.title, input.description, input.category);
+  if (
+    filterCandidate(
+      correction.field,
+      correction.value,
+      correction.field === "title"
+        ? input.title
+        : correction.field === "description"
+          ? input.description
+          : input.category,
+      input.history || [],
+      fp,
+    ) === null
+  ) {
+    return {
+      passed: false,
+      reason: "Candidate matches an accepted or rejected suggestion for unchanged inputs.",
+      method: "deterministic",
+    };
+  }
+
+  // Category validity
+  if (correction.field === "category" && !isValidCategory(normalizeCategory(category))) {
+    return {
+      passed: false,
+      reason: "Candidate category is not a supported GSI category.",
+      method: "deterministic",
+    };
+  }
+
+  // Completeness for description candidates
+  if (correction.field === "description") {
+    const d = description.trim();
+    if (d.length < 12) {
+      return {
+        passed: false,
+        reason: "Candidate description is too short or incomplete.",
+        method: "deterministic",
+      };
+    }
+  }
+
+  // Lexical relatedness after applying candidate
+  const lexicalTd = basicLexicalRelatedness(title, description);
+  const hasSemantic = typeof input.semantic_title_desc === "number";
+  const tdScore = hasSemantic
+    ? clamp01(0.45 * lexicalTd + 0.55 * clamp01(input.semantic_title_desc!))
+    : lexicalTd;
+
+  // Detect obvious action conflict (simple negation / domain clash heuristics)
+  const contradiction = detectLocalContradiction(title, description);
+
+  // Category fit heuristics
+  const cat = normalizeCategory(category);
+  const titleCatLex = categoryKeywordFit(title, cat);
+  const descCatLex = categoryKeywordFit(description, cat);
+  const titleCat = typeof input.semantic_title_cat === "number"
+    ? clamp01(0.4 * titleCatLex + 0.6 * clamp01(input.semantic_title_cat))
+    : titleCatLex;
+  const descCat = typeof input.semantic_desc_cat === "number"
+    ? clamp01(0.4 * descCatLex + 0.6 * clamp01(input.semantic_desc_cat))
+    : descCatLex;
+
+  const completeness =
+    correction.field === "description"
+      ? Math.min(0.85, description.trim().length / 80)
+      : 0.7;
+
+  const relationships = buildRelationships({
+    title,
+    description,
+    category: cat,
+    title_desc_score: tdScore,
+    title_desc_contradiction: contradiction,
+    title_cat_score: titleCat,
+    desc_cat_score: descCat,
+    completeness,
+    repetition: isSemanticallySame(title, description),
+  });
+
+  const mismatches = relationships.filter((r) => r.status === "mismatch");
+  // Candidate must not leave the targeted relationship as mismatch with low confidence
+  // and must not create more mismatches than it resolves for the other fields.
+  if (contradiction && correction.field !== "description" && correction.field !== "title") {
+    return {
+      passed: false,
+      reason: "Candidate leaves a title–description contradiction unresolved.",
+      method: hasSemantic ? "hybrid" : "deterministic",
+      relationships,
+    };
+  }
+
+  // For title corrections: description+category should remain consistent or improve
+  if (correction.field === "title") {
+    const dc = relationships.find((r) => r.id === "description_category")!;
+    if (dc.status === "mismatch") {
+      return {
+        passed: false,
+        reason: "Title candidate would leave description–category mismatched.",
+        method: hasSemantic ? "hybrid" : "deterministic",
+        relationships,
+      };
+    }
+    // Title must share meaningful signal with description (strict for second pass)
+    if (tdScore < 0.2) {
+      return {
+        passed: false,
+        reason: "Title candidate is not related to the description.",
+        method: hasSemantic ? "hybrid" : "deterministic",
+        relationships,
+      };
+    }
+    if (tdScore < 0.3 && contradiction) {
+      return {
+        passed: false,
+        reason: "Title candidate still contradicts the description.",
+        method: hasSemantic ? "hybrid" : "deterministic",
+        relationships,
+      };
+    }
+    const originalLex = basicLexicalRelatedness(input.title, input.description);
+    if (originalLex >= 0.35 && tdScore + 0.05 < originalLex) {
+      return {
+        passed: false,
+        reason: "Title candidate does not improve relatedness to the description.",
+        method: hasSemantic ? "hybrid" : "deterministic",
+        relationships,
+      };
+    }
+    if (isValidCategory(cat) && titleCat < 0.25 && descCat >= 0.5) {
+      return {
+        passed: false,
+        reason: "Title candidate does not fit the established category.",
+        method: hasSemantic ? "hybrid" : "deterministic",
+        relationships,
+      };
+    }
+  }
+
+  if (correction.field === "description") {
+    const tc = relationships.find((r) => r.id === "title_category")!;
+    if (tc.status === "mismatch" && titleCat < 0.4) {
+      return {
+        passed: false,
+        reason: "Description candidate conflicts with title–category alignment.",
+        method: hasSemantic ? "hybrid" : "deterministic",
+        relationships,
+      };
+    }
+    if (tdScore < 0.25 && contradiction) {
+      return {
+        passed: false,
+        reason: "Description candidate still contradicts the title.",
+        method: hasSemantic ? "hybrid" : "deterministic",
+        relationships,
+      };
+    }
+  }
+
+  if (correction.field === "category") {
+    // After category change, at least one of title/desc should fit the new category
+    if (titleCat < 0.25 && descCat < 0.25) {
+      return {
+        passed: false,
+        reason: "Category candidate does not fit title or description.",
+        method: hasSemantic ? "hybrid" : "deterministic",
+        relationships,
+      };
+    }
+  }
+
+  // Too many remaining mismatches → reject
+  if (mismatches.length >= 2 && contradiction) {
+    return {
+      passed: false,
+      reason: "Candidate does not resolve the multi-field conflict.",
+      method: hasSemantic ? "hybrid" : "deterministic",
+      relationships,
+    };
+  }
+
+  return {
+    passed: true,
+    reason: "Candidate passed second-pass consistency checks.",
+    method: hasSemantic ? "hybrid" : "deterministic",
+    relationships,
+  };
+}
+
+/** Local lexical relatedness (same spirit as edge-function basicTextRelatedness). */
+export function basicLexicalRelatedness(a: string, b: string): number {
+  const stop = new Set([
+    "a", "an", "the", "and", "or", "to", "of", "in", "on", "for", "with",
+    "is", "are", "be", "by", "at", "from", "as", "it", "this", "that",
+    "task", "work", "do", "please", "will", "can", "should",
+  ]);
+  const tokens = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((t) => t.length > 2 && !stop.has(t));
+  const ta = tokens(a);
+  const tb = tokens(b);
+  if (!ta.length || !tb.length) return 0;
+  const setB = new Set(tb);
+  let hits = 0;
+  for (const t of ta) if (setB.has(t)) hits++;
+  return hits / ta.length;
+}
+
+/** Simple local contradiction heuristics (negation / domain clash). */
+export function detectLocalContradiction(title: string, description: string): boolean {
+  const t = title.toLowerCase();
+  const d = description.toLowerCase();
+  if (!t.trim() || !d.trim()) return false;
+  // Explicit negation of title action in description
+  const actionWords = t
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 3);
+  for (const w of actionWords.slice(0, 4)) {
+    if (
+      new RegExp(`\\b(do not|don't|never|avoid)\\s+${w}\\b`, "i").test(d)
+    ) {
+      return true;
+    }
+  }
+  // Very low lexical overlap + different high-signal domains
+  const rel = basicLexicalRelatedness(title, description);
+  if (rel < 0.15) {
+    const domains = [
+      ["email", "client", "reply", "respond", "inquiry", "ticket", "support"],
+      ["game", "play", "chess", "video", "grocery", "cook", "dinner", "plant", "water", "garden", "shed", "hedge"],
+      ["tax", "invoice", "bookkeep", "finance", "payroll"],
+      ["social", "instagram", "linkedin", "post", "campaign"],
+    ];
+    const which = (s: string) =>
+      domains.findIndex((group) => group.some((k) => s.includes(k)));
+    const dt = which(t);
+    const dd = which(d);
+    if (dt >= 0 && dd >= 0 && dt !== dd) return true;
+  }
+  return false;
+}
+
+/** Keyword-based category fit for second-pass when embeddings unavailable. */
+export function categoryKeywordFit(text: string, category: string): number {
+  const keywords: Record<string, string[]> = {
+    "Client Communication": ["client", "reply", "respond", "inquiry", "follow", "message", "update"],
+    "Customer Support": ["support", "ticket", "complaint", "customer", "issue", "resolve"],
+    "Email Management": ["email", "inbox", "mailbox", "unread"],
+    "Calendar & Scheduling": ["calendar", "schedule", "appointment", "meeting", "booking"],
+    "Administrative Tasks": ["admin", "paperwork", "form", "office", "process"],
+    "Data Entry": ["data", "enter", "encode", "spreadsheet", "csv", "records"],
+    "Research": ["research", "investigate", "competitor", "gather"],
+    "Report & Documentation": ["report", "documentation", "summary", "document", "weekly"],
+    "File & Document Management": ["file", "folder", "drive", "archive", "organize", "rename"],
+    "Project Coordination": ["project", "milestone", "tracker", "coordinate", "progress"],
+    "Lead Generation": ["lead", "prospect", "potential client", "sales lead"],
+    "CRM Management": ["crm", "pipeline", "lead status", "contact record"],
+    "Social Media Management": ["social", "instagram", "linkedin", "post", "campaign"],
+    "Content Creation": ["content", "write", "blog", "copy", "draft content"],
+    "E-commerce Support": ["order", "ecommerce", "product listing", "shopify"],
+    "Bookkeeping & Finance": ["invoice", "bookkeep", "finance", "tax", "payroll", "expense"],
+    "Meeting & Coordination": ["meeting", "agenda", "notes", "standup"],
+    "Personal Assistance": ["personal", "errand", "travel", "assistant"],
+    "General / Other": [],
+  };
+  const keys = keywords[normalizeCategory(category)] || [];
+  if (!keys.length) return 0.55;
+  const lower = text.toLowerCase();
+  let hits = 0;
+  for (const k of keys) if (lower.includes(k)) hits++;
+  if (hits === 0) return 0.2;
+  return clamp01(0.35 + hits * 0.15);
+}
+
+/**
+ * Decide correction with mandatory second-pass check.
+ * Wraps decideCorrection and re-validates the primary candidate.
+ */
+export function decideCorrectionWithSecondPass(input: {
+  relationships: RelationshipResult[];
+  title: string;
+  description: string;
+  category: string;
+  candidate_title?: string | null;
+  candidate_description?: string | null;
+  candidate_category?: string | null;
+  history?: SuggestionHistoryEntry[];
+  fingerprint?: string;
+  /** Optional semantic scores for second pass. */
+  semantic_after?: {
+    title_desc?: number;
+    title_cat?: number;
+    desc_cat?: number;
+  };
+}): MatrixDecision {
+  const decision = decideCorrection(input);
+  if (!decision.primary_correction) return decision;
+
+  const check = secondPassConsistencyCheck({
+    title: input.title,
+    description: input.description,
+    category: input.category,
+    correction: decision.primary_correction,
+    semantic_title_desc: input.semantic_after?.title_desc,
+    semantic_title_cat: input.semantic_after?.title_cat,
+    semantic_desc_cat: input.semantic_after?.desc_cat,
+    history: input.history,
+    fingerprint: input.fingerprint,
+  });
+
+  if (!check.passed) {
+    return {
+      relationships: input.relationships,
+      overall: "needs_clarification",
+      primary_correction: null,
+      alternatives: [],
+      clarification: {
+        required: true,
+        message:
+          check.reason ||
+          "A candidate correction failed the second consistency check. Please clarify the intended task.",
+      },
+      legacy_validation: "REVIEW",
+    };
+  }
+
+  return {
+    ...decision,
+    primary_correction: {
+      ...decision.primary_correction,
+      second_check_passed: true,
+    },
+  };
+}
+
+/** Cosine similarity for embedding vectors (shared helper). */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (!a.length || !b.length || a.length !== b.length) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  if (denom === 0) return 0;
+  return Math.min(1, Math.max(0, dot / denom));
 }

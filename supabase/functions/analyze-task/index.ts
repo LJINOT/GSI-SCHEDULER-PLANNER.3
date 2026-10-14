@@ -564,16 +564,27 @@ reason: one clear sentence. No Markdown. JSON only.`;
     }
 
     if (aiDegraded) {
+      // Deterministic / embedding-only fallback. Never invent field corrections.
       actionMatch = objectMatch = domainMatch = purposeMatch = intentMatch = semanticSimilarity;
       categoryMatch = userCategory ? 0.6 : 0.5;
       titleDescScore = semanticSimilarity; titleCatScore = 0.5; descCatScore = 0.5;
       titleDescExplanation = semanticSimilarity >= THRESHOLDS.HIGH
-        ? "Title and description appear related (reduced confidence — AI unavailable)."
-        : semanticSimilarity >= THRESHOLDS.MEDIUM ? "Title and description may not fully match. Please review." : "Title and description do not appear related.";
-      titleCatExplanation = descCatExplanation = "Category consistency could not be fully evaluated (AI unavailable).";
+        ? "Title and description appear related (rule-based fallback — AI unavailable)."
+        : semanticSimilarity >= THRESHOLDS.MEDIUM
+          ? "Title and description may not fully match. Please review the fields."
+          : "Title and description do not appear related.";
+      titleCatExplanation = descCatExplanation =
+        "Category consistency could not be fully evaluated (AI unavailable). Review the selected category.";
       aiReason = semanticSimilarity >= THRESHOLDS.HIGH
-        ? "Description appears related to the title (AI unavailable; used embedding similarity)."
-        : semanticSimilarity >= THRESHOLDS.MEDIUM ? "Description may not fully match the title. Please review." : "Description does not appear related to the title.";
+        ? "Description appears related to the title (rule-based fallback; AI unavailable)."
+        : semanticSimilarity >= THRESHOLDS.MEDIUM
+          ? "Description may not fully match the title. Please review. (Rule-based fallback — AI unavailable.)"
+          : "Description does not appear related to the title. (Rule-based fallback — AI unavailable.)";
+      // Explicitly clear any AI-only suggestion fields so frontend never shows invented text.
+      aiSuggestedTitle = null;
+      aiSuggestedDescription = null;
+      aiSuggestedCategory = null;
+      aiProjectMatch = null;
     }
 
     if (VAGUE_PATTERNS.some((re) => re.test(description.trim()))) completeness = Math.min(completeness, 0.15);

@@ -120,3 +120,72 @@ export function syncTimezoneFromProfile(tz: string | null | undefined) {
     /* ignore */
   }
 }
+
+
+/** Compact single date for task lists: "Oct 9 · 6:00 AM" */
+export function formatTaskDateTime(date: Date | string | null | undefined): string | null {
+  if (!date) return null;
+  const d = typeof date === "string" ? new Date(date) : date;
+  if (!d || isNaN(d.getTime())) return null;
+  return formatPH(d, "MMM d · h:mm a");
+}
+
+export type TaskScheduleParts = {
+  start: string | null;
+  due: string | null;
+  /** Full line for list cards, e.g. "Start Oct 9 · 6:00 AM · Due Oct 16 · 4:00 PM" */
+  line: string;
+  /** True when neither start nor due is set */
+  empty: boolean;
+};
+
+/**
+ * Standard Start / Due display for every task list.
+ * Never invents dates; never hides a valid date when the other is missing.
+ */
+export function formatTaskSchedule(
+  start: Date | string | null | undefined,
+  due: Date | string | null | undefined,
+): TaskScheduleParts {
+  const startLabel = formatTaskDateTime(start);
+  const dueLabel = formatTaskDateTime(due);
+
+  if (startLabel && dueLabel) {
+    return {
+      start: startLabel,
+      due: dueLabel,
+      line: `Start ${startLabel} · Due ${dueLabel}`,
+      empty: false,
+    };
+  }
+  if (startLabel && !dueLabel) {
+    return {
+      start: startLabel,
+      due: null,
+      line: `Start ${startLabel} · No due date set`,
+      empty: false,
+    };
+  }
+  if (!startLabel && dueLabel) {
+    return {
+      start: null,
+      due: dueLabel,
+      line: `No start date set · Due ${dueLabel}`,
+      empty: false,
+    };
+  }
+  return {
+    start: null,
+    due: null,
+    line: "No start or due date set",
+    empty: true,
+  };
+}
+
+/** Alias used by list components. */
+export function formatTaskScheduleLine(
+  start: Date | string | null | undefined,
+  due: Date | string | null | undefined,
+): string {
+  return formatTaskSchedule(start, due).line;
+}

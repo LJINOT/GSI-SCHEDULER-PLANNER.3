@@ -67,7 +67,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-import { formatPH } from "@/lib/date-utils";
+import { formatPH, formatTaskSchedule, formatTaskScheduleLine } from "@/lib/date-utils";
 
 
 // ============================================================
@@ -1794,15 +1794,9 @@ export default function Projects() {
                               </span>
 
 
-                              {task.due_date && (
-                                <span className="ml-auto shrink-0">
-                                  Due{" "}
-                                  {formatPH(
-                                    task.due_date,
-                                    "MMM d, h:mm a"
-                                  )}
-                                </span>
-                              )}
+                              <span className="ml-auto shrink-0 text-right max-w-[55%] truncate" title={formatTaskScheduleLine(task.start_time, task.due_date)}>
+                                {formatTaskScheduleLine(task.start_time, task.due_date)}
+                              </span>
 
                             </div>
 
@@ -2056,12 +2050,15 @@ export default function Projects() {
                   <div className="rounded-lg border border-border divide-y divide-border max-h-[min(60vh,520px)] overflow-y-auto bg-card">
                     {rows.map((task) => {
                       const pri = priorityLabel(task.priority_score);
-                      const due = formatDueCompact(task.due_date);
+                      const scheduleLine = formatTaskScheduleLine(
+                        task.start_time,
+                        task.due_date,
+                      );
                       const dur =
                         task.estimated_duration != null
                           ? `${task.estimated_duration} min`
                           : null;
-                      const meta = [due ? `Due ${due}` : null, dur]
+                      const meta = [scheduleLine, dur]
                         .filter(Boolean)
                         .join(" · ");
                       return (
@@ -2086,8 +2083,8 @@ export default function Projects() {
                           </div>
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-medium truncate">{task.title}</p>
-                            <p className="text-[11px] text-muted-foreground truncate">
-                              {meta || "No due date"}
+                            <p className="text-[11px] text-muted-foreground truncate" title={meta}>
+                              {meta}
                               {" · "}
                               <span className="capitalize">{task.status.replace(/_/g, " ")}</span>
                             </p>
@@ -2270,11 +2267,19 @@ export default function Projects() {
                   </p>
                 </div>
                 <div>
+                  <p className="text-xs text-muted-foreground">Start Date</p>
+                  <p className="font-medium">
+                    {viewingTask.start_time
+                      ? formatPH(viewingTask.start_time, "MMM d, yyyy h:mm a")
+                      : "No start date set"}
+                  </p>
+                </div>
+                <div>
                   <p className="text-xs text-muted-foreground">Due Date</p>
                   <p className="font-medium">
                     {viewingTask.due_date
                       ? formatPH(viewingTask.due_date, "MMM d, yyyy h:mm a")
-                      : "—"}
+                      : "No due date set"}
                   </p>
                 </div>
               </div>

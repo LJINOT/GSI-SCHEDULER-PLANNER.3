@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
@@ -36,14 +36,34 @@ import {
   tzOffset,
   getTimezone,
 } from "@/lib/date-utils";
+import {
+  inputFingerprint,
+  type SuggestionHistoryEntry,
+} from "@/lib/task-validation-matrix";
 
 type Project = {
   id: string;
   name: string;
   color: string;
+  description?: string | null;
 };
 
 type ValidationStatus = "VALID" | "REVIEW" | "INVALID" | null;
+
+type PrimaryCorrection = {
+  field: "title" | "description" | "category";
+  value: string;
+  reason: string;
+  confidence: number;
+  second_check_passed?: boolean;
+};
+
+type ProjectMatch = {
+  project_id: string;
+  project_name: string;
+  reason: string;
+  relevance: number;
+};
 
 type AiValidation = {
   validation: ValidationStatus;
@@ -76,7 +96,17 @@ type AiValidation = {
   suggestions: {
     difficulty?: string;
     category?: string;
+    title?: string;
+    description?: string;
   } | null;
+  /** Structured matrix result (canonical). */
+  primary_correction?: PrimaryCorrection | null;
+  clarification_required?: boolean;
+  clarification_message?: string | null;
+  project_match?: ProjectMatch | null;
+  overall_consistency?: string;
+  request_id?: string | null;
+  input_fingerprint?: string;
 };
 
 const MAX_DATE = "9999-12-31";
@@ -131,7 +161,18 @@ export default function AddTask({
   const [appliedSuggestions, setAppliedSuggestions] = useState<{
     difficulty?: boolean;
     category?: boolean;
+    title?: boolean;
+    description?: boolean;
   }>({});
+
+  /** Session suggestion history for reject/accept (not persisted permanently). */
+  const [suggestionHistory, setSuggestionHistory] = useState<
+    SuggestionHistoryEntry[]
+  >([]);
+  const [rejectedProjectIds, setRejectedProjectIds] = useState<string[]>([]);
+
+  /** Prevents stale async validation responses from overwriting newer results. */
+  const validationRequestIdRef = useRef(0);
 
   const [errors, setErrors] = useState<{
     title?: string;
@@ -155,7 +196,7 @@ export default function AddTask({
       if (!user || cancelled) return;
       const { data, error } = await supabase
         .from("projects")
-        .select("id, name, color")
+        .select("id, name, color, description")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
       if (error) {
@@ -263,7 +304,10 @@ export default function AddTask({
     setForceContinue(false);
     setDescriptionValidated(false);
     setAppliedSuggestions({});
+    setSuggestionHistory([]);
+    setRejectedProjectIds([]);
     setErrors({});
+    validationRequestIdRef.current += 1;
   };
 
   const clearValidationOnEdit = () => {
@@ -271,35 +315,47 @@ export default function AddTask({
     if (forceContinue) setForceContinue(false);
     setDescriptionValidated(false);
     setAppliedSuggestions({});
+    // Invalidate in-flight responses when inputs change materially
+    validationRequestIdRef.current += 1;
   };
 
-  /** Semantic validation of title vs description; optional suggestions only. */
-  const validateDescription = async () => {
-    if (!title.trim()) {
-      setErrors((p) => ({ ...p, title: "Enter a title first" }));
-      return;
-    }
-    if (!description.trim()) {
-      setErrors((p) => ({
-        ...p,
-        description: "Enter a description to validate.",
-      }));
-      return;
-    }
+  /**
+   * Core validation call with explicit field values (used after accept to avoid stale state).
+   */
+  const runValidation = async (opts: {
+    title: string;
+    description: string;
+    category: string;
+    difficulty?: string;
+    history?: SuggestionHistoryEntry[];
+  }) => {
     if (analyzing) return;
     setAnalyzing(true);
     setForceContinue(false);
 
+    const requestId = ++validationRequestIdRef.current;
+    const fp = inputFingerprint(opts.title, opts.description, opts.category);
+    const hist = opts.history ?? suggestionHistory;
+
     try {
       const { data, error } = await supabase.functions.invoke("analyze-task", {
         body: {
-          title: title.trim(),
-          description: description.trim(),
-          category: category || undefined,
-          // Duration is user-defined only — never sent for AI estimation.
-          difficulty: difficulty || undefined,
+          title: opts.title,
+          description: opts.description,
+          category: opts.category || undefined,
+          difficulty: opts.difficulty || difficulty || undefined,
+          request_id: String(requestId),
+          suggestion_history: hist,
+          projects: projects.map((p) => ({
+            id: p.id,
+            name: p.name,
+            description: p.description ?? null,
+          })),
+          rejected_project_ids: rejectedProjectIds,
         },
       });
+
+      if (requestId !== validationRequestIdRef.current) return;
 
       if (error) {
         throw new Error(error.message || "The validation function failed.");
@@ -336,6 +392,31 @@ export default function AddTask({
           ? (payload.validation_detail as AiValidation["validation_detail"])
           : undefined;
 
+      const primaryCorrection =
+        payload.primary_correction &&
+        typeof payload.primary_correction === "object"
+          ? (payload.primary_correction as PrimaryCorrection)
+          : null;
+
+      const projectMatch =
+        payload.project_match && typeof payload.project_match === "object"
+          ? (payload.project_match as ProjectMatch)
+          : null;
+
+      const baseSuggestions =
+        payload.suggestions && typeof payload.suggestions === "object"
+          ? { ...(payload.suggestions as AiValidation["suggestions"]) }
+          : ({} as NonNullable<AiValidation["suggestions"]>);
+      if (primaryCorrection?.field === "title") {
+        baseSuggestions.title = primaryCorrection.value;
+      }
+      if (primaryCorrection?.field === "description") {
+        baseSuggestions.description = primaryCorrection.value;
+      }
+      if (primaryCorrection?.field === "category") {
+        baseSuggestions.category = primaryCorrection.value;
+      }
+
       const result: AiValidation = {
         validation,
         related: Boolean(payload.related),
@@ -364,9 +445,23 @@ export default function AddTask({
             : null,
         validation_detail: detail,
         suggestions:
-          payload.suggestions && typeof payload.suggestions === "object"
-            ? (payload.suggestions as AiValidation["suggestions"])
+          Object.keys(baseSuggestions).length > 0 ? baseSuggestions : null,
+        primary_correction: primaryCorrection,
+        clarification_required: Boolean(payload.clarification_required),
+        clarification_message:
+          typeof payload.clarification_message === "string"
+            ? payload.clarification_message
             : null,
+        project_match: projectMatch,
+        overall_consistency:
+          typeof payload.overall_consistency === "string"
+            ? payload.overall_consistency
+            : undefined,
+        request_id: String(requestId),
+        input_fingerprint:
+          typeof payload.input_fingerprint === "string"
+            ? payload.input_fingerprint
+            : fp,
       };
 
       setAiValidation(result);
@@ -374,36 +469,227 @@ export default function AddTask({
       setAppliedSuggestions({});
 
       if (validation === "VALID") {
-        toast.success("Description matches the task.");
+        toast.success("Task fields are consistent.");
+      } else if (result.clarification_required) {
+        toast.message("Please clarify the task fields.");
       } else if (validation === "REVIEW") {
-        toast.message("Please review your description.");
+        toast.message("Please review your task fields.");
       } else {
-        toast.error("Description does not match the task title.");
+        toast.error("Task fields are inconsistent.");
       }
     } catch (err: unknown) {
+      if (requestId !== validationRequestIdRef.current) return;
       console.error("AddTask: validation failed:", err);
       toast.error(
         err instanceof Error ? err.message : "Validation failed.",
       );
+      setDescriptionValidated(false);
+      setAiValidation(null);
     } finally {
-      setAnalyzing(false);
+      if (requestId === validationRequestIdRef.current) {
+        setAnalyzing(false);
+      }
     }
   };
 
-  const applySuggestion = (field: "difficulty" | "category") => {
-    if (!aiValidation?.suggestions) return;
-    if (field === "difficulty" && aiValidation.suggestions.difficulty) {
+  /** Semantic validation with three-relationship matrix; optional corrections. */
+  const validateDescription = async () => {
+    if (!title.trim()) {
+      setErrors((p) => ({ ...p, title: "Enter a title first" }));
+      return;
+    }
+    if (!description.trim()) {
+      setErrors((p) => ({
+        ...p,
+        description: "Enter a description to validate.",
+      }));
+      return;
+    }
+    await runValidation({
+      title: title.trim(),
+      description: description.trim(),
+      category,
+      difficulty,
+    });
+  };
+
+  /**
+   * Accept a correction for one field → apply → revalidate.
+   * Only the selected field is changed; other inputs are preserved.
+   */
+  const acceptCorrection = async (
+    field: "title" | "description" | "category" | "difficulty",
+  ) => {
+    if (!aiValidation) return;
+    const fp =
+      aiValidation.input_fingerprint ||
+      inputFingerprint(title.trim(), description.trim(), category);
+
+    if (field === "difficulty" && aiValidation.suggestions?.difficulty) {
       setDifficulty(aiValidation.suggestions.difficulty);
       setErrors((p) => ({ ...p, difficulty: undefined }));
       setAppliedSuggestions((p) => ({ ...p, difficulty: true }));
+      return;
     }
-    if (field === "category" && aiValidation.suggestions.category) {
-      setCategory(aiValidation.suggestions.category);
+
+    let nextTitle = title.trim();
+    let nextDescription = description.trim();
+    let nextCategory = category;
+    let value = "";
+
+    if (field === "title") {
+      value =
+        aiValidation.primary_correction?.field === "title"
+          ? aiValidation.primary_correction.value
+          : aiValidation.suggestions?.title || "";
+      if (!value) return;
+      nextTitle = value;
+      setTitle(value);
+      setErrors((p) => ({ ...p, title: undefined }));
+      setAppliedSuggestions((p) => ({ ...p, title: true }));
+    } else if (field === "description") {
+      value =
+        aiValidation.primary_correction?.field === "description"
+          ? aiValidation.primary_correction.value
+          : aiValidation.suggestions?.description || "";
+      if (!value) return;
+      nextDescription = value;
+      setDescription(value);
+      setErrors((p) => ({ ...p, description: undefined }));
+      setAppliedSuggestions((p) => ({ ...p, description: true }));
+    } else if (field === "category") {
+      value =
+        aiValidation.primary_correction?.field === "category"
+          ? aiValidation.primary_correction.value
+          : aiValidation.suggestions?.category || "";
+      if (!value) return;
+      nextCategory = value;
+      setCategory(value);
       setErrors((p) => ({ ...p, category: undefined }));
-      // Category is part of description validation — must re-validate.
-      clearValidationOnEdit();
       setAppliedSuggestions((p) => ({ ...p, category: true }));
     }
+
+    const nextHistory: SuggestionHistoryEntry[] = [
+      ...suggestionHistory,
+      {
+        field: field as SuggestionHistoryEntry["field"],
+        value,
+        action: "accepted",
+        input_fingerprint: fp,
+      },
+      {
+        field: field as SuggestionHistoryEntry["field"],
+        value,
+        action: "applied",
+        input_fingerprint: fp,
+      },
+    ];
+    setSuggestionHistory(nextHistory);
+
+    setAiValidation(null);
+    setDescriptionValidated(false);
+    setForceContinue(false);
+
+    // Revalidate with the updated field values (avoids React state batching lag)
+    await runValidation({
+      title: nextTitle,
+      description: nextDescription,
+      category: nextCategory,
+      difficulty,
+      history: nextHistory,
+    });
+  };
+
+  /** Reject a suggestion — keep original value, record rejection, do not repeat. */
+  const rejectCorrection = (
+    field: "title" | "description" | "category",
+  ) => {
+    if (!aiValidation) return;
+    const fp =
+      aiValidation.input_fingerprint ||
+      inputFingerprint(title.trim(), description.trim(), category);
+    let value = "";
+    if (field === "title") {
+      value =
+        aiValidation.primary_correction?.field === "title"
+          ? aiValidation.primary_correction.value
+          : aiValidation.suggestions?.title || "";
+    } else if (field === "description") {
+      value =
+        aiValidation.primary_correction?.field === "description"
+          ? aiValidation.primary_correction.value
+          : aiValidation.suggestions?.description || "";
+    } else {
+      value =
+        aiValidation.primary_correction?.field === "category"
+          ? aiValidation.primary_correction.value
+          : aiValidation.suggestions?.category || "";
+    }
+    if (!value) return;
+
+    setSuggestionHistory((prev) => [
+      ...prev,
+      { field, value, action: "rejected", input_fingerprint: fp },
+    ]);
+
+    // Remove this suggestion from the current card without changing user fields
+    setAiValidation((prev) => {
+      if (!prev) return prev;
+      const nextSug = prev.suggestions ? { ...prev.suggestions } : null;
+      if (nextSug) {
+        if (field === "title") delete nextSug.title;
+        if (field === "description") delete nextSug.description;
+        if (field === "category") delete nextSug.category;
+      }
+      const hasSug =
+        nextSug &&
+        (nextSug.title ||
+          nextSug.description ||
+          nextSug.category ||
+          nextSug.difficulty);
+      return {
+        ...prev,
+        primary_correction:
+          prev.primary_correction?.field === field
+            ? null
+            : prev.primary_correction,
+        suggestions: hasSug ? nextSug : null,
+        clarification_required: true,
+        clarification_message:
+          "Suggestion declined. Please edit the fields manually or validate again after changes.",
+        reason:
+          "Suggestion declined. Please edit the fields manually or validate again after changes.",
+      };
+    });
+    toast.message("Suggestion dismissed. Original value kept.");
+  };
+
+  const acceptProjectMatch = () => {
+    if (!aiValidation?.project_match) return;
+    setProjectId(aiValidation.project_match.project_id);
+    toast.success(
+      `Assigned to project “${aiValidation.project_match.project_name}”.`,
+    );
+    setAiValidation((prev) =>
+      prev ? { ...prev, project_match: null } : prev,
+    );
+  };
+
+  const rejectProjectMatch = () => {
+    if (!aiValidation?.project_match) return;
+    const id = aiValidation.project_match.project_id;
+    setRejectedProjectIds((prev) =>
+      prev.includes(id) ? prev : [...prev, id],
+    );
+    setAiValidation((prev) =>
+      prev ? { ...prev, project_match: null } : prev,
+    );
+    toast.message("Project suggestion dismissed.");
+  };
+
+  /** @deprecated Prefer acceptCorrection — kept for difficulty-only path */
+  const applySuggestion = (field: "difficulty" | "category") => {
+    void acceptCorrection(field);
   };
 
   const isValidYear = (dateStr: string) => {
@@ -1158,12 +1444,88 @@ export default function AddTask({
                     <Badge variant="outline">Continuing with review override</Badge>
                   )}
 
-                  {/* Optional AI suggestions — never auto-applied */}
-                  {aiValidation.suggestions && (
+                  {/* Optional AI corrections — never auto-applied; user controls every change */}
+                  {aiValidation.suggestions &&
+                    (aiValidation.suggestions.title ||
+                      aiValidation.suggestions.description ||
+                      aiValidation.suggestions.category ||
+                      aiValidation.suggestions.difficulty) && (
                     <div className="rounded-lg border overflow-hidden mt-2">
                       <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
-                        Optional AI suggestions for difficulty/category (duration is always your input)
+                        Optional AI corrections (you choose whether to apply)
                       </div>
+                      {aiValidation.suggestions.title && (
+                        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b text-sm">
+                          <span className="min-w-0">
+                            Title:{" "}
+                            <Badge variant="outline" className="whitespace-normal text-left">
+                              {aiValidation.suggestions.title}
+                            </Badge>
+                          </span>
+                          <div className="flex shrink-0 gap-1">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={!!appliedSuggestions.title}
+                              className={
+                                appliedSuggestions.title
+                                  ? "text-muted-foreground cursor-default"
+                                  : undefined
+                              }
+                              onClick={() => void acceptCorrection("title")}
+                            >
+                              {appliedSuggestions.title ? "Used" : "Use"}
+                            </Button>
+                            {!appliedSuggestions.title && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => rejectCorrection("title")}
+                              >
+                                Dismiss
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      {aiValidation.suggestions.description && (
+                        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b text-sm">
+                          <span className="min-w-0">
+                            Description:{" "}
+                            <Badge variant="outline" className="whitespace-normal text-left">
+                              {aiValidation.suggestions.description}
+                            </Badge>
+                          </span>
+                          <div className="flex shrink-0 gap-1">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={!!appliedSuggestions.description}
+                              className={
+                                appliedSuggestions.description
+                                  ? "text-muted-foreground cursor-default"
+                                  : undefined
+                              }
+                              onClick={() => void acceptCorrection("description")}
+                            >
+                              {appliedSuggestions.description ? "Used" : "Use"}
+                            </Button>
+                            {!appliedSuggestions.description && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => rejectCorrection("description")}
+                              >
+                                Dismiss
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      )}
                       {aiValidation.suggestions.difficulty && (
                         <div className="flex items-center justify-between px-3 py-2 border-b text-sm">
                           <span>
@@ -1196,30 +1558,81 @@ export default function AddTask({
                               {aiValidation.suggestions.category}
                             </Badge>
                           </span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            disabled={!!appliedSuggestions.category}
-                            className={
-                              appliedSuggestions.category
-                                ? "text-muted-foreground cursor-default"
-                                : undefined
-                            }
-                            onClick={() => applySuggestion("category")}
-                          >
-                            {appliedSuggestions.category ? "Used" : "Use"}
-                          </Button>
+                          <div className="flex shrink-0 gap-1">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={!!appliedSuggestions.category}
+                              className={
+                                appliedSuggestions.category
+                                  ? "text-muted-foreground cursor-default"
+                                  : undefined
+                              }
+                              onClick={() => void acceptCorrection("category")}
+                            >
+                              {appliedSuggestions.category ? "Used" : "Use"}
+                            </Button>
+                            {!appliedSuggestions.category && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => rejectCorrection("category")}
+                              >
+                                Dismiss
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
                   )}
 
+                  {/* Optional project match — only after consistency; never forced */}
+                  {aiValidation.project_match && (
+                    <div className="rounded-lg border overflow-hidden mt-2">
+                      <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
+                        Optional project match
+                      </div>
+                      <div className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+                        <span className="min-w-0">
+                          Project:{" "}
+                          <Badge variant="outline">
+                            {aiValidation.project_match.project_name}
+                          </Badge>
+                          <span className="block text-xs text-muted-foreground mt-1">
+                            {aiValidation.project_match.reason}
+                          </span>
+                        </span>
+                        <div className="flex shrink-0 gap-1">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={acceptProjectMatch}
+                          >
+                            Use
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={rejectProjectMatch}
+                          >
+                            Dismiss
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <p className="text-xs text-muted-foreground">
-                    Validation checks whether the description matches the task
+                    Validation checks title, description, and category consistency
                     (intent, actions, domain, and more). Duration is set by you
                     and is never estimated or changed by AI. AHP uses your
                     confirmed duration, difficulty, category, and deadline.
+                    Corrections and project matches are optional — you stay in control.
                   </p>
                 </CardContent>
               </Card>

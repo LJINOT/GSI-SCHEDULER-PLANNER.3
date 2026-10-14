@@ -1178,7 +1178,9 @@ export default function AddTask({
                 : descriptionValidated
                   ? "Description Validated"
                   : "Validate Description"}
-            </Button>            {/* Validation result — three-way consistency report */}
+            </Button>
+
+            {/* Validation result — three-way consistency report */}
             {aiValidation && (
               <Card
                 className={
@@ -1396,73 +1398,6 @@ export default function AddTask({
                       </div>
                     </div>
                   )}
-                </CardContent>
-              </Card>
-            )
-
-                  {/* Optional AI suggestions — never auto-applied */}
-                  {aiValidation.suggestions && (
-                    <div className="rounded-lg border overflow-hidden mt-2">
-                      <div className="px-3 py-2 text-xs font-semibold bg-muted/50 border-b">
-                        Optional AI suggestions for difficulty/category (duration is always your input)
-                      </div>
-                      {aiValidation.suggestions.difficulty && (
-                        <div className="flex items-center justify-between px-3 py-2 border-b text-sm">
-                          <span>
-                            Difficulty:{" "}
-                            <Badge variant="outline" className="capitalize">
-                              {aiValidation.suggestions.difficulty}
-                            </Badge>
-                          </span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            disabled={!!appliedSuggestions.difficulty}
-                            className={
-                              appliedSuggestions.difficulty
-                                ? "text-muted-foreground cursor-default"
-                                : undefined
-                            }
-                            onClick={() => applySuggestion("difficulty")}
-                          >
-                            {appliedSuggestions.difficulty ? "Used" : "Use"}
-                          </Button>
-                        </div>
-                      )}
-                      {aiValidation.suggestions.category && (
-                        <div className="flex items-center justify-between px-3 py-2 text-sm">
-                          <span>
-                            Category:{" "}
-                            <Badge variant="outline">
-                              {aiValidation.suggestions.category}
-                            </Badge>
-                          </span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            disabled={!!appliedSuggestions.category}
-                            className={
-                              appliedSuggestions.category
-                                ? "text-muted-foreground cursor-default"
-                                : undefined
-                            }
-                            onClick={() => applySuggestion("category")}
-                          >
-                            {appliedSuggestions.category ? "Used" : "Use"}
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <p className="text-xs text-muted-foreground">
-                    Validation checks whether the description matches the task
-                    (intent, actions, domain, and more). Duration is set by you
-                    and is never estimated or changed by AI. AHP uses your
-                    confirmed duration, difficulty, category, and deadline.
-                  </p>
                 </CardContent>
               </Card>
             )}

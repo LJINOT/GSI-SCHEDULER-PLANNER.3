@@ -357,14 +357,50 @@ export default function AddTask({
 
       if (requestId !== validationRequestIdRef.current) return;
 
-      if (error) {
-        throw new Error(error.message || "The validation function failed.");
-      }
-
-      const payload =
+      // Supabase often returns error for non-2xx; body may still be in `data`
+      // or in error.context.json() / error.message.
+      const payloadFromData =
         data && typeof data === "object"
           ? (data as Record<string, unknown>)
           : null;
+
+      if (error) {
+        let detail =
+          error.message || "The validation function returned a non-2xx status.";
+        // Prefer structured error from the function body when present
+        if (payloadFromData && typeof payloadFromData.error === "string") {
+          detail = payloadFromData.error;
+          if (
+            typeof payloadFromData.details === "string" &&
+            payloadFromData.details
+          ) {
+            detail = `${detail} (${payloadFromData.details})`;
+          }
+        }
+        // FunctionsHttpError may expose context
+        const ctx = (error as { context?: Response }).context;
+        if (ctx && typeof ctx.json === "function") {
+          try {
+            const body = (await ctx.json()) as Record<string, unknown>;
+            if (typeof body?.error === "string") {
+              detail = body.error;
+              if (typeof body.details === "string" && body.details) {
+                detail = `${detail} (${body.details})`;
+              }
+            }
+          } catch {
+            /* ignore body parse */
+          }
+        }
+        console.error("AddTask: analyze-task non-2xx", {
+          message: error.message,
+          data,
+          detail,
+        });
+        throw new Error(detail);
+      }
+
+      const payload = payloadFromData;
 
       if (!payload) {
         throw new Error("The validation function returned no data.");
